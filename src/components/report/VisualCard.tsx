@@ -1203,7 +1203,11 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       </div>
 
       {/* Visual Content Body */}
-      <div className="flex-1 w-full h-full p-2 overflow-hidden flex flex-col justify-center">
+      <div
+        className={`flex-1 min-h-0 w-full p-2 overflow-hidden flex flex-col ${
+          visual.type === 'matrix' || visual.type === 'table' || showRawTable ? '' : 'justify-center'
+        }`}
+      >
         {queryError ? (
           <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 text-[11px] overflow-auto">
             <div className="font-bold mb-1">Erro ao calcular visual</div>
@@ -1518,10 +1522,10 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
             return (
               <div className="w-full h-full overflow-auto text-xs">
-                <table className="min-w-full border-collapse text-left">
-                  <thead className="bg-slate-100 dark:bg-slate-800 sticky top-0 z-10">
+                <table className="min-w-full border-separate border-spacing-0 text-left">
+                  <thead className="bg-slate-100 dark:bg-slate-800">
                     <tr>
-                      <th className="px-2.5 py-1.5 font-bold text-slate-800 dark:text-slate-100 border-b border-r border-slate-200 dark:border-slate-700">
+                      <th className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 font-bold text-slate-800 dark:text-slate-100 border-b border-r border-slate-200 dark:border-slate-700">
                         {visual.dataConfig.xAxisField || 'Linhas'}
                       </th>
                       {series.map(s => (
@@ -1532,13 +1536,13 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                               setCrossFilter(visual.dataConfig.tableId, visual.dataConfig.legendField, s.name);
                             }
                           }}
-                          className="px-2.5 py-1.5 font-semibold text-right text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 cursor-pointer hover:text-amber-600"
+                          className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 font-semibold text-right text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 cursor-pointer hover:text-amber-600"
                         >
                           {s.name}
                         </th>
                       ))}
                       {series.length > 1 && (
-                        <th className="px-2.5 py-1.5 font-bold text-right text-slate-900 dark:text-amber-300 border-b border-l border-slate-200 dark:border-slate-700 bg-slate-200/60 dark:bg-slate-800">
+                        <th className="sticky top-0 z-10 px-2.5 py-1.5 font-bold text-right text-slate-900 dark:text-amber-300 border-b border-l border-slate-200 dark:border-slate-700 bg-slate-200 dark:bg-slate-800">
                           Total
                         </th>
                       )}
@@ -1620,21 +1624,21 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                       );
                     })}
                   </tbody>
-                  <tfoot className="bg-slate-100 dark:bg-slate-800/90 sticky bottom-0 font-bold border-t-2 border-slate-300 dark:border-slate-700">
+                  <tfoot className="bg-slate-100 dark:bg-slate-800 font-bold">
                     <tr>
-                      <td className="px-2.5 py-1.5 text-slate-900 dark:text-amber-300 border-r border-slate-200 dark:border-slate-700">
+                      <td className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-slate-900 dark:text-amber-300 border-t-2 border-r border-slate-300 dark:border-slate-700">
                         Total Geral
                       </td>
                       {colTotals.map((tot, cIdx) => (
                         <td
                           key={series[cIdx]?.name || cIdx}
-                          className="px-2.5 py-1.5 text-right font-mono text-slate-900 dark:text-amber-300 whitespace-nowrap"
+                          className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-900 dark:text-amber-300 border-t-2 border-slate-300 dark:border-slate-700 whitespace-nowrap"
                         >
                           {fmtCell(tot, series[cIdx]?.name)}
                         </td>
                       ))}
                       {series.length > 1 && (
-                        <td className="px-2.5 py-1.5 text-right font-mono text-slate-950 dark:text-amber-400 border-l border-slate-200 dark:border-slate-700 whitespace-nowrap">
+                        <td className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-950 dark:text-amber-400 border-t-2 border-l border-slate-300 dark:border-slate-700 whitespace-nowrap">
                           {fmtCell(grandTotal)}
                         </td>
                       )}

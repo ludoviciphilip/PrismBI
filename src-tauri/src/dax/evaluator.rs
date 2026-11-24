@@ -627,31 +627,31 @@ fn apply_calculate_modifier(
                 }
                 "PREVIOUSMONTH" => {
                     if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_date_shift(model, outer_ctx, next_ctx, table, column, -1, "MONTH");
+                        apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, -1, "MONTH");
                     }
                     return Ok(());
                 }
                 "NEXTMONTH" => {
                     if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_date_shift(model, outer_ctx, next_ctx, table, column, 1, "MONTH");
+                        apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, 1, "MONTH");
                     }
                     return Ok(());
                 }
                 "PREVIOUSQUARTER" => {
                     if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_date_shift(model, outer_ctx, next_ctx, table, column, -1, "QUARTER");
+                        apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, -1, "QUARTER");
                     }
                     return Ok(());
                 }
                 "PREVIOUSYEAR" => {
                     if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_date_shift(model, outer_ctx, next_ctx, table, column, -1, "YEAR");
+                        apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, -1, "YEAR");
                     }
                     return Ok(());
                 }
                 "NEXTYEAR" => {
                     if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_date_shift(model, outer_ctx, next_ctx, table, column, 1, "YEAR");
+                        apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, 1, "YEAR");
                     }
                     return Ok(());
                 }
@@ -719,6 +719,17 @@ fn find_primary_table_col(expr: &Expr) -> Option<(String, String)> {
     }
 }
 
+fn collect_table_dates(tbl: &DaxTableData, cidx: usize) -> HashMap<(i32, u32, u32), Vec<String>> {
+    let mut map: HashMap<(i32, u32, u32), Vec<String>> = HashMap::new();
+    for row in &tbl.rows {
+        let s = row[cidx].as_display_string();
+        if let Some(ymd) = parse_iso_ymd(&s) {
+            map.entry(ymd).or_default().push(row[cidx].canonical_key());
+        }
+    }
+    map
+}
+
 fn apply_date_shift(
     model: &DaxModel,
     outer_ctx: &FilterContext,
@@ -731,22 +742,125 @@ fn apply_date_shift(
     let Some(tbl) = model.get_table(table_name) else { return };
     let Some(cidx) = tbl.get_col_idx(col_name) else { return };
     let visible = model.get_visible_row_indices(table_name, outer_ctx);
+    let all_dates_map = collect_table_dates(tbl, cidx);
 
-    let mut shifted_keys = HashSet::new();
+    let mut visible_ymds: Vec<(i32, u32, u32)> = Vec::new();
     for r_idx in visible {
         let s = tbl.rows[r_idx][cidx].as_display_string();
-        if let Some((y, m, d)) = parse_iso_ymd(&s) {
-            let (ny, nm, nd) = match interval {
-                "YEAR" => (y + shift, m, d),
-                "MONTH" => add_months(y, m, d, shift),
-                "QUARTER" => add_months(y, m, d, shift * 3),
-                _ => add_days(y, m, d, shift),
-            };
-            let iso = format!("{:04}-{:02}-{:02}", ny, nm, nd);
-            shifted_keys.insert(DaxValue::Text(iso).canonical_key());
+        if let Some(ymd) = parse_iso_ymd(&s) {
+            visible_ymds.push(ymd);
         }
     }
+
+    let mut shifted_keys = HashSet::new();
+    let push_ymd_keys = |ymd: (i32, u32, u32), out: &mut HashSet<String>| {
+        if let Some(keys) = all_dates_map.get(&ymd) {
+            for k in keys {
+                out.insert(k.clone());
+            }
+        }
+    };
+
+    if matches!(interval, "YEAR" | "MONTH" | "QUARTER") {
+        let delta_months = match interval {
+            "YEAR" => shift * 12,
+            "QUARTER" => shift * 3,
+            _ => shift,
+        };
+
+        let mut by_month: HashMap<(i32, u32), HashSet<u32>> = HashMap::new();
+        for &(y, m, d) in &visible_ymds {
+            by_month.entry((y, m)).or_default().insert(d);
+        }
+
+        for ((y, m), days_set) in by_month {
+            let dim_src = days_in_month(y, m);
+            let is_full_month = days_set.len() as u32 == dim_src
+                || (days_set.contains(&1) && days_set.contains(&dim_src));
+
+            let (ny, nm, _) = add_months(y, m, 1, delta_months);
+            let dim_dst = days_in_month(ny, nm);
+
+            if is_full_month {
+                for d_dst in 1..=dim_dst {
+                    push_ymd_keys((ny, nm, d_dst), &mut shifted_keys);
+                }
+            } else {
+                for d in days_set {
+                    let (_, _, nd) = add_months(y, m, d, delta_months);
+                    push_ymd_keys((ny, nm, nd), &mut shifted_keys);
+                }
+            }
+        }
+    } else {
+        for (y, m, d) in visible_ymds {
+            let shifted = add_days(y, m, d, shift);
+            push_ymd_keys(shifted, &mut shifted_keys);
+        }
+    }
+
+    // In DAX, time-intelligence functions replace any active column filters on the date table
+    next_ctx.clear_table(&tbl.name);
     next_ctx.set_column_filter(&tbl.name, col_name, shifted_keys);
+}
+
+fn apply_complete_period_shift(
+    model: &DaxModel,
+    outer_ctx: &FilterContext,
+    next_ctx: &mut FilterContext,
+    table_name: &str,
+    col_name: &str,
+    shift: i32,
+    interval: &str,
+) {
+    let Some(tbl) = model.get_table(table_name) else { return };
+    let Some(cidx) = tbl.get_col_idx(col_name) else { return };
+    let visible = model.get_visible_row_indices(table_name, outer_ctx);
+
+    let mut anchor_ymd: Option<(i32, u32, u32)> = None;
+    for r_idx in visible {
+        let s = tbl.rows[r_idx][cidx].as_display_string();
+        if let Some(ymd) = parse_iso_ymd(&s) {
+            anchor_ymd = match anchor_ymd {
+                None => Some(ymd),
+                Some(cur) => {
+                    if shift < 0 {
+                        Some(if ymd < cur { ymd } else { cur })
+                    } else {
+                        Some(if ymd > cur { ymd } else { cur })
+                    }
+                }
+            };
+        }
+    }
+
+    let mut allowed = HashSet::new();
+    if let Some((y, m, _d)) = anchor_ymd {
+        let delta_months = match interval {
+            "YEAR" => shift * 12,
+            "QUARTER" => shift * 3,
+            _ => shift,
+        };
+        let (ty, tm, _) = add_months(y, m, 1, delta_months);
+        let target_quarter = (tm - 1) / 3;
+
+        for row in &tbl.rows {
+            let s = row[cidx].as_display_string();
+            if let Some((ry, rm, _)) = parse_iso_ymd(&s) {
+                let in_target = match interval {
+                    "YEAR" => ry == ty,
+                    "QUARTER" => ry == ty && ((rm - 1) / 3) == target_quarter,
+                    _ => ry == ty && rm == tm,
+                };
+                if in_target {
+                    allowed.insert(row[cidx].canonical_key());
+                }
+            }
+        }
+    }
+
+    next_ctx.clear_table(&tbl.name);
+    next_ctx.set_column_filter(&tbl.name, col_name, allowed);
 }
 
 fn apply_period_to_date(
@@ -789,6 +903,7 @@ fn apply_period_to_date(
             }
         }
     }
+    next_ctx.clear_table(&tbl.name);
     next_ctx.set_column_filter(&tbl.name, col_name, allowed);
 }
 
@@ -1143,6 +1258,11 @@ mod tests {
                     formula: "CALCULATE([Receita], PREVIOUSYEAR(dCal[Data]))".into(),
                 },
                 DaxMeasureInput {
+                    name: "Receita Mesmo Dia Ano Ant".into(),
+                    table_name: "fVendas".into(),
+                    formula: "CALCULATE([Receita], SAMEPERIODLASTYEAR(dCal[Data]))".into(),
+                },
+                DaxMeasureInput {
                     name: "Rank Data".into(),
                     table_name: "fVendas".into(),
                     formula: "RANKX(ALL(fVendas), [Receita])".into(),
@@ -1166,7 +1286,10 @@ mod tests {
         assert!((mtd - 400.0).abs() < 1e-6);
 
         let prev_y = model.evaluate_dax("[Receita Ano Ant]", &ctx_feb_2026).unwrap().as_f64().unwrap();
-        assert!((prev_y - 200.0).abs() < 1e-6);
+        assert!((prev_y - 300.0).abs() < 1e-6);
+
+        let same_p = model.evaluate_dax("[Receita Mesmo Dia Ano Ant]", &ctx_feb_2026).unwrap().as_f64().unwrap();
+        assert!((same_p - 200.0).abs() < 1e-6);
 
         let rank = model.evaluate_dax("[Rank Data]", &ctx_feb_2026).unwrap().as_f64().unwrap();
         assert!((rank - 2.0).abs() < 1e-6);
@@ -1264,6 +1387,29 @@ mod tests {
             [DaxValue::Text("Outubro".into()).canonical_key()].into_iter().collect(),
         );
         let fat_out = model.evaluate_dax("[Faturamento]", &ctx_out).expect("eval Faturamento Outubro");
+
+        let mut ctx_nov_mesano = FilterContext::default();
+        ctx_nov_mesano.set_column_filter(
+            "dCalendario",
+            "Mês/Ano",
+            [DaxValue::Text("Nov/2026".into()).canonical_key()].into_iter().collect(),
+        );
+        let fat_nov = model.evaluate_dax("[Faturamento]", &ctx_nov_mesano).expect("eval Fat Nov");
+        let lucro_nov = model.evaluate_dax("[Lucro Atual]", &ctx_nov_mesano).expect("eval Lucro Nov");
+        let fat_prev_nov = model.evaluate_dax("[Faturamento Mês Passado]", &ctx_nov_mesano).expect("eval Fat Prev Nov");
+        let lucro_prev_nov = model.evaluate_dax("[Lucro Mês Passado]", &ctx_nov_mesano).expect("eval Lucro Prev Nov");
+
+        let mut ctx_out_mesano = FilterContext::default();
+        ctx_out_mesano.set_column_filter(
+            "dCalendario",
+            "Mês/Ano",
+            [DaxValue::Text("Out/2026".into()).canonical_key()].into_iter().collect(),
+        );
+        let fat_out_m = model.evaluate_dax("[Faturamento]", &ctx_out_mesano).expect("eval Fat Out");
+        let lucro_out_m = model.evaluate_dax("[Lucro Atual]", &ctx_out_mesano).expect("eval Lucro Out");
+        let fat_prev_out = model.evaluate_dax("[Faturamento Mês Passado]", &ctx_out_mesano).expect("eval Fat Prev Out");
+        let lucro_prev_out = model.evaluate_dax("[Lucro Mês Passado]", &ctx_out_mesano).expect("eval Lucro Prev Out");
+
         println!(
             "RHINO REAL -> Faturamento={:?}, Salarios={:?}, FatSet={:?}, SalariosSet={:?}, FatOut={:?}, DRE={:?}, Entradas={:?}, Saidas={:?}, LoadedTables={:?}",
             fat,
@@ -1276,11 +1422,118 @@ mod tests {
             saidas,
             summary.loaded_tables.iter().map(|t| (&t.table_name, t.total_rows)).collect::<Vec<_>>()
         );
+        println!(
+            "RHINO TIME INTELLIGENCE -> Nov(Fat={:?}, Lucro={:?}, FatPrev={:?}, LucroPrev={:?}) | Out(Fat={:?}, Lucro={:?}, FatPrev={:?}, LucroPrev={:?})",
+            fat_nov, lucro_nov, fat_prev_nov, lucro_prev_nov,
+            fat_out_m, lucro_out_m, fat_prev_out, lucro_prev_out
+        );
         assert!(fat.as_f64().unwrap_or(0.0) > 0.0);
         assert!(salarios.as_f64().unwrap_or(0.0).abs() > 0.0);
         assert!(
             fat_set.as_f64().unwrap_or(0.0) > 50_000.0 || fat_out.as_f64().unwrap_or(0.0) > 50_000.0,
             "Faturamento mensal deve considerar o mês completo, não apenas o dia 1"
+        );
+        assert!(
+            (fat_prev_nov.as_f64().unwrap_or(0.0) - fat_out_m.as_f64().unwrap_or(0.0)).abs() < 1e-2,
+            "Faturamento Mês Passado em Nov/2026 deve igualar Faturamento de Out/2026 (incluindo dia 31)"
+        );
+        assert!(
+            (lucro_prev_nov.as_f64().unwrap_or(0.0) - lucro_out_m.as_f64().unwrap_or(0.0)).abs() < 1e-2,
+            "Lucro Mês Passado em Nov/2026 deve igualar Lucro Atual de Out/2026 (incluindo dia 31)"
+        );
+        assert!(
+            (fat_prev_out.as_f64().unwrap_or(0.0) - fat_set.as_f64().unwrap_or(0.0)).abs() < 1e-2,
+            "Faturamento Mês Passado em Out/2026 deve igualar Faturamento de Set/2026"
+        );
+    }
+
+    #[test]
+    fn test_dateadd_full_month_expansion_nov_to_oct_clears_mes_ano_filter() {
+        let mut model = DaxModel::new();
+        let mut cal_rows = Vec::new();
+        for d in 1..=31 {
+            cal_rows.push(
+                serde_json::from_value(json!({
+                    "Data": format!("2026-10-{:02}", d),
+                    "Mês/Ano": "Out/2026"
+                }))
+                .unwrap(),
+            );
+        }
+        for d in 1..=30 {
+            cal_rows.push(
+                serde_json::from_value(json!({
+                    "Data": format!("2026-11-{:02}", d),
+                    "Mês/Ano": "Nov/2026"
+                }))
+                .unwrap(),
+            );
+        }
+
+        let fact_rows = vec![
+            serde_json::from_value(json!({"Data": "2026-10-01", "Valor": 1000.0})).unwrap(),
+            serde_json::from_value(json!({"Data": "2026-10-31", "Valor": 6700.0})).unwrap(),
+            serde_json::from_value(json!({"Data": "2026-11-15", "Valor": 5000.0})).unwrap(),
+        ];
+
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput {
+                    name: "dCalendario".into(),
+                    columns: vec!["Data".into(), "Mês/Ano".into()],
+                    rows: cal_rows,
+                },
+                DaxTableInput {
+                    name: "fLanc".into(),
+                    columns: vec!["Data".into(), "Valor".into()],
+                    rows: fact_rows,
+                },
+            ],
+            relationships: vec![DaxRelationshipInput {
+                from_table: "fLanc".into(),
+                from_column: "Data".into(),
+                to_table: "dCalendario".into(),
+                to_column: "Data".into(),
+                cross_filter_direction: "single".into(),
+                is_active: true,
+            }],
+            measures: vec![
+                DaxMeasureInput {
+                    name: "Fat".into(),
+                    table_name: "fLanc".into(),
+                    formula: "SUM(fLanc[Valor])".into(),
+                },
+                DaxMeasureInput {
+                    name: "Fat Mes Passado DateAdd".into(),
+                    table_name: "fLanc".into(),
+                    formula: "CALCULATE([Fat], DATEADD(dCalendario[Data], -1, MONTH))".into(),
+                },
+                DaxMeasureInput {
+                    name: "Fat Mes Passado Prev".into(),
+                    table_name: "fLanc".into(),
+                    formula: "CALCULATE([Fat], PREVIOUSMONTH(dCalendario[Data]))".into(),
+                },
+            ],
+        });
+
+        let mut ctx_nov = FilterContext::default();
+        ctx_nov.set_column_filter(
+            "dCalendario",
+            "Mês/Ano",
+            [DaxValue::Text("Nov/2026".into()).canonical_key()].into_iter().collect(),
+        );
+
+        let prev_dateadd = model.evaluate_dax("[Fat Mes Passado DateAdd]", &ctx_nov).unwrap().as_f64().unwrap();
+        let prev_month = model.evaluate_dax("[Fat Mes Passado Prev]", &ctx_nov).unwrap().as_f64().unwrap();
+        assert!(
+            (prev_dateadd - 7700.0).abs() < 1e-6,
+            "DATEADD -1 MONTH em Nov/2026 sem REMOVEFILTERS explícito deve limpar Mês/Ano e incluir dia 31/10 (esperado 7700, obtido {})",
+            prev_dateadd
+        );
+        assert!(
+            (prev_month - 7700.0).abs() < 1e-6,
+            "PREVIOUSMONTH em Nov/2026 deve retornar todo Out/2026 incluindo dia 31/10 (esperado 7700, obtido {})",
+            prev_month
         );
     }
 

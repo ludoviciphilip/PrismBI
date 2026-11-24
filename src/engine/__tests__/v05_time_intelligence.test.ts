@@ -382,6 +382,79 @@ describe('V0.5: Inteligência Temporal (dax.guide)', () => {
       expect(prevYearSales).toBe(15000);
     });
 
+    it('expands full 30-day month (Nov) to full 31-day previous month (Oct including 30 and 31) in DATEADD', () => {
+      const octNovCalRows: any[] = [];
+      for (let d = 1; d <= 31; d++) {
+        const dd = String(d).padStart(2, '0');
+        octNovCalRows.push({ Data: `2026-10-${dd}`, Ano: 2026, Mes: 10, MesAno: 'Out/2026' });
+      }
+      for (let d = 1; d <= 30; d++) {
+        const dd = String(d).padStart(2, '0');
+        octNovCalRows.push({ Data: `2026-11-${dd}`, Ano: 2026, Mes: 11, MesAno: 'Nov/2026' });
+      }
+      const salesRows = [
+        { Data: '2026-10-01', Valor: 1000 },
+        { Data: '2026-10-30', Valor: 2000 },
+        { Data: '2026-10-31', Valor: 6700 },
+        { Data: '2026-11-10', Valor: 5000 },
+      ];
+      const mAccess = new MockModel(
+        [
+          {
+            id: 'd_Cal',
+            name: 'd_Cal',
+            originalName: 'd_Cal',
+            isCalendar: true,
+            calendarDateColumn: 'Data',
+            columns: [
+              { id: 'c1', name: 'Data', originalName: 'Data', dataType: 'date' },
+              { id: 'c2', name: 'MesAno', originalName: 'MesAno', dataType: 'text' },
+            ],
+            rows: octNovCalRows,
+          },
+          {
+            id: 'f_Lanc',
+            name: 'f_Lanc',
+            originalName: 'f_Lanc',
+            columns: [
+              { id: 'c3', name: 'Data', originalName: 'Data', dataType: 'date' },
+              { id: 'c4', name: 'Valor', originalName: 'Valor', dataType: 'currency' },
+            ],
+            rows: salesRows,
+          },
+        ],
+        [
+          {
+            id: 'rel_cal',
+            fromTable: 'f_Lanc',
+            fromColumn: 'Data',
+            toTable: 'd_Cal',
+            toColumn: 'Data',
+            cardinality: 'N:1',
+            crossFilterDirection: 'single',
+            isActive: true,
+          },
+        ],
+        [{ id: 'm1', name: 'Fat', tableName: 'f_Lanc', formula: 'SUM(f_Lanc[Valor])', format: 'currency' }]
+      );
+
+      const fc = new FilterContext();
+      fc.setColumnFilter('d_Cal', 'MesAno', {
+        tableId: 'd_Cal',
+        column: 'MesAno',
+        allowedValues: new Set(['Nov/2026']),
+      });
+      const ev = new Evaluator({
+        model: mAccess,
+        tables: mAccess.getTables(),
+        measures: mAccess.getMeasures(),
+        relationships: mAccess.getRelationships(),
+        filterContext: fc,
+      });
+      const res = ev.evaluate('CALCULATE([Fat], DATEADD(d_Cal[Data], -1, MONTH))');
+      expect(res).toBe(9700);
+    });
+
     it('evaluates PARALLELPERIOD', () => {
       const filterCtx = new FilterContext();
       filterCtx.setColumnFilter('d_Calendario', 'Data', {

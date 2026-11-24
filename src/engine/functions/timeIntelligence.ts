@@ -496,13 +496,62 @@ export const TIME_INTELLIGENCE_FUNCTIONS: Record<string, FunctionDefinition> = {
       const allDateSet = new Set(allDates);
       const shiftedSet = new Set<string>();
 
-      for (const iso of visibleDates) {
-        const d = parseUtcDate(iso);
-        if (d) {
-          const shifted = shiftDate(d, n, interval);
-          const sIso = toIsoDate(shifted);
-          if (allDateSet.has(sIso)) {
-            shiftedSet.add(sIso);
+      if (interval === 'DAY') {
+        for (const iso of visibleDates) {
+          const d = parseUtcDate(iso);
+          if (d) {
+            const shifted = shiftDate(d, n, 'DAY');
+            const sIso = toIsoDate(shifted);
+            if (allDateSet.has(sIso)) {
+              shiftedSet.add(sIso);
+            }
+          }
+        }
+      } else {
+        const monthShift =
+          n * (interval === 'YEAR' ? 12 : interval === 'QUARTER' ? 3 : 1);
+        const byMonth = new Map<string, Set<number>>();
+        for (const iso of visibleDates) {
+          const d = parseUtcDate(iso);
+          if (!d) continue;
+          const y = d.getUTCFullYear();
+          const m = d.getUTCMonth();
+          const key = `${y}:${m}`;
+          let set = byMonth.get(key);
+          if (!set) {
+            set = new Set<number>();
+            byMonth.set(key, set);
+          }
+          set.add(d.getUTCDate());
+        }
+
+        for (const [key, daySet] of byMonth.entries()) {
+          const [yStr, mStr] = key.split(':');
+          const y = Number(yStr);
+          const m = Number(mStr);
+          const totalDaysSrc = getDaysInMonth(y, m);
+
+          const totalMonth = y * 12 + m + monthShift;
+          const targetYear = Math.floor(totalMonth / 12);
+          const targetMonth = ((totalMonth % 12) + 12) % 12;
+          const totalDaysDst = getDaysInMonth(targetYear, targetMonth);
+
+          // Full-month selection in DAX expands to all days of the shifted month (e.g. Nov 1..30 -> Oct 1..31)
+          if (daySet.size === totalDaysSrc) {
+            for (let dayNum = 1; dayNum <= totalDaysDst; dayNum++) {
+              const sIso = toIsoDate(new Date(Date.UTC(targetYear, targetMonth, dayNum)));
+              if (allDateSet.has(sIso)) {
+                shiftedSet.add(sIso);
+              }
+            }
+          } else {
+            for (const dayNum of daySet) {
+              const clampedDay = Math.min(dayNum, totalDaysDst);
+              const sIso = toIsoDate(new Date(Date.UTC(targetYear, targetMonth, clampedDay)));
+              if (allDateSet.has(sIso)) {
+                shiftedSet.add(sIso);
+              }
+            }
           }
         }
       }
