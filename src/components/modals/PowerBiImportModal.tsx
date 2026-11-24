@@ -114,10 +114,37 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({ isOpen, 
         }
       }
 
+      const mPartition = t.partitions.find(p => p.sourceType.toLowerCase() === 'm') || t.partitions[0];
+      const sourcePathLower = (loaded?.sourcePath || '').toLowerCase();
+      const sourceConfig = loaded?.sourcePath
+        ? {
+            type: (sourcePathLower.endsWith('.csv') || sourcePathLower.endsWith('.tsv')
+              ? 'csv'
+              : sourcePathLower.endsWith('.parquet')
+              ? 'parquet'
+              : sourcePathLower.endsWith('.json') || sourcePathLower.endsWith('.ndjson')
+              ? 'json'
+              : 'xlsx') as 'xlsx' | 'csv' | 'parquet' | 'json',
+            filePath: loaded.sourcePath,
+            sheetName: loaded.sheetName || undefined,
+            mScript: mPartition?.expression || undefined,
+            pbipRoot: summary.rootPath,
+            lastRefreshedAt: new Date().toISOString(),
+          }
+        : mPartition?.sourceType
+        ? {
+            type: 'pbip' as const,
+            mScript: mPartition.expression || undefined,
+            pbipRoot: summary.rootPath,
+            lastRefreshedAt: new Date().toISOString(),
+          }
+        : undefined;
+
       return {
         id: t.name,
         name: t.name,
         originalName: t.name,
+        sourceConfig,
         isCalculated: t.isCalculated,
         isHidden: t.isHidden,
         x: 80 + (idx % 3) * 280,
@@ -242,6 +269,7 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({ isOpen, 
     loadStateFromProject({
       version: String(CURRENT_ENGINE_VERSION),
       projectName: summary.projectName || projectName,
+      sourcePbipPath: manualPath.trim() || summary.rootPath || null,
       tables: mappedTables,
       relationships: mappedRelationships,
       measures: mappedMeasures,

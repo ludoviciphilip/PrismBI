@@ -1,4 +1,5 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   FileSpreadsheet,
   Database,
@@ -86,7 +87,10 @@ export const Ribbon: React.FC<{
     pages,
     activePageId,
     newProject,
-    loadInitialSampleData,
+    refreshAllData,
+    isRefreshingData,
+    refreshStatus,
+    setRefreshStatus,
     generateCalendar,
     saveProject,
     getProjectState,
@@ -125,7 +129,10 @@ export const Ribbon: React.FC<{
     pages: s.pages,
     activePageId: s.activePageId,
     newProject: s.newProject,
-    loadInitialSampleData: s.loadInitialSampleData,
+    refreshAllData: s.refreshAllData,
+    isRefreshingData: s.isRefreshingData,
+    refreshStatus: s.refreshStatus,
+    setRefreshStatus: s.setRefreshStatus,
     generateCalendar: s.generateCalendar,
     saveProject: s.saveProject,
     getProjectState: s.getProjectState,
@@ -149,6 +156,12 @@ export const Ribbon: React.FC<{
 
   const activeRibbonPage = pages.find(p => p.id === activePageId) || pages[0];
   const { width: ribbonCanvasWidth, height: ribbonCanvasHeight } = getEffectiveCanvasSize(activeRibbonPage);
+
+  useEffect(() => {
+    if (!refreshStatus) return;
+    const timer = setTimeout(() => setRefreshStatus(null), 7000);
+    return () => clearTimeout(timer);
+  }, [refreshStatus, setRefreshStatus]);
 
   const handleExportProject = () => {
     const state = getProjectState();
@@ -508,14 +521,24 @@ export const Ribbon: React.FC<{
               </button>
             </div>
 
-            {/* Atualizar Dados e Amostra */}
+            {/* Atualizar Dados das Fontes */}
             <div className="flex items-center gap-1 px-2 border-r border-slate-200 dark:border-slate-800">
               <button
-                onClick={() => loadInitialSampleData()}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
+                onClick={() => void refreshAllData()}
+                disabled={isRefreshingData}
+                title="Atualizar dados das fontes vinculadas (.xlsx, .csv, .parquet, .json, .pbip, REST) mantendo visuais, medidas e relacionamentos"
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-60 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
-                <RefreshCw className="w-5 h-5 text-slate-600 dark:text-slate-300" />
-                <span className="text-[10px] font-semibold mt-0.5">{t.ribbonActions.refresh}</span>
+                <RefreshCw
+                  className={`w-5 h-5 ${
+                    isRefreshingData
+                      ? 'text-amber-500 animate-spin'
+                      : 'text-slate-600 dark:text-slate-300'
+                  }`}
+                />
+                <span className="text-[10px] font-semibold mt-0.5">
+                  {isRefreshingData ? 'Atualizando...' : t.ribbonActions.refresh}
+                </span>
               </button>
             </div>
 
@@ -938,6 +961,35 @@ export const Ribbon: React.FC<{
         isOpen={showPbiImportModal}
         onClose={() => setShowPbiImportModal(false)}
       />
+
+      {refreshStatus &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className={`fixed bottom-4 right-4 z-[10001] max-w-md px-3.5 py-2.5 rounded-xl shadow-lg border text-xs flex items-start gap-2.5 ${
+              refreshStatus.type === 'error'
+                ? 'bg-red-50 dark:bg-red-950/90 border-red-300 dark:border-red-800 text-red-900 dark:text-red-200'
+                : refreshStatus.type === 'warning'
+                ? 'bg-amber-50 dark:bg-amber-950/90 border-amber-300 dark:border-amber-800 text-amber-950 dark:text-amber-200'
+                : 'bg-emerald-50 dark:bg-emerald-950/90 border-emerald-300 dark:border-emerald-800 text-emerald-950 dark:text-emerald-200'
+            }`}
+          >
+            <RefreshCw className="w-4 h-4 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="font-bold">Atualização de Dados ({refreshStatus.timestamp})</div>
+              <div className="text-[11px] opacity-90 break-words mt-0.5">{refreshStatus.message}</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRefreshStatus(null)}
+              className="opacity-60 hover:opacity-100 font-bold text-xs px-1 cursor-pointer"
+              aria-label="Fechar aviso"
+            >
+              ✕
+            </button>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

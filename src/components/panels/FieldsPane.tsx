@@ -13,6 +13,10 @@ import {
   Folder,
   Edit2,
   Trash2,
+  RefreshCw,
+  Upload,
+  Check,
+  X,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
@@ -24,6 +28,7 @@ export const FieldsPane: React.FC = React.memo(() => {
   const {
     tables,
     measures,
+    sourcePbipPath,
     selectedVisualId,
     updateVisual,
     pages,
@@ -32,9 +37,14 @@ export const FieldsPane: React.FC = React.memo(() => {
     setCustomMeasureModalOpen,
     deleteMeasure,
     openCustomMeasureModal,
+    renameTable,
+    refreshTable,
+    openReplaceTableModal,
+    isRefreshingData,
   } = useBiStore(useShallow(s => ({
     tables: s.tables,
     measures: s.measures,
+    sourcePbipPath: s.sourcePbipPath,
     selectedVisualId: s.selectedVisualId,
     updateVisual: s.updateVisual,
     pages: s.pages,
@@ -43,9 +53,16 @@ export const FieldsPane: React.FC = React.memo(() => {
     setCustomMeasureModalOpen: s.setCustomMeasureModalOpen,
     deleteMeasure: s.deleteMeasure,
     openCustomMeasureModal: s.openCustomMeasureModal,
+    renameTable: s.renameTable,
+    refreshTable: s.refreshTable,
+    openReplaceTableModal: s.openReplaceTableModal,
+    isRefreshingData: s.isRefreshingData,
   })));
   const [searchTerm, setSearchTerm] = useState('');
   const [deletingMeasureId, setDeletingMeasureId] = useState<string | null>(null);
+  const [renamingTableId, setRenamingTableId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [expandedTables, setExpandedTables] = useState<Record<string, boolean>>({
     f_Vendas: true,
     d_Clientes: false,
@@ -203,14 +220,44 @@ export const FieldsPane: React.FC = React.memo(() => {
             return null;
           }
 
+          const canRefreshTable = Boolean(
+            table.sourceConfig?.filePath || table.sourceConfig?.url || sourcePbipPath
+          );
+          const sourceTooltipParts: string[] = [];
+          if (table.sourceConfig?.filePath) {
+            sourceTooltipParts.push(`Arquivo: ${table.sourceConfig.filePath.split('/').pop()}`);
+          } else if (table.sourceConfig?.url) {
+            sourceTooltipParts.push(`REST: ${table.sourceConfig.url}`);
+          }
+          if (table.sourceConfig?.sheetName) {
+            sourceTooltipParts.push(`Aba: ${table.sourceConfig.sheetName}`);
+          }
+          const headerTitle = sourceTooltipParts.length > 0
+            ? `${table.name}\n${sourceTooltipParts.join(' • ')}`
+            : table.name;
+          const isRenamingThis = renamingTableId === table.id;
+
+          const commitRename = () => {
+            const res = renameTable(table.id, renameDraft);
+            if (!res.ok) {
+              setRenameError(res.error || 'Nome inválido.');
+              return;
+            }
+            setRenamingTableId(null);
+            setRenameError(null);
+          };
+
           return (
             <div key={table.id} className="rounded border border-transparent hover:border-slate-200 dark:hover:border-slate-700">
               {/* Table Header */}
               <div
-                onClick={() => toggleTable(table.id)}
-                className="flex items-center justify-between p-1.5 rounded cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 font-medium"
+                onClick={() => {
+                  if (!isRenamingThis) toggleTable(table.id);
+                }}
+                title={headerTitle}
+                className="flex items-center justify-between p-1.5 rounded cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 font-medium group"
               >
-                <div className="flex items-center gap-1.5 truncate">
+                <div className="flex items-center gap-1.5 truncate flex-1 min-w-0">
                   {isExpanded ? (
                     <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                   ) : (
@@ -221,10 +268,103 @@ export const FieldsPane: React.FC = React.memo(() => {
                   ) : (
                     <Database className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 shrink-0" />
                   )}
-                  <span className="truncate text-[11px] font-semibold">{table.name}</span>
+                  {isRenamingThis ? (
+                    <div
+                      className="flex items-center gap-1 flex-1 min-w-0"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="text"
+                        autoFocus
+                        value={renameDraft}
+                        onChange={(e) => {
+                          setRenameDraft(e.target.value);
+                          setRenameError(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') commitRename();
+                          if (e.key === 'Escape') {
+                            setRenamingTableId(null);
+                            setRenameError(null);
+                          }
+                        }}
+                        className="flex-1 min-w-0 bg-white dark:bg-slate-950 border border-amber-500 rounded px-1.5 py-0.5 text-[11px] font-semibold text-slate-900 dark:text-slate-100 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={commitRename}
+                        title="Confirmar renomeação"
+                        className="p-0.5 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 rounded"
+                      >
+                        <Check className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRenamingTableId(null);
+                          setRenameError(null);
+                        }}
+                        title="Cancelar"
+                        className="p-0.5 text-slate-400 hover:text-red-500 rounded"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="truncate text-[11px] font-semibold">{table.name}</span>
+                  )}
                 </div>
-                <span className="text-[10px] text-slate-400 font-normal">{table.rows.length}</span>
+                {!isRenamingThis && (
+                  <div className="flex items-center gap-0.5 shrink-0 ml-1">
+                    {canRefreshTable && (
+                      <button
+                        type="button"
+                        disabled={isRefreshingData}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void refreshTable(table.id);
+                        }}
+                        title={`Atualizar "${table.name}" a partir da fonte`}
+                        className="p-1 rounded hover:bg-emerald-100/70 dark:hover:bg-emerald-950/50 text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isRefreshingData ? 'animate-spin' : ''}`} />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openReplaceTableModal(table.id);
+                      }}
+                      title={`Substituir dados / mapear planilha para "${table.name}"`}
+                      className="p-1 rounded hover:bg-blue-100/70 dark:hover:bg-blue-950/50 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Upload className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenamingTableId(table.id);
+                        setRenameDraft(table.name);
+                        setRenameError(null);
+                      }}
+                      title={`Renomear tabela "${table.name}"`}
+                      className="p-1 rounded hover:bg-amber-100/70 dark:hover:bg-amber-950/50 text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Edit2 className="w-3 h-3" />
+                    </button>
+                    <span className="text-[10px] text-slate-400 font-normal pl-0.5 group-hover:hidden">
+                      {table.rows.length}
+                    </span>
+                  </div>
+                )}
               </div>
+              {isRenamingThis && renameError && (
+                <div className="px-2 pb-1 text-[10px] text-red-600 dark:text-red-400 font-medium">
+                  {renameError}
+                </div>
+              )}
 
               {/* Table Columns and Measures */}
               {isExpanded && (

@@ -25,7 +25,7 @@ Foco em deixar os relatórios importados do Power BI o mais fiéis possível vis
 
 ---
 
-## `v0.4.0` — Motor DAX & QueryPlanner Nativo em Rust + DuckDB (Atual)
+## `v0.4.0` — Motor DAX & QueryPlanner Nativo em Rust + DuckDB (Concluído)
 Foco em escalar consultas para o backend Rust nativo e melhorar a análise hierárquica:
 - [x] **QueryPlanner Nativo em Rust (`query_visual_native`):** execução de consultas por visual (cartões, multi-cards, segmentadores, gráficos agrupados e matrizes) diretamente sobre o `DaxModel` em Rust com fallback automático.
 - [x] **Expansão de Funções DAX em Rust:** Time Intelligence (`TOTALYTD`, `TOTALMTD`, `DATESYTD`, `DATESMTD`, `PREVIOUSYEAR`, `NEXTMONTH`, `NEXTYEAR`, `PREVIOUSQUARTER`), `RANKX` e escalares (`INT`, `SQRT`, `POWER`).
@@ -34,11 +34,12 @@ Foco em escalar consultas para o backend Rust nativo e melhorar a análise hier�
 
 ---
 
-## `v0.5.0` — Fontes de Dados Reais & Power Query (M)
-Foco em substituir a VM no fluxo diário de atualização de dados:
-- Remapeamento automático de caminhos Windows → Linux ao abrir `.pbip` criado no Windows e botão **Atualizar Dados (Refresh)** sem reimportar o projeto.
-- Evoluir o interpretador de **Power Query (M)** em Rust (filtros, colunas calculadas, merges/joins, `Table.Combine`).
-- Conectores nativos via DuckDB/Rust: **PostgreSQL**, **MySQL**, **SQLite**, **Parquet**, **JSON** e **API REST/OData**.
+## `v0.5.0` — Atualização Real de Fontes, Mapeamento de Tabelas & Conectores Nativos (Atual)
+Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dados:
+- [x] **Atualização Real (`Atualizar Dados`):** recarregamento direto dos arquivos vinculados (`.xlsx`, `.csv`, `.parquet`, `.json`, REST e `.pbip`) preservando páginas, visuais, medidas, filtros e relacionamentos.
+- [x] **Mapeamento, Substituição & Renomeação de Tabelas:** vincular qualquer aba do Excel (ex.: aba `Fato` → tabela `fLançamentos`), substituir dados de tabelas existentes sem quebrar o relatório e renomear tabelas atualizando automaticamente fórmulas DAX, relacionamentos, visuais e filtros.
+- [x] **Remapeamento Windows → Linux & Power Query (M):** resolução inteligente de caminhos vindos do Windows (`C:\Users\...`, subpastas locais) e suporte a `Table.RemoveColumns`, `Table.SelectColumns`, `Table.RenameColumns` e `Table.SelectRows`.
+- [x] **Conectores Nativos DuckDB:** suporte embutido para **Parquet**, **JSON** e ingestão direta de **API REST (JSON)**.
 
 ---
 

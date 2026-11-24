@@ -73,6 +73,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
   const gridSize = useBiStore(s => s.gridSize);
   const snapToGrid = useBiStore(s => s.snapToGrid);
   const isDarkMode = useBiStore(s => s.isDarkMode);
+  const dataVersion = useBiStore(s => s.dataVersion);
 
   const { t, language, currency } = useTranslation();
   const currSymbol = getCurrencySymbol(currency);
@@ -248,7 +249,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
         queryError: err?.message || String(err),
       };
     }
-  }, [visual.id, visual.type, visual.dataConfig, visual.visualCalculations, filters, tables, measures]);
+  }, [visual.id, visual.type, visual.dataConfig, visual.visualCalculations, filters, tables, measures, dataVersion]);
 
   const supportsNativeRustQuery =
     isTauriRuntime() &&
@@ -260,8 +261,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
   const nativeCacheKey = useMemo(() => {
     if (!supportsNativeRustQuery) return '';
-    return `${tables.length}:${measures.length}|${visual.id}|${visual.type}|${JSON.stringify(visual.dataConfig)}|${JSON.stringify(filters)}`;
-  }, [supportsNativeRustQuery, tables.length, measures.length, visual.id, visual.type, visual.dataConfig, filters]);
+    return `${dataVersion}|${tables.length}:${measures.length}|${visual.id}|${visual.type}|${JSON.stringify(visual.dataConfig)}|${JSON.stringify(filters)}`;
+  }, [supportsNativeRustQuery, dataVersion, tables.length, measures.length, visual.id, visual.type, visual.dataConfig, filters]);
 
   const [asyncNativeResult, setAsyncNativeResult] = useState<NativeVisualQueryResult | null>(() =>
     nativeCacheKey ? nativeQueryCache.get(nativeCacheKey) ?? null : null

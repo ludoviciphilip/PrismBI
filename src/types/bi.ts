@@ -27,12 +27,23 @@ export interface ColumnProfile {
   errorCount?: number;
 }
 
+export interface TableSourceConfig {
+  type: 'xlsx' | 'csv' | 'parquet' | 'json' | 'pbip' | 'rest' | 'sample';
+  filePath?: string;
+  sheetName?: string;
+  mScript?: string;
+  pbipRoot?: string;
+  url?: string;
+  lastRefreshedAt?: string;
+}
+
 export interface Table {
   id: string;
   name: string;
   originalName: string;
   columns: Column[];
   rows: Record<string, any>[];
+  sourceConfig?: TableSourceConfig;
   isCalculated?: boolean;
   expression?: string;
   isCalendar?: boolean;

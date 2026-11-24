@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import {
@@ -24,10 +25,12 @@ import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { mockDbAdapter, restApiAdapter } from '../../adapters/dataSourceAdapter';
 import { postgresMockConnector, POSTGRES_TABLES, PostgresTableDef } from '../../adapters/postgresMockAdapter';
-import { Table, Column, DataType } from '../../types/bi';
+import { Table, Column, DataType, TableSourceConfig } from '../../types/bi';
 import { DataImportService } from '../../services/dataImportService';
 import {
   importCsvNative,
+  importParquetNative,
+  importJsonNative,
   importXlsxNative,
   isTauriRuntime,
   pickDataFile,
@@ -35,20 +38,38 @@ import {
 
 interface SheetImportItem {
   sheetName: string;
+  sourceSheetName?: string;
   tableName: string;
   columns: Column[];
   rows: Record<string, any>[];
   selected: boolean;
+  targetMode: 'new' | 'replace';
+  targetTableId: string;
 }
 
 export const DataSourceModal: React.FC = () => {
-  const { dataSourceModalOpen, setDataSourceModalOpen, addTable, addTables, addRelationship, loadInitialSampleData } = useBiStore(useShallow(s => ({
+  const {
+    dataSourceModalOpen,
+    setDataSourceModalOpen,
+    addTable,
+    addTables,
+    addRelationship,
+    loadInitialSampleData,
+    tables,
+    replaceTargetTableId,
+    setReplaceTargetTableId,
+    replaceTableData,
+  } = useBiStore(useShallow(s => ({
     dataSourceModalOpen: s.dataSourceModalOpen,
     setDataSourceModalOpen: s.setDataSourceModalOpen,
     addTable: s.addTable,
     addTables: s.addTables,
     addRelationship: s.addRelationship,
     loadInitialSampleData: s.loadInitialSampleData,
+    tables: s.tables,
+    replaceTargetTableId: s.replaceTargetTableId,
+    setReplaceTargetTableId: s.setReplaceTargetTableId,
+    replaceTableData: s.replaceTableData,
   })));
   const [activeTab, setActiveTab] = useState<'files' | 'postgres' | 'api' | 'db' | 'samples'>('files');
   const [nativeImporting, setNativeImporting] = useState(false);
@@ -56,9 +77,27 @@ export const DataSourceModal: React.FC = () => {
   // File import state with multi-sheet support
   const [fileData, setFileData] = useState<{
     fileName: string;
+    filePath?: string;
+    sourceType: TableSourceConfig['type'];
     sheets: SheetImportItem[];
   } | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [apiImporting, setApiImporting] = useState(false);
+
+  useEffect(() => {
+    if (dataSourceModalOpen && replaceTargetTableId) {
+      setActiveTab('files');
+      setFileData(null);
+      setFileError(null);
+    }
+  }, [dataSourceModalOpen, replaceTargetTableId]);
+
+  const closeModal = () => {
+    setReplaceTargetTableId(null);
+    setFileData(null);
+    setFileError(null);
+    setDataSourceModalOpen(false);
+  };
 
   // PostgreSQL Mock state
   const [pgHost, setPgHost] = useState(postgresMockConnector.defaultHost);
@@ -99,6 +138,44 @@ export const DataSourceModal: React.FC = () => {
 
   if (!dataSourceModalOpen) return null;
 
+  const replaceTargetTable = replaceTargetTableId
+    ? tables.find(t => t.id === replaceTargetTableId || t.name === replaceTargetTableId) || null
+    : null;
+
+  const buildSheetItems = (
+    rawSheets: { sheetName: string; sourceSheetName?: string; tableName: string; columns: Column[]; rows: Record<string, any>[] }[]
+  ): SheetImportItem[] => {
+    const preferredSheet = replaceTargetTable?.sourceConfig?.sheetName?.toLowerCase();
+    let replaceMatchedIdx = -1;
+    if (replaceTargetTable) {
+      replaceMatchedIdx = rawSheets.findIndex(
+        s =>
+          (preferredSheet && (s.sourceSheetName || s.sheetName).toLowerCase() === preferredSheet) ||
+          s.sheetName.toLowerCase() === replaceTargetTable.name.toLowerCase() ||
+          s.tableName.toLowerCase() === replaceTargetTable.name.toLowerCase()
+      );
+      if (replaceMatchedIdx < 0) replaceMatchedIdx = 0;
+    }
+
+    return rawSheets.map((s, idx) => {
+      if (replaceTargetTable) {
+        const isTarget = idx === replaceMatchedIdx;
+        return {
+          ...s,
+          selected: isTarget,
+          targetMode: isTarget ? 'replace' : 'new',
+          targetTableId: isTarget ? replaceTargetTable.id : '',
+        };
+      }
+      return {
+        ...s,
+        selected: true,
+        targetMode: 'new',
+        targetTableId: '',
+      };
+    });
+  };
+
   const handleNativeImportFile = async () => {
     setFileError(null);
     const path = await pickDataFile();
@@ -107,25 +184,40 @@ export const DataSourceModal: React.FC = () => {
     setNativeImporting(true);
     try {
       const lower = path.toLowerCase();
-      const importedList =
-        lower.endsWith('.xlsx') || lower.endsWith('.xls')
-          ? await importXlsxNative(path)
-          : [await importCsvNative(path)];
+      let sourceType: TableSourceConfig['type'] = 'csv';
+      let importedList;
+      if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
+        sourceType = 'xlsx';
+        importedList = await importXlsxNative(path);
+      } else if (lower.endsWith('.parquet')) {
+        sourceType = 'parquet';
+        importedList = [await importParquetNative(path)];
+      } else if (lower.endsWith('.json') || lower.endsWith('.ndjson')) {
+        sourceType = 'json';
+        importedList = [await importJsonNative(path)];
+      } else {
+        sourceType = 'csv';
+        importedList = [await importCsvNative(path)];
+      }
+
+      const mapped = importedList.map(item => ({
+        sheetName: item.sheetName || item.originalName,
+        sourceSheetName: item.sheetName || item.originalName,
+        tableName: item.tableName,
+        columns: item.columns.map((c, idx) => ({
+          id: `col_${idx}_${c.name}`,
+          name: c.name,
+          originalName: c.originalName,
+          dataType: c.dataType || 'text',
+        })),
+        rows: item.rows,
+      }));
 
       setFileData({
         fileName: path.split('/').pop() || path,
-        sheets: importedList.map(item => ({
-          sheetName: item.originalName,
-          tableName: item.tableName,
-          columns: item.columns.map((c, idx) => ({
-            id: `col_${idx}_${c.name}`,
-            name: c.name,
-            originalName: c.originalName,
-            dataType: c.dataType || 'text',
-          })),
-          rows: item.rows,
-          selected: true,
-        })),
+        filePath: path,
+        sourceType,
+        sheets: buildSheetItems(mapped),
       });
     } catch (err: any) {
       setFileError(err?.message || 'Erro ao importar arquivo via Rust + DuckDB.');
@@ -147,41 +239,44 @@ export const DataSourceModal: React.FC = () => {
         const result = await DataImportService.parseCsv(file);
         setFileData({
           fileName: file.name,
-          sheets: [
+          sourceType: 'csv',
+          sheets: buildSheetItems([
             {
               sheetName: result.tableName,
               tableName: result.tableName,
               columns: result.columns,
               rows: result.rows,
-              selected: true,
             },
-          ],
+          ]),
         });
       } else if (ext === 'xlsx' || ext === 'xls') {
         const result = await DataImportService.parseExcel(file);
         setFileData({
           fileName: file.name,
-          sheets: result.sheets.map(s => ({
-            ...s,
-            selected: true,
-          })),
+          sourceType: 'xlsx',
+          sheets: buildSheetItems(
+            result.sheets.map(s => ({
+              ...s,
+              sourceSheetName: s.sheetName,
+            }))
+          ),
         });
       } else if (ext === 'json') {
         const result = await DataImportService.parseJson(file);
         setFileData({
           fileName: file.name,
-          sheets: [
+          sourceType: 'json',
+          sheets: buildSheetItems([
             {
               sheetName: result.tableName,
               tableName: result.tableName,
               columns: result.columns,
               rows: result.rows,
-              selected: true,
             },
-          ],
+          ]),
         });
       } else {
-        setFileError('Formato não suportado. Utilize .xlsx, .csv, .tsv ou .json.');
+        setFileError('Formato não suportado. Utilize .xlsx, .csv, .tsv, .parquet ou .json.');
       }
     } catch (err: any) {
       setFileError(err.message || 'Erro ao processar arquivo.');
@@ -206,6 +301,17 @@ export const DataSourceModal: React.FC = () => {
     });
   };
 
+  const handleUpdateSheetMapping = (
+    sheetName: string,
+    patch: Partial<Pick<SheetImportItem, 'tableName' | 'targetMode' | 'targetTableId' | 'selected'>>
+  ) => {
+    if (!fileData) return;
+    setFileData({
+      ...fileData,
+      sheets: fileData.sheets.map(s => (s.sheetName === sheetName ? { ...s, ...patch } : s)),
+    });
+  };
+
   const handleConfirmImportFile = () => {
     if (!fileData) return;
     const selectedSheets = fileData.sheets.filter(s => s.selected);
@@ -214,17 +320,104 @@ export const DataSourceModal: React.FC = () => {
       return;
     }
 
-    const newTables: Table[] = selectedSheets.map(s => ({
-      id: s.tableName.replace(/\s+/g, '_'),
-      name: s.tableName.replace(/\s+/g, '_'),
-      originalName: s.sheetName,
-      columns: s.columns,
-      rows: s.rows,
-    }));
+    const nowIso = new Date().toISOString();
+    const newTables: Table[] = [];
 
-    addTables(newTables);
-    setDataSourceModalOpen(false);
-    setFileData(null);
+    for (const s of selectedSheets) {
+      const sheetConfig: TableSourceConfig = {
+        type: fileData.sourceType,
+        filePath: fileData.filePath,
+        sheetName: fileData.sourceType === 'xlsx' ? (s.sourceSheetName || s.sheetName) : undefined,
+        lastRefreshedAt: nowIso,
+      };
+
+      if (s.targetMode === 'replace' && s.targetTableId) {
+        replaceTableData(s.targetTableId, s.columns, s.rows, sheetConfig);
+      } else {
+        const cleanName = (s.tableName || s.sheetName).trim().replace(/\s+/g, '_');
+        newTables.push({
+          id: cleanName,
+          name: cleanName,
+          originalName: s.sheetName,
+          columns: s.columns,
+          rows: s.rows,
+          sourceConfig: sheetConfig,
+        });
+      }
+    }
+
+    if (newTables.length > 0) {
+      addTables(newTables);
+    }
+    closeModal();
+  };
+
+  const handleImportRestApiData = async () => {
+    setApiTesting(true);
+    setApiImporting(true);
+    setApiResult(null);
+    try {
+      const resp = await fetch(apiUrl);
+      if (!resp.ok) {
+        throw new Error(`Falha HTTP ${resp.status} ao buscar ${apiUrl}`);
+      }
+      const json = await resp.json();
+      const rows: Record<string, any>[] = Array.isArray(json)
+        ? json
+        : Array.isArray((json as any)?.data)
+        ? (json as any).data
+        : (Object.values(json || {}).find(v => Array.isArray(v)) as Record<string, any>[]) || [];
+
+      if (!Array.isArray(rows) || rows.length === 0) {
+        throw new Error('O endpoint REST respondeu sem registros de array JSON.');
+      }
+
+      const keys = Array.from(new Set(rows.slice(0, 50).flatMap(r => Object.keys(r || {}))));
+      const cols: Column[] = keys.map((key, idx) => {
+        const sample = rows.find(r => r[key] !== null && r[key] !== undefined)?.[key];
+        const dataType: DataType =
+          typeof sample === 'number'
+            ? 'number'
+            : typeof sample === 'boolean'
+            ? 'boolean'
+            : typeof sample === 'string' && /^\d{4}-\d{2}-\d{2}/.test(sample)
+            ? 'date'
+            : 'text';
+        return {
+          id: `rest_col_${idx}_${key}`,
+          name: key,
+          originalName: key,
+          dataType,
+        };
+      });
+
+      const restConfig: TableSourceConfig = {
+        type: 'rest',
+        url: apiUrl,
+        lastRefreshedAt: new Date().toISOString(),
+      };
+
+      if (replaceTargetTable) {
+        replaceTableData(replaceTargetTable.id, cols, rows, restConfig);
+      } else {
+        const rawSlug = apiUrl.split('/').filter(Boolean).pop()?.replace(/[^a-zA-Z0-9_]/g, '_') || 'api_dados';
+        const tblName = `rest_${rawSlug}`;
+        addTable({
+          id: tblName,
+          name: tblName,
+          originalName: tblName,
+          columns: cols,
+          rows,
+          sourceConfig: restConfig,
+        });
+      }
+      closeModal();
+    } catch (err: any) {
+      setApiResult({ success: false, message: err?.message || 'Erro ao importar JSON REST.' });
+    } finally {
+      setApiTesting(false);
+      setApiImporting(false);
+    }
   };
 
   const handleTestDatabase = async () => {
@@ -324,8 +517,8 @@ export const DataSourceModal: React.FC = () => {
     setApiTesting(false);
   };
 
-  return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+  return createPortal(
+    <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4">
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-3xl w-full p-6 text-xs flex flex-col max-h-[88vh] overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
@@ -336,12 +529,12 @@ export const DataSourceModal: React.FC = () => {
             <div>
               <h3 className="font-bold text-slate-900 dark:text-slate-100 text-sm">Obter Dados & Conectores</h3>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Importe planilhas, APIs, PostgreSQL simulado ou configure fontes corporativas.
+                Importe ou substitua tabelas via Excel, CSV, Parquet, JSON, API REST ou banco de dados.
               </p>
             </div>
           </div>
           <button
-            onClick={() => setDataSourceModalOpen(false)}
+            onClick={closeModal}
             className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 text-sm font-bold p-1 cursor-pointer"
           >
             ✕
@@ -369,7 +562,7 @@ export const DataSourceModal: React.FC = () => {
               activeTab === 'files' ? 'bg-amber-500 text-slate-950 shadow-xs' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
             }`}
           >
-            Excel / CSV / JSON
+            Excel / CSV / Parquet / JSON
           </button>
           <button
             onClick={() => setActiveTab('api')}
@@ -729,6 +922,22 @@ export const DataSourceModal: React.FC = () => {
           {/* TAB 1: LOCAL FILES */}
           {activeTab === 'files' && (
             <div className="space-y-4">
+              {replaceTargetTable && (
+                <div className="p-3 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-800 flex items-center justify-between gap-3 text-blue-950 dark:text-blue-200">
+                  <div className="text-[11px] leading-snug">
+                    <strong>Modo de Substituição de Tabela:</strong> você está substituindo os dados de{' '}
+                    <code className="px-1.5 py-0.5 rounded bg-white dark:bg-slate-900 font-bold">{replaceTargetTable.name}</code>.{' '}
+                    Escolha abaixo qualquer arquivo ou aba (ex.: aba &quot;Fato&quot;) — medidas, visuais, relacionamentos e filtros serão preservados.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setReplaceTargetTableId(null)}
+                    className="px-2 py-1 rounded bg-white dark:bg-slate-800 border border-blue-200 dark:border-blue-700 text-[10px] font-semibold shrink-0 cursor-pointer"
+                  >
+                    Importar como nova
+                  </button>
+                </div>
+              )}
               {isTauriRuntime() && (
                 <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 flex items-center justify-between gap-3">
                   <div>
@@ -737,7 +946,7 @@ export const DataSourceModal: React.FC = () => {
                       <span>Importação Nativa (Rust + DuckDB)</span>
                     </div>
                     <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5">
-                      Lê CSV e Excel (.xlsx/.xls) diretamente do disco no motor DuckDB nativo, sem carregar tudo na RAM do navegador.
+                      Lê Excel (.xlsx/.xls), CSV, Parquet e JSON diretamente do disco no motor DuckDB nativo e vincula a fonte para futuras atualizações.
                     </p>
                   </div>
                   <button
@@ -746,7 +955,7 @@ export const DataSourceModal: React.FC = () => {
                     disabled={nativeImporting}
                     className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold text-xs shadow-xs shrink-0 cursor-pointer"
                   >
-                    {nativeImporting ? 'Importando...' : 'Abrir CSV / Excel Nativo'}
+                    {nativeImporting ? 'Importando...' : 'Abrir Arquivo Nativo'}
                   </button>
                 </div>
               )}
@@ -756,7 +965,7 @@ export const DataSourceModal: React.FC = () => {
                   Clique ou arraste seu arquivo aqui
                 </span>
                 <span className="text-slate-400 text-[11px] mt-1">
-                  Formatos suportados: Excel (.xlsx, .xls), CSV, TSV e JSON
+                  Formatos suportados: Excel (.xlsx, .xls), CSV, TSV, Parquet e JSON
                 </span>
                 <input
                   type="file"
@@ -811,33 +1020,28 @@ export const DataSourceModal: React.FC = () => {
                     )}
                   </div>
 
-                  {/* Worksheets list */}
-                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                  {/* Worksheets list with target table mapping */}
+                  <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
                     {fileData.sheets.map(s => (
                       <div
                         key={s.sheetName}
                         onClick={() => handleToggleSheet(s.sheetName)}
-                        className={`flex items-center justify-between p-2.5 rounded-lg border cursor-pointer transition-all ${
+                        className={`flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg border cursor-pointer transition-all ${
                           s.selected
                             ? 'bg-white border-emerald-400 shadow-xs'
                             : 'bg-slate-50/80 border-slate-200 opacity-60'
                         }`}
                       >
-                        <div className="flex items-center gap-2.5">
+                        <div className="flex items-center gap-2.5 min-w-0">
                           <input
                             type="checkbox"
                             checked={s.selected}
                             onChange={() => {}}
                             className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500"
                           />
-                          <div>
+                          <div className="min-w-0">
                             <div className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
                               <span>{s.sheetName}</span>
-                              {s.tableName !== s.sheetName && (
-                                <span className="text-[10px] text-slate-400 font-normal">
-                                  ({s.tableName})
-                                </span>
-                              )}
                             </div>
                             <div className="text-[10px] text-slate-500">
                               {s.rows.length.toLocaleString('pt-BR')} registros • {s.columns.length} colunas
@@ -845,15 +1049,49 @@ export const DataSourceModal: React.FC = () => {
                           </div>
                         </div>
 
-                        <span
-                          className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                            s.selected
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-slate-200 text-slate-500'
-                          }`}
+                        <div
+                          className="flex items-center gap-1.5 flex-wrap"
+                          onClick={(e) => e.stopPropagation()}
                         >
-                          {s.selected ? 'Importar' : 'Ignorar'}
-                        </span>
+                          <select
+                            value={s.targetMode === 'replace' && s.targetTableId ? `replace:${s.targetTableId}` : 'new'}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (val.startsWith('replace:')) {
+                                handleUpdateSheetMapping(s.sheetName, {
+                                  selected: true,
+                                  targetMode: 'replace',
+                                  targetTableId: val.slice('replace:'.length),
+                                });
+                              } else {
+                                handleUpdateSheetMapping(s.sheetName, {
+                                  targetMode: 'new',
+                                  targetTableId: '',
+                                });
+                              }
+                            }}
+                            className="text-[10px] border border-slate-300 rounded px-1.5 py-1 bg-slate-50 text-slate-800 font-semibold"
+                          >
+                            <option value="new">Criar nova tabela</option>
+                            {tables.map(t => (
+                              <option key={t.id} value={`replace:${t.id}`}>
+                                Substituir: {t.name}
+                              </option>
+                            ))}
+                          </select>
+
+                          {s.targetMode === 'new' && (
+                            <input
+                              type="text"
+                              value={s.tableName}
+                              onChange={(e) =>
+                                handleUpdateSheetMapping(s.sheetName, { tableName: e.target.value })
+                              }
+                              placeholder="Nome da tabela"
+                              className="w-32 text-[10px] border border-slate-300 rounded px-1.5 py-1 bg-white text-slate-800 font-mono"
+                            />
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -866,9 +1104,11 @@ export const DataSourceModal: React.FC = () => {
                       type="button"
                       onClick={handleConfirmImportFile}
                       disabled={fileData.sheets.filter(s => s.selected).length === 0}
-                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-lg text-xs shadow-xs transition-colors"
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-lg text-xs shadow-xs transition-colors cursor-pointer"
                     >
-                      {fileData.sheets.filter(s => s.selected).length > 1
+                      {fileData.sheets.some(s => s.selected && s.targetMode === 'replace')
+                        ? 'Aplicar Atualização / Carregar no Modelo'
+                        : fileData.sheets.filter(s => s.selected).length > 1
                         ? `Carregar ${fileData.sheets.filter(s => s.selected).length} Tabelas no Modelo`
                         : 'Carregar no Modelo'}
                     </button>
@@ -896,17 +1136,26 @@ export const DataSourceModal: React.FC = () => {
                   <AlertCircle className="w-3.5 h-3.5" /> Tratamento de CORS no Navegador:
                 </div>
                 <p>
-                  Requisições diretas do navegador exigem que o servidor de destino permita origens externas (cabeçalho <code>Access-Control-Allow-Origin: *</code>). Para APIs restritas, use a configuração de Gateway On-Premises.
+                  Requisições diretas do navegador exigem que o servidor de destino permita origens externas (cabeçalho <code>Access-Control-Allow-Origin: *</code>). Endpoints públicos retornando JSON podem ser carregados diretamente no modelo e atualizados via botão Atualizar.
                 </p>
               </div>
 
-              <button
-                onClick={handleTestApi}
-                disabled={apiTesting}
-                className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-lg"
-              >
-                {apiTesting ? 'Testando...' : 'Testar Conexão REST'}
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={handleTestApi}
+                  disabled={apiTesting}
+                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-lg cursor-pointer"
+                >
+                  {apiTesting && !apiImporting ? 'Testando...' : 'Testar Conexão REST'}
+                </button>
+                <button
+                  onClick={() => void handleImportRestApiData()}
+                  disabled={apiTesting || !apiUrl.trim()}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-lg cursor-pointer"
+                >
+                  {apiImporting ? 'Carregando JSON...' : replaceTargetTable ? `Substituir "${replaceTargetTable.name}" via REST` : 'Importar Dados JSON no Modelo'}
+                </button>
+              </div>
 
               {apiResult && (
                 <div className={`p-3 rounded-lg border text-xs ${apiResult.success ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-800'}`}>
@@ -1088,6 +1337,7 @@ export const DataSourceModal: React.FC = () => {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

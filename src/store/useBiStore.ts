@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import {
   ActiveView,
   Table,
+  Column,
+  TableSourceConfig,
   Relationship,
   Measure,
   Page,
@@ -29,7 +31,13 @@ import { EtlEngine } from '../engine/etlEngine';
 import { saveProjectToStorage, loadProjectFromStorage, ProjectState } from '../engine/storage';
 import { migrateProjectState, syncWhatIfWithModel } from '../engine/migrations';
 import { globalDuckDb } from '../engine/duckdbEngine';
-import { isTauriRuntime, syncModelToRust } from '../bridge/tauriBridge';
+import {
+  isTauriRuntime,
+  syncModelToRust,
+  refreshTableNative,
+  refreshPbipTables,
+  NativeImportedTable,
+} from '../bridge/tauriBridge';
 import {
   SupportedLocale,
   SupportedCurrency,
@@ -120,6 +128,14 @@ interface BiState {
   projectName: string;
   setProjectName: (name: string) => void;
   lastSavedAt: string | null;
+  dataVersion: number;
+  sourcePbipPath: string | null;
+  isRefreshingData: boolean;
+  refreshStatus: { type: 'success' | 'warning' | 'error'; message: string; timestamp: string } | null;
+  setRefreshStatus: (status: { type: 'success' | 'warning' | 'error'; message: string; timestamp: string } | null) => void;
+  replaceTargetTableId: string | null;
+  setReplaceTargetTableId: (tableId: string | null) => void;
+  openReplaceTableModal: (tableId: string) => void;
 
   // Schema
   tables: Table[];
@@ -131,6 +147,15 @@ interface BiState {
   updateTable: (id: string, partial: Partial<Table>) => void;
   deleteTable: (id: string) => void;
   duplicateTable: (id: string) => Table | undefined;
+  renameTable: (tableId: string, newName: string) => { ok: boolean; error?: string };
+  replaceTableData: (
+    targetTableId: string,
+    newColumns: Column[],
+    newRows: Record<string, any>[],
+    newSourceConfig?: TableSourceConfig
+  ) => boolean;
+  refreshTable: (tableId: string) => Promise<{ ok: boolean; message: string }>;
+  refreshAllData: () => Promise<{ refreshedTables: string[]; warnings: string[]; error?: string }>;
 
   addRelationship: (rel: Relationship) => void;
   deleteRelationship: (id: string) => void;
@@ -586,28 +611,129 @@ setGlobalCurrency(initialCurrency);
 const initialThemeMode = getStoredThemeMode();
 const initialIsDark = applyThemeToDocument(initialThemeMode);
 
-function pushModelToRustAsync(tables: Table[], relationships: Relationship[], measures: Measure[]) {
+async function pushModelToRustAsync(
+  tables: Table[],
+  relationships: Relationship[],
+  measures: Measure[],
+  onSynced?: () => void
+) {
   if (!isTauriRuntime()) return;
-  syncModelToRust({
-    tables: tables.map(t => ({
-      name: t.name,
-      columns: t.columns.map(c => c.name),
-      rows: t.rows || [],
-    })),
-    relationships: relationships.map(r => ({
-      fromTable: r.fromTable,
-      fromColumn: r.fromColumn,
-      toTable: r.toTable,
-      toColumn: r.toColumn,
-      crossFilterDirection: r.crossFilterDirection,
-      isActive: r.isActive,
-    })),
-    measures: measures.map(m => ({
-      name: m.name,
-      tableName: m.tableName,
-      formula: m.formula,
-    })),
-  }).catch(() => {});
+  try {
+    await syncModelToRust({
+      tables: tables.map(t => ({
+        name: t.name,
+        columns: t.columns.map(c => c.name),
+        rows: t.rows || [],
+      })),
+      relationships: relationships.map(r => ({
+        fromTable: r.fromTable,
+        fromColumn: r.fromColumn,
+        toTable: r.toTable,
+        toColumn: r.toColumn,
+        crossFilterDirection: r.crossFilterDirection,
+        isActive: r.isActive,
+      })),
+      measures: measures.map(m => ({
+        name: m.name,
+        tableName: m.tableName,
+        formula: m.formula,
+      })),
+    });
+    onSynced?.();
+  } catch {
+    // Ignore bridge errors when running outside Tauri
+  }
+}
+
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function formatDaxTableToken(tableName: string): string {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)
+    ? tableName
+    : `'${tableName.replace(/'/g, "''")}'`;
+}
+
+function rewriteTableRefsInDax(formula: string, oldNames: string[], newName: string): string {
+  if (!formula) return formula;
+  let updated = formula;
+  const formattedNew = formatDaxTableToken(newName);
+  for (const oldName of oldNames) {
+    if (!oldName || oldName === newName) continue;
+    const esc = escapeRegExp(oldName);
+    // Quoted table reference followed by column bracket: 'Old Name'[Col]
+    updated = updated.replace(new RegExp(`'${esc}'\\[`, 'gi'), `${formattedNew}[`);
+    // Unquoted table reference followed by column bracket: OldName[Col]
+    updated = updated.replace(new RegExp(`(^|[^A-Za-z0-9_'])${esc}\\[`, 'gi'), `$1${formattedNew}[`);
+    // Table function argument like ALL('Old Name') or ALL(OldName)
+    updated = updated.replace(
+      new RegExp(`(\\b(?:ALL|ALLSELECTED|ALLEXCEPT|VALUES|DISTINCT)\\s*\\(\\s*)(?:'${esc}'|${esc})(\\s*[\\),])`, 'gi'),
+      `$1${formattedNew}$2`
+    );
+  }
+  return updated;
+}
+
+function mergeRefreshedColumns(
+  incomingColumns: Column[],
+  existingColumns: Column[],
+  tableId: string
+): Column[] {
+  const existingMap = new Map(existingColumns.map(c => [c.name.toLowerCase(), c]));
+  const merged = incomingColumns.map((col, idx) => {
+    const prev = existingMap.get(col.name.toLowerCase());
+    if (!prev) {
+      return {
+        ...col,
+        id: col.id || `${tableId}_col_${idx}`,
+      };
+    }
+    return {
+      ...col,
+      id: prev.id,
+      format: col.format || prev.format,
+      sortByColumn: col.sortByColumn || prev.sortByColumn,
+      isHidden: prev.isHidden,
+      description: prev.description,
+      dataCategory: prev.dataCategory,
+      dataType: prev.dataType !== 'text' || col.dataType === 'text' ? (col.dataType || prev.dataType) : col.dataType,
+    };
+  });
+  // Keep calculated columns defined on the table if any
+  for (const prev of existingColumns) {
+    if (prev.isCalculated && !merged.some(m => m.name.toLowerCase() === prev.name.toLowerCase())) {
+      merged.push(prev);
+    }
+  }
+  return merged;
+}
+
+function nativePayloadToColumns(payload: NativeImportedTable, tableId: string): Column[] {
+  return payload.columns.map((c, idx) => ({
+    id: `${tableId}_col_${idx}_${c.name}`,
+    name: c.name,
+    originalName: c.originalName,
+    dataType: c.dataType || 'text',
+  }));
+}
+
+function inferColumnsFromJsonRows(rows: Record<string, any>[], tableId: string): Column[] {
+  if (!rows || rows.length === 0) return [];
+  const keys = Array.from(new Set(rows.slice(0, 50).flatMap(r => Object.keys(r || {}))));
+  return keys.map((key, idx) => {
+    const sample = rows.find(r => r[key] !== null && r[key] !== undefined && r[key] !== '')?.[key];
+    let dataType: Column['dataType'] = 'text';
+    if (typeof sample === 'number') dataType = 'number';
+    else if (typeof sample === 'boolean') dataType = 'boolean';
+    else if (typeof sample === 'string' && /^\d{4}-\d{2}-\d{2}/.test(sample)) dataType = 'date';
+    return {
+      id: `${tableId}_col_${idx}_${key}`,
+      name: key,
+      originalName: key,
+      dataType,
+    };
+  });
 }
 
 export const useBiStore = create<BiState>((set, get) => {
@@ -639,48 +765,502 @@ export const useBiStore = create<BiState>((set, get) => {
     projectName: 'Relatório Executivo Geral - InsightHub',
     setProjectName: (name) => set({ projectName: name }),
     lastSavedAt: null,
+    dataVersion: 0,
+    sourcePbipPath: null,
+    isRefreshingData: false,
+    refreshStatus: null,
+    setRefreshStatus: (refreshStatus) => set({ refreshStatus }),
+    replaceTargetTableId: null,
+    setReplaceTargetTableId: (replaceTargetTableId) => set({ replaceTargetTableId }),
+    openReplaceTableModal: (tableId) =>
+      set({
+        replaceTargetTableId: tableId,
+        selectedVisualId: null,
+        dataSourceModalOpen: true,
+      }),
 
     tables: initialSynced.tables,
     relationships: initialData.relationships,
     measures: initialSynced.measures,
 
     setTables: (tables) => {
-      set({ tables });
+      set(s => ({ tables, dataVersion: s.dataVersion + 1 }));
       globalDataEngine.setSchema(tables, get().relationships, get().measures);
       tables.forEach(t => globalDuckDb.registerTable(t));
-      pushModelToRustAsync(tables, get().relationships, get().measures);
+      pushModelToRustAsync(tables, get().relationships, get().measures, () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
     },
 
     addTable: (table) => {
       const newTables = [...get().tables, table];
-      set({ tables: newTables });
+      set(s => ({ tables: newTables, dataVersion: s.dataVersion + 1 }));
       globalDataEngine.setSchema(newTables, get().relationships, get().measures);
       globalDuckDb.registerTable(table);
-      pushModelToRustAsync(newTables, get().relationships, get().measures);
+      pushModelToRustAsync(newTables, get().relationships, get().measures, () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
     },
 
     addTables: (newTbls) => {
       const newTables = [...get().tables, ...newTbls];
-      set({ tables: newTables });
+      set(s => ({ tables: newTables, dataVersion: s.dataVersion + 1 }));
       globalDataEngine.setSchema(newTables, get().relationships, get().measures);
       newTbls.forEach(t => globalDuckDb.registerTable(t));
-      pushModelToRustAsync(newTables, get().relationships, get().measures);
+      pushModelToRustAsync(newTables, get().relationships, get().measures, () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
     },
 
     updateTable: (id, partial) => {
       const newTables = get().tables.map(t => (t.id === id ? { ...t, ...partial } : t));
-      set({ tables: newTables });
+      set(s => ({ tables: newTables, dataVersion: s.dataVersion + 1 }));
       globalDataEngine.setSchema(newTables, get().relationships, get().measures);
       const updated = newTables.find(t => t.id === id);
       if (updated) globalDuckDb.registerTable(updated);
-      pushModelToRustAsync(newTables, get().relationships, get().measures);
+      pushModelToRustAsync(newTables, get().relationships, get().measures, () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
     },
 
     deleteTable: (id) => {
-      const newTables = get().tables.filter(t => t.id !== id);
-      const newRels = get().relationships.filter(r => r.fromTable !== id && r.toTable !== id);
-      set({ tables: newTables, relationships: newRels });
+      const target = get().tables.find(t => t.id === id || t.name === id);
+      const matchNames = new Set([id, target?.id, target?.name].filter(Boolean) as string[]);
+      const newTables = get().tables.filter(t => !matchNames.has(t.id) && !matchNames.has(t.name));
+      const newRels = get().relationships.filter(
+        r => !matchNames.has(r.fromTable) && !matchNames.has(r.toTable)
+      );
+      set(s => ({ tables: newTables, relationships: newRels, dataVersion: s.dataVersion + 1 }));
       globalDataEngine.setSchema(newTables, newRels, get().measures);
+      pushModelToRustAsync(newTables, newRels, get().measures, () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
+    },
+
+    renameTable: (tableId, newName) => {
+      const trimmed = newName.trim();
+      if (!trimmed) {
+        return { ok: false, error: 'O nome da tabela não pode ficar em branco.' };
+      }
+      const target = get().tables.find(t => t.id === tableId || t.name === tableId);
+      if (!target) {
+        return { ok: false, error: 'Tabela não encontrada no modelo.' };
+      }
+      const oldNames = Array.from(new Set([target.id, target.name]));
+      const collision = get().tables.some(
+        t => t.id !== target.id && (t.name.toLowerCase() === trimmed.toLowerCase() || t.id.toLowerCase() === trimmed.toLowerCase())
+      );
+      if (collision) {
+        return { ok: false, error: `Já existe outra tabela chamada "${trimmed}".` };
+      }
+
+      const isOldMatch = (ref?: string | null) =>
+        !!ref && oldNames.some(o => o.toLowerCase() === ref.toLowerCase());
+
+      const renameQualifiedField = (field?: string) => {
+        if (!field) return field;
+        for (const o of oldNames) {
+          if (field.toLowerCase().startsWith(`${o.toLowerCase()}.`)) {
+            return `${trimmed}${field.slice(o.length)}`;
+          }
+        }
+        return field;
+      };
+
+      const newTables = get().tables.map(t =>
+        t.id === target.id
+          ? {
+              ...t,
+              id: trimmed,
+              name: trimmed,
+            }
+          : t
+      );
+
+      const newRels = get().relationships.map(r => ({
+        ...r,
+        fromTable: isOldMatch(r.fromTable) ? trimmed : r.fromTable,
+        toTable: isOldMatch(r.toTable) ? trimmed : r.toTable,
+      }));
+
+      const newMeasures = get().measures.map(m => ({
+        ...m,
+        tableName: isOldMatch(m.tableName) ? trimmed : m.tableName,
+        tableId: isOldMatch(m.tableId) ? trimmed : m.tableId,
+        formula: rewriteTableRefsInDax(m.formula, oldNames, trimmed),
+      }));
+
+      const newPages = get().pages.map(p => ({
+        ...p,
+        visuals: p.visuals.map(v => {
+          const dc = v.dataConfig;
+          const updatedDc = {
+            ...dc,
+            tableId: isOldMatch(dc.tableId) ? trimmed : dc.tableId,
+            xAxisField: renameQualifiedField(dc.xAxisField),
+            legendField: renameQualifiedField(dc.legendField),
+            sortField: renameQualifiedField(dc.sortField),
+            yAxisFields: dc.yAxisFields?.map(f => renameQualifiedField(f) || f),
+            drillFields: dc.drillFields?.map(f => renameQualifiedField(f) || f),
+            tooltipFields: dc.tooltipFields?.map(f => renameQualifiedField(f) || f),
+          };
+          return { ...v, dataConfig: updatedDc };
+        }),
+      }));
+
+      const newFilters = get().filters.map(f => ({
+        ...f,
+        tableId: isOldMatch(f.tableId) ? trimmed : f.tableId,
+      }));
+
+      const newRlsRoles = get().rlsRoles.map(role => ({
+        ...role,
+        rules: role.rules.map(rule => ({
+          ...rule,
+          tableId: isOldMatch(rule.tableId) ? trimmed : rule.tableId,
+        })),
+      }));
+
+      const nextSteps = { ...get().appliedSteps };
+      if (nextSteps[target.id] && target.id !== trimmed) {
+        nextSteps[trimmed] = nextSteps[target.id];
+        delete nextSteps[target.id];
+      }
+
+      set(s => ({
+        tables: newTables,
+        relationships: newRels,
+        measures: newMeasures,
+        pages: newPages,
+        filters: newFilters,
+        rlsRoles: newRlsRoles,
+        appliedSteps: nextSteps,
+        dataVersion: s.dataVersion + 1,
+      }));
+
+      globalDataEngine.setSchema(newTables, newRels, newMeasures);
+      const renamedTable = newTables.find(t => t.id === trimmed);
+      if (renamedTable) globalDuckDb.registerTable(renamedTable);
+      pushModelToRustAsync(newTables, newRels, newMeasures, () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
+
+      return { ok: true };
+    },
+
+    replaceTableData: (targetTableId, newColumns, newRows, newSourceConfig) => {
+      const target = get().tables.find(
+        t =>
+          t.id === targetTableId ||
+          t.name === targetTableId ||
+          t.name.toLowerCase() === targetTableId.toLowerCase()
+      );
+      if (!target) return false;
+
+      const mergedColumns = mergeRefreshedColumns(newColumns, target.columns, target.id);
+      const nowIso = new Date().toISOString();
+      const updatedSourceConfig: TableSourceConfig | undefined = newSourceConfig
+        ? {
+            ...target.sourceConfig,
+            ...newSourceConfig,
+            lastRefreshedAt: nowIso,
+          }
+        : target.sourceConfig
+        ? {
+            ...target.sourceConfig,
+            lastRefreshedAt: nowIso,
+          }
+        : undefined;
+
+      const newTables = get().tables.map(t =>
+        t.id === target.id
+          ? {
+              ...t,
+              columns: mergedColumns,
+              rows: newRows,
+              sourceConfig: updatedSourceConfig,
+            }
+          : t
+      );
+
+      set(s => ({ tables: newTables, dataVersion: s.dataVersion + 1 }));
+      globalDataEngine.setSchema(newTables, get().relationships, get().measures);
+      const updatedTable = newTables.find(t => t.id === target.id);
+      if (updatedTable) globalDuckDb.registerTable(updatedTable);
+      pushModelToRustAsync(newTables, get().relationships, get().measures, () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
+      return true;
+    },
+
+    refreshTable: async (tableId) => {
+      const target = get().tables.find(t => t.id === tableId || t.name === tableId);
+      if (!target) {
+        return { ok: false, message: 'Tabela não encontrada no modelo.' };
+      }
+
+      set({ isRefreshingData: true });
+      const nowTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      try {
+        const sc = target.sourceConfig;
+        if (sc?.type === 'rest' && sc.url) {
+          const resp = await fetch(sc.url);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status} ao consultar ${sc.url}`);
+          const json = await resp.json();
+          const rows: Record<string, any>[] = Array.isArray(json)
+            ? json
+            : Array.isArray((json as any)?.data)
+            ? (json as any).data
+            : (Object.values(json || {}).find(v => Array.isArray(v)) as Record<string, any>[]) || [];
+          const cols = inferColumnsFromJsonRows(rows, target.id);
+          get().replaceTableData(target.id, cols.length > 0 ? cols : target.columns, rows, {
+            ...sc,
+            lastRefreshedAt: new Date().toISOString(),
+          });
+          await pushModelToRustAsync(get().tables, get().relationships, get().measures);
+          set(s => ({
+            dataVersion: s.dataVersion + 1,
+            refreshStatus: {
+              type: 'success',
+              message: `Tabela "${target.name}" atualizada via REST (${rows.length.toLocaleString('pt-BR')} linhas).`,
+              timestamp: nowTime,
+            },
+          }));
+          return { ok: true, message: `Tabela "${target.name}" atualizada.` };
+        }
+
+        if (isTauriRuntime() && sc?.filePath && sc.type !== 'sample') {
+          const payload = await refreshTableNative({
+            tableName: target.name,
+            sourceType: sc.type,
+            filePath: sc.filePath,
+            sheetName: sc.sheetName,
+            mScript: sc.mScript,
+            pbipRoot: sc.pbipRoot || get().sourcePbipPath || undefined,
+          });
+          const cols = nativePayloadToColumns(payload, target.id);
+          get().replaceTableData(target.id, cols, payload.rows, {
+            ...sc,
+            filePath: payload.sourcePath || sc.filePath,
+            sheetName: payload.sheetName || sc.sheetName,
+            lastRefreshedAt: new Date().toISOString(),
+          });
+          await pushModelToRustAsync(get().tables, get().relationships, get().measures);
+          set(s => ({
+            dataVersion: s.dataVersion + 1,
+            refreshStatus: {
+              type: 'success',
+              message: `Tabela "${target.name}" atualizada (${payload.totalRows.toLocaleString('pt-BR')} linhas).`,
+              timestamp: nowTime,
+            },
+          }));
+          return { ok: true, message: `Tabela "${target.name}" atualizada.` };
+        }
+
+        if (isTauriRuntime() && get().sourcePbipPath) {
+          const pbipRes = await refreshPbipTables(get().sourcePbipPath!);
+          const matched = pbipRes.loadedTables.find(
+            lt =>
+              lt.tableName.toLowerCase() === target.name.toLowerCase() ||
+              lt.tableName.toLowerCase() === target.originalName.toLowerCase()
+          );
+          if (matched) {
+            const cols = nativePayloadToColumns(matched, target.id);
+            get().replaceTableData(target.id, cols, matched.rows, {
+              type: matched.sourcePath?.toLowerCase().endsWith('.csv') ? 'csv' : 'xlsx',
+              filePath: matched.sourcePath || sc?.filePath,
+              sheetName: matched.sheetName || sc?.sheetName,
+              mScript: sc?.mScript,
+              pbipRoot: sc?.pbipRoot || get().sourcePbipPath || undefined,
+            });
+            await pushModelToRustAsync(get().tables, get().relationships, get().measures);
+            set(s => ({
+              dataVersion: s.dataVersion + 1,
+              refreshStatus: {
+                type: 'success',
+                message: `Tabela "${target.name}" atualizada do projeto .pbip (${matched.totalRows.toLocaleString('pt-BR')} linhas).`,
+                timestamp: nowTime,
+              },
+            }));
+            return { ok: true, message: `Tabela "${target.name}" atualizada.` };
+          }
+        }
+
+        const warnMsg = `Tabela "${target.name}" não possui arquivo/URL vinculado. Use "Substituir dados" no painel Campos para vincular.`;
+        set({
+          refreshStatus: {
+            type: 'warning',
+            message: warnMsg,
+            timestamp: nowTime,
+          },
+        });
+        return { ok: false, message: warnMsg };
+      } catch (err: any) {
+        const msg = err?.message || String(err);
+        set({
+          refreshStatus: {
+            type: 'error',
+            message: `Erro ao atualizar "${target.name}": ${msg}`,
+            timestamp: nowTime,
+          },
+        });
+        return { ok: false, message: msg };
+      } finally {
+        set({ isRefreshingData: false });
+      }
+    },
+
+    refreshAllData: async () => {
+      set({ isRefreshingData: true });
+      const nowTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      const refreshedTables: string[] = [];
+      const warnings: string[] = [];
+
+      try {
+        const currentTables = get().tables;
+        const pbipPath = get().sourcePbipPath;
+
+        for (const tbl of currentTables) {
+          const sc = tbl.sourceConfig;
+          if (!sc) continue;
+
+          if (sc.type === 'rest' && sc.url) {
+            try {
+              const resp = await fetch(sc.url);
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+              const json = await resp.json();
+              const rows: Record<string, any>[] = Array.isArray(json)
+                ? json
+                : Array.isArray((json as any)?.data)
+                ? (json as any).data
+                : (Object.values(json || {}).find(v => Array.isArray(v)) as Record<string, any>[]) || [];
+              const cols = inferColumnsFromJsonRows(rows, tbl.id);
+              get().replaceTableData(tbl.id, cols.length > 0 ? cols : tbl.columns, rows, sc);
+              refreshedTables.push(tbl.name);
+            } catch (err: any) {
+              warnings.push(`${tbl.name}: ${err?.message || String(err)}`);
+            }
+          } else if (isTauriRuntime() && sc.filePath && sc.type !== 'sample') {
+            try {
+              const payload = await refreshTableNative({
+                tableName: tbl.name,
+                sourceType: sc.type,
+                filePath: sc.filePath,
+                sheetName: sc.sheetName,
+                mScript: sc.mScript,
+                pbipRoot: sc.pbipRoot || pbipPath || undefined,
+              });
+              const cols = nativePayloadToColumns(payload, tbl.id);
+              get().replaceTableData(tbl.id, cols, payload.rows, {
+                ...sc,
+                filePath: payload.sourcePath || sc.filePath,
+                sheetName: payload.sheetName || sc.sheetName,
+              });
+              refreshedTables.push(tbl.name);
+            } catch (err: any) {
+              warnings.push(`${tbl.name}: ${err?.message || String(err)}`);
+            }
+          }
+        }
+
+        // Refresh remaining PBIP tables if project came from a .pbip file
+        if (isTauriRuntime() && pbipPath) {
+          try {
+            const pbipRes = await refreshPbipTables(pbipPath);
+            for (const warn of pbipRes.warnings) {
+              warnings.push(warn);
+            }
+            for (const lt of pbipRes.loadedTables) {
+              const match = get().tables.find(
+                t =>
+                  !refreshedTables.includes(t.name) &&
+                  (t.name.toLowerCase() === lt.tableName.toLowerCase() ||
+                    t.originalName.toLowerCase() === lt.tableName.toLowerCase())
+              );
+              if (match) {
+                const cols = nativePayloadToColumns(lt, match.id);
+                const lowerPath = (lt.sourcePath || '').toLowerCase();
+                const detectedType = lowerPath.endsWith('.csv')
+                  ? 'csv'
+                  : lowerPath.endsWith('.parquet')
+                  ? 'parquet'
+                  : lowerPath.endsWith('.json')
+                  ? 'json'
+                  : lt.sourcePath
+                  ? 'xlsx'
+                  : 'pbip';
+                get().replaceTableData(match.id, cols, lt.rows, {
+                  type: detectedType,
+                  filePath: lt.sourcePath || match.sourceConfig?.filePath,
+                  sheetName: lt.sheetName || match.sourceConfig?.sheetName,
+                  mScript: match.sourceConfig?.mScript,
+                  pbipRoot: pbipPath,
+                });
+                refreshedTables.push(match.name);
+              }
+            }
+          } catch (err: any) {
+            warnings.push(`.pbip: ${err?.message || String(err)}`);
+          }
+        }
+
+        // Always re-sync model schema & DuckDB and bump dataVersion so visuals recalculate cleanly
+        const latestTables = get().tables;
+        const latestRels = get().relationships;
+        const latestMeasures = get().measures;
+        globalDataEngine.setSchema(latestTables, latestRels, latestMeasures);
+        latestTables.forEach(t => globalDuckDb.registerTable(t));
+        await pushModelToRustAsync(latestTables, latestRels, latestMeasures);
+        set(s => ({ dataVersion: s.dataVersion + 1 }));
+
+        if (refreshedTables.length > 0 && warnings.length === 0) {
+          set({
+            refreshStatus: {
+              type: 'success',
+              message: `${refreshedTables.length} tabela(s) atualizada(s): ${refreshedTables.join(', ')}.`,
+              timestamp: nowTime,
+            },
+          });
+        } else if (refreshedTables.length > 0 && warnings.length > 0) {
+          set({
+            refreshStatus: {
+              type: 'warning',
+              message: `${refreshedTables.length} atualizada(s), com ${warnings.length} aviso(s): ${warnings[0]}`,
+              timestamp: nowTime,
+            },
+          });
+        } else if (warnings.length > 0) {
+          set({
+            refreshStatus: {
+              type: 'warning',
+              message: `Nenhuma tabela externa atualizada: ${warnings[0]}`,
+              timestamp: nowTime,
+            },
+          });
+        } else {
+          set({
+            refreshStatus: {
+              type: 'success',
+              message: 'Modelo recalculado. Para reimportar arquivos, vincule a fonte ou substitua a tabela no painel Campos.',
+              timestamp: nowTime,
+            },
+          });
+        }
+
+        return { refreshedTables, warnings };
+      } catch (err: any) {
+        const msg = err?.message || String(err);
+        set({
+          refreshStatus: {
+            type: 'error',
+            message: `Erro ao atualizar dados: ${msg}`,
+            timestamp: nowTime,
+          },
+        });
+        return { refreshedTables, warnings, error: msg };
+      } finally {
+        set({ isRefreshingData: false });
+      }
     },
 
     duplicateTable: (id) => {
@@ -714,20 +1294,29 @@ export const useBiStore = create<BiState>((set, get) => {
 
     addRelationship: (rel) => {
       const newRels = [...get().relationships, rel];
-      set({ relationships: newRels });
+      set(s => ({ relationships: newRels, dataVersion: s.dataVersion + 1 }));
       globalDataEngine.setSchema(get().tables, newRels, get().measures);
+      pushModelToRustAsync(get().tables, newRels, get().measures, () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
     },
 
     deleteRelationship: (id) => {
       const newRels = get().relationships.filter(r => r.id !== id);
-      set({ relationships: newRels });
+      set(s => ({ relationships: newRels, dataVersion: s.dataVersion + 1 }));
       globalDataEngine.setSchema(get().tables, newRels, get().measures);
+      pushModelToRustAsync(get().tables, newRels, get().measures, () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
     },
 
     addMeasure: (measure) => {
       const newMeasures = [...get().measures, measure];
-      set({ measures: newMeasures });
+      set(s => ({ measures: newMeasures, dataVersion: s.dataVersion + 1 }));
       globalDataEngine.setSchema(get().tables, get().relationships, newMeasures);
+      pushModelToRustAsync(get().tables, get().relationships, newMeasures, () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
     },
 
     updateMeasure: (id, partial) => {
@@ -744,20 +1333,29 @@ export const useBiStore = create<BiState>((set, get) => {
           visuals: p.visuals.map(v => updatedVisuals.find(uv => uv.id === v.id) || v),
         }));
 
-        set({ measures: finalMeasures, pages: updatedPages });
+        set(s => ({ measures: finalMeasures, pages: updatedPages, dataVersion: s.dataVersion + 1 }));
         globalDataEngine.setSchema(get().tables, get().relationships, finalMeasures);
+        pushModelToRustAsync(get().tables, get().relationships, finalMeasures, () =>
+          set(s => ({ dataVersion: s.dataVersion + 1 }))
+        );
         return;
       }
 
       const newMeasures = get().measures.map(m => (m.id === id ? { ...m, ...partial } : m));
-      set({ measures: newMeasures });
+      set(s => ({ measures: newMeasures, dataVersion: s.dataVersion + 1 }));
       globalDataEngine.setSchema(get().tables, get().relationships, newMeasures);
+      pushModelToRustAsync(get().tables, get().relationships, newMeasures, () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
     },
 
     deleteMeasure: (id) => {
       const newMeasures = get().measures.filter(m => m.id !== id);
-      set({ measures: newMeasures });
+      set(s => ({ measures: newMeasures, dataVersion: s.dataVersion + 1 }));
       globalDataEngine.setSchema(get().tables, get().relationships, newMeasures);
+      pushModelToRustAsync(get().tables, get().relationships, newMeasures, () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
     },
 
     editingMeasureId: null,
@@ -1643,6 +2241,9 @@ export const useBiStore = create<BiState>((set, get) => {
       const blankPageId = 'page_' + Math.random().toString(36).substr(2, 6);
       const blankState = {
         projectName: name || 'Novo Projeto em Branco',
+        sourcePbipPath: null,
+        refreshStatus: null,
+        dataVersion: get().dataVersion + 1,
         tables: [],
         relationships: [],
         measures: [],
@@ -1679,13 +2280,18 @@ export const useBiStore = create<BiState>((set, get) => {
     // Lifecycle & Persistence
     loadInitialSampleData: () => {
       const sample = getSampleDatasets();
-      set({
+      set(s => ({
         tables: sample.tables,
         relationships: sample.relationships,
         measures: sample.measures,
-      });
+        sourcePbipPath: null,
+        dataVersion: s.dataVersion + 1,
+      }));
       globalDataEngine.setSchema(sample.tables, sample.relationships, sample.measures);
       sample.tables.forEach(t => globalDuckDb.registerTable(t));
+      pushModelToRustAsync(sample.tables, sample.relationships, sample.measures, () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
     },
 
     generateCalendar: (startDate = '2025-01-01', endDate = '2026-12-31') => {
@@ -1703,6 +2309,7 @@ export const useBiStore = create<BiState>((set, get) => {
       return {
         version: '1.0.0',
         projectName: get().projectName,
+        sourcePbipPath: get().sourcePbipPath,
         tables: get().tables,
         relationships: get().relationships,
         measures: get().measures,
@@ -1764,10 +2371,13 @@ export const useBiStore = create<BiState>((set, get) => {
 
       const daxQueries = (state.daxQueries && state.daxQueries.length > 0) ? state.daxQueries : get().daxQueries;
 
-      set({
+      set(s => ({
         language: (state.language as SupportedLocale) || get().language,
         currency: (state.currency as SupportedCurrency) || get().currency,
         projectName: state.projectName || 'Projeto InsightHub',
+        sourcePbipPath: state.sourcePbipPath ?? null,
+        refreshStatus: null,
+        dataVersion: s.dataVersion + 1,
         tables: state.tables || [],
         relationships: state.relationships || [],
         measures: state.measures || [],
@@ -1791,10 +2401,12 @@ export const useBiStore = create<BiState>((set, get) => {
         showGrid: state.showGrid !== undefined ? state.showGrid : true,
         snapToGrid: state.snapToGrid !== undefined ? state.snapToGrid : true,
         lastSavedAt: new Date().toLocaleTimeString('pt-BR'),
-      });
+      }));
       globalDataEngine.setSchema(state.tables || [], state.relationships || [], state.measures || []);
       (state.tables || []).forEach(t => globalDuckDb.registerTable(t));
-      pushModelToRustAsync(state.tables || [], state.relationships || [], state.measures || []);
+      pushModelToRustAsync(state.tables || [], state.relationships || [], state.measures || [], () =>
+        set(s => ({ dataVersion: s.dataVersion + 1 }))
+      );
     },
   };
 });

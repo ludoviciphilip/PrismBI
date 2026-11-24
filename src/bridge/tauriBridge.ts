@@ -21,6 +21,22 @@ export interface NativeImportedTable {
   rows: Record<string, any>[];
   totalRows: number;
   truncated: boolean;
+  sourcePath?: string | null;
+  sheetName?: string | null;
+}
+
+export interface RefreshTableNativeRequest {
+  tableName: string;
+  sourceType: string;
+  filePath?: string;
+  sheetName?: string;
+  mScript?: string;
+  pbipRoot?: string;
+}
+
+export interface RefreshPbipResult {
+  loadedTables: NativeImportedTable[];
+  warnings: string[];
 }
 
 export interface NativeSqlQueryResult {
@@ -213,8 +229,50 @@ export async function importCsvNative(
   });
 }
 
+export async function importParquetNative(
+  path: string,
+  tableName?: string
+): Promise<NativeImportedTable> {
+  return await invoke<NativeImportedTable>('import_parquet_native', {
+    path,
+    tableName: tableName ?? null,
+  });
+}
+
+export async function importJsonNative(
+  path: string,
+  tableName?: string
+): Promise<NativeImportedTable> {
+  return await invoke<NativeImportedTable>('import_json_native', {
+    path,
+    tableName: tableName ?? null,
+  });
+}
+
 export async function importXlsxNative(path: string): Promise<NativeImportedTable[]> {
   return await invoke<NativeImportedTable[]>('import_xlsx_native', { path });
+}
+
+export async function importXlsxSheetNative(
+  path: string,
+  sheetName?: string,
+  tableName?: string
+): Promise<NativeImportedTable> {
+  return await invoke<NativeImportedTable>('import_xlsx_sheet_native', {
+    path,
+    sheetName: sheetName ?? null,
+    tableName: tableName ?? null,
+  });
+}
+
+export async function refreshTableNative(
+  request: RefreshTableNativeRequest
+): Promise<NativeImportedTable> {
+  return await invoke<NativeImportedTable>('refresh_table_native', { request });
+}
+
+export async function refreshPbipTables(path: string): Promise<RefreshPbipResult> {
+  return await invoke<RefreshPbipResult>('refresh_pbip_tables', { path });
 }
 
 export async function queryDuckDbNative(sql: string): Promise<NativeSqlQueryResult> {
@@ -233,11 +291,11 @@ export async function pickDataFile(): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   const selected = await openDialog({
     multiple: false,
-    title: 'Abrir arquivo de dados (CSV / Excel)',
+    title: 'Abrir arquivo de dados (CSV / Excel / Parquet / JSON)',
     filters: [
       {
-        name: 'Planilhas e Dados',
-        extensions: ['csv', 'tsv', 'xlsx', 'xls'],
+        name: 'Arquivos de Dados',
+        extensions: ['csv', 'tsv', 'xlsx', 'xls', 'parquet', 'json', 'ndjson'],
       },
     ],
   });

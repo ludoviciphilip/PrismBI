@@ -4,9 +4,22 @@ use crate::engine::duckdb_store::{
 };
 use crate::pbi::PbiTableMeta;
 use calamine::{open_workbook_auto, Data, Reader};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshTableRequest {
+    pub table_name: String,
+    pub source_type: String,
+    pub file_path: Option<String>,
+    pub sheet_name: Option<String>,
+    pub m_script: Option<String>,
+    pub pbip_root: Option<String>,
+}
 
 /// Materializes `.pbip` model tables into DuckDB by interpreting Power Query M and DAX `DATATABLE` partitions.
 pub fn materialize_pbip_tables(
@@ -57,7 +70,7 @@ pub fn materialize_pbip_tables(
 
         // 4. Excel.Workbook(File.Contents("..."))
         if expr.contains("Excel.Workbook") && expr.contains("File.Contents") {
-            match load_excel_partition(table, expr, pbip_root, db) {
+            match load_excel_partition(table, expr, pbip_root, db, None, None) {
                 Ok(payload) => loaded.push(payload),
                 Err(e) => warnings.push(format!("Excel '{}': {}", table.name, e)),
             }
@@ -71,6 +84,7 @@ pub fn materialize_pbip_tables(
                     match db.import_csv(&resolved, Some(&table.name)) {
                         Ok(mut payload) => {
                             payload.table_name = table.name.clone();
+                            payload.source_path = Some(resolved.to_string_lossy().to_string());
                             loaded.push(payload);
                         }
                         Err(e) => warnings.push(format!("CSV '{}': {}", table.name, e)),
@@ -88,24 +102,119 @@ pub fn materialize_pbip_tables(
     loaded
 }
 
+pub fn refresh_single_table(
+    req: &RefreshTableRequest,
+    db: &DuckDbStore,
+) -> Result<ImportedTablePayload, String> {
+    let pbip_root = req
+        .pbip_root
+        .as_deref()
+        .map(PathBuf::from)
+        .filter(|p| p.exists());
+
+    let resolved_path: PathBuf = if let Some(fp) = req.file_path.as_deref().filter(|s| !s.trim().is_empty()) {
+        let direct = PathBuf::from(fp);
+        if direct.is_file() {
+            direct
+        } else if let Some(root) = pbip_root.as_deref() {
+            resolve_source_path(fp, root).ok_or_else(|| {
+                format!(
+                    "Arquivo fonte '{}' da tabela '{}' não foi encontrado.",
+                    fp, req.table_name
+                )
+            })?
+        } else {
+            return Err(format!(
+                "Arquivo fonte '{}' da tabela '{}' não foi encontrado.",
+                fp, req.table_name
+            ));
+        }
+    } else if let Some((m, root)) = req.m_script.as_deref().zip(pbip_root.as_deref()) {
+        let raw = extract_quoted_arg_after(m, "File.Contents(")
+            .ok_or_else(|| format!("Caminho fonte não definido para tabela '{}'.", req.table_name))?;
+        resolve_source_path(&raw, root).ok_or_else(|| {
+            format!(
+                "Arquivo fonte '{}' referenciado em '{}' não foi encontrado.",
+                raw, req.table_name
+            )
+        })?
+    } else {
+        return Err(format!(
+            "Tabela '{}' não possui arquivo fonte vinculado.",
+            req.table_name
+        ));
+    };
+
+    let src_lower = req.source_type.trim().to_lowercase();
+    let mut payload = match src_lower.as_str() {
+        "xlsx" | "xls" => {
+            if let Some(m) = req.m_script.as_deref().filter(|s| s.contains("Table.") || s.contains("Excel.Workbook")) {
+                let dummy_meta = PbiTableMeta {
+                    name: req.table_name.clone(),
+                    columns: vec![],
+                    measures: vec![],
+                    partitions: vec![],
+                    is_calculated: false,
+                    is_hidden: false,
+                };
+                load_excel_partition(
+                    &dummy_meta,
+                    m,
+                    pbip_root.as_deref().unwrap_or_else(|| resolved_path.parent().unwrap_or(Path::new("."))),
+                    db,
+                    req.sheet_name.as_deref(),
+                    Some(&resolved_path),
+                )?
+            } else {
+                db.import_xlsx_sheet(&resolved_path, req.sheet_name.as_deref(), Some(&req.table_name))?
+            }
+        }
+        "csv" | "tsv" => db.import_csv(&resolved_path, Some(&req.table_name))?,
+        "parquet" => db.import_parquet(&resolved_path, Some(&req.table_name))?,
+        "json" | "ndjson" => db.import_json_file(&resolved_path, Some(&req.table_name))?,
+        _ => return Err(format!("Tipo de fonte não suportado para atualização: {}", req.source_type)),
+    };
+
+    payload.table_name = req.table_name.clone();
+    payload.source_path = Some(resolved_path.to_string_lossy().to_string());
+    if let Some(sh) = req.sheet_name.as_deref().filter(|s| !s.trim().is_empty()) {
+        if payload.sheet_name.is_none() {
+            payload.sheet_name = Some(sh.to_string());
+        }
+    }
+    Ok(payload)
+}
+
 fn load_excel_partition(
     table: &PbiTableMeta,
     expr: &str,
     pbip_root: &Path,
     db: &DuckDbStore,
+    sheet_override: Option<&str>,
+    resolved_override: Option<&Path>,
 ) -> Result<ImportedTablePayload, String> {
-    let raw_path = extract_quoted_arg_after(expr, "File.Contents(")
-        .ok_or_else(|| "Caminho File.Contents não encontrado na partição M.".to_string())?;
-    let resolved = resolve_source_path(&raw_path, pbip_root).ok_or_else(|| {
-        format!(
-            "Arquivo Excel '{}' não encontrado em '{}'.",
-            raw_path,
-            pbip_root.display()
-        )
-    })?;
+    let resolved = if let Some(p) = resolved_override {
+        p.to_path_buf()
+    } else {
+        let raw_path = extract_quoted_arg_after(expr, "File.Contents(")
+            .ok_or_else(|| "Caminho File.Contents não encontrado na partição M.".to_string())?;
+        resolve_source_path(&raw_path, pbip_root).ok_or_else(|| {
+            format!(
+                "Arquivo Excel '{}' não encontrado em '{}'.",
+                raw_path,
+                pbip_root.display()
+            )
+        })?
+    };
 
-    let target_sheet = extract_excel_sheet_item(expr);
+    let target_sheet = sheet_override
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| extract_excel_sheet_item(expr));
     let renames = extract_rename_pairs(expr);
+    let removed_cols = extract_removed_columns(expr);
+    let selected_cols = extract_selected_columns(expr);
+    let row_filters = extract_row_filters(expr);
 
     let mut workbook = open_workbook_auto(&resolved)
         .map_err(|e| format!("Falha ao abrir '{}': {}", resolved.display(), e))?;
@@ -146,7 +255,7 @@ fn load_excel_partition(
         .collect();
 
     // Ensure headers match unique names
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     for h in &mut headers {
         let orig = h.clone();
         let mut idx = 2;
@@ -183,13 +292,31 @@ fn load_excel_partition(
             }
             map.insert(col_name.clone(), jv);
         }
-        if any_non_null {
+        if any_non_null && passes_row_filters(&map, &row_filters) {
             json_rows.push(map);
         }
     }
 
-    // Add any missing TMDL columns (e.g. optional columns not present in Excel) as null
+    // Apply M Table.RemoveColumns / Table.SelectColumns when not overridden by explicit TMDL metadata
     let mut final_schema = columns_schema;
+    if !removed_cols.is_empty() {
+        let remove_lower: HashSet<String> = removed_cols.iter().map(|c| c.to_lowercase()).collect();
+        final_schema.retain(|(name, _)| !remove_lower.contains(&name.to_lowercase()));
+        for r in &mut json_rows {
+            for col in &removed_cols {
+                r.remove(col);
+            }
+        }
+    }
+    if !selected_cols.is_empty() && table.columns.is_empty() {
+        let select_lower: HashSet<String> = selected_cols.iter().map(|c| c.to_lowercase()).collect();
+        final_schema.retain(|(name, _)| select_lower.contains(&name.to_lowercase()));
+        for r in &mut json_rows {
+            r.retain(|k, _| select_lower.contains(&k.to_lowercase()));
+        }
+    }
+
+    // Add any missing TMDL columns (e.g. optional columns not present in Excel) as null
     for col in &table.columns {
         if !final_schema
             .iter()
@@ -205,6 +332,8 @@ fn load_excel_partition(
     let mut payload = db.insert_table_rows(&table.name, &final_schema, &json_rows)?;
     payload.table_name = table.name.clone();
     payload.original_name = table.name.clone();
+    payload.source_path = Some(resolved.to_string_lossy().to_string());
+    payload.sheet_name = Some(chosen_sheet);
     Ok(payload)
 }
 
@@ -452,46 +581,256 @@ pub fn resolve_source_path(raw_path: &str, pbip_root: &Path) -> Option<PathBuf> 
         return Some(direct);
     }
 
-    // Handle Windows / RDP \\tsclient\Linux\... paths -> $HOME/...
     let normalized = raw_path.replace('\\', "/");
-    if let Some(idx) = normalized.to_lowercase().find("/linux/") {
-        let tail = &normalized[idx + "/linux/".len()..];
-        if let Ok(home) = std::env::var("HOME") {
-            let cand = PathBuf::from(home).join(tail);
+    let norm_buf = PathBuf::from(&normalized);
+    if norm_buf.is_file() {
+        return Some(norm_buf);
+    }
+
+    // Handle Windows / RDP \\tsclient\Linux\... paths -> $HOME/...
+    let lower_norm = normalized.to_lowercase();
+    if let Ok(home) = std::env::var("HOME") {
+        let home_path = PathBuf::from(&home);
+        if let Some(idx) = lower_norm.find("/linux/") {
+            let tail = &normalized[idx + "/linux/".len()..];
+            let cand = home_path.join(tail);
             if cand.is_file() {
                 return Some(cand);
             }
         }
-    }
-
-    // Try basename inside pbip_root or parent
-    if let Some(fname) = normalized.rsplit('/').next().filter(|s| !s.is_empty()) {
-        let in_root = pbip_root.join(fname);
-        if in_root.is_file() {
-            return Some(in_root);
-        }
-        if let Some(parent) = pbip_root.parent() {
-            let in_parent = parent.join(fname);
-            if in_parent.is_file() {
-                return Some(in_parent);
+        // Handle Windows C:\Users\<user>\<tail> -> $HOME/<tail> (including Documents <-> Documentos)
+        if let Some(users_idx) = lower_norm.find(":/users/") {
+            let after_users = &normalized[users_idx + ":/users/".len()..];
+            if let Some(slash_pos) = after_users.find('/') {
+                let tail = &after_users[slash_pos + 1..];
+                let mut tail_candidates = vec![tail.to_string()];
+                if tail.starts_with("Documents/") {
+                    tail_candidates.push(tail.replacen("Documents/", "Documentos/", 1));
+                } else if tail.starts_with("Documentos/") {
+                    tail_candidates.push(tail.replacen("Documentos/", "Documents/", 1));
+                }
+                for cand_tail in tail_candidates {
+                    let cand = home_path.join(cand_tail);
+                    if cand.is_file() {
+                        return Some(cand);
+                    }
+                }
             }
         }
-        // Case-insensitive match inside pbip_root
-        if let Ok(entries) = std::fs::read_dir(pbip_root) {
-            for entry in entries.flatten() {
+    }
+
+    // Try basename inside pbip_root, parent, and common data subdirs
+    if let Some(fname) = normalized.rsplit('/').next().filter(|s| !s.is_empty()) {
+        let mut dirs_to_check = vec![pbip_root.to_path_buf()];
+        if let Some(parent) = pbip_root.parent() {
+            dirs_to_check.push(parent.to_path_buf());
+        }
+        let subdirs = ["data", "dados", "excel", "bases", "arquivos", "sources", "Data", "Dados"];
+        let base_dirs = dirs_to_check.clone();
+        for base in &base_dirs {
+            for sub in &subdirs {
+                dirs_to_check.push(base.join(sub));
+            }
+        }
+
+        for dir in &dirs_to_check {
+            let exact = dir.join(fname);
+            if exact.is_file() {
+                return Some(exact);
+            }
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_file()
+                        && p.file_name()
+                            .and_then(|s| s.to_str())
+                            .is_some_and(|n| n.eq_ignore_ascii_case(fname))
+                    {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+
+        // Shallow recursive scan (depth <= 2) under pbip_root and parent
+        for base in &base_dirs {
+            for entry in WalkDir::new(base).max_depth(2).into_iter().flatten() {
                 let p = entry.path();
                 if p.is_file()
                     && p.file_name()
                         .and_then(|s| s.to_str())
                         .is_some_and(|n| n.eq_ignore_ascii_case(fname))
                 {
-                    return Some(p);
+                    return Some(p.to_path_buf());
                 }
             }
         }
     }
 
     None
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RowFilterOp {
+    NotNull,
+    NotEmpty,
+    Equals(String),
+    NotEquals(String),
+}
+
+#[derive(Debug, Clone)]
+struct RowFilterRule {
+    column: String,
+    op: RowFilterOp,
+}
+
+fn extract_column_list_after(expr: &str, marker: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(pos) = expr.find(marker) else {
+        return out;
+    };
+    let rest = &expr[pos..];
+    let Some(open_brace) = rest.find('{') else {
+        return out;
+    };
+    let mut depth = 0i32;
+    let mut in_q = false;
+    let mut buf = String::new();
+    for ch in rest[open_brace..].chars() {
+        if ch == '"' {
+            in_q = !in_q;
+            buf.push(ch);
+            continue;
+        }
+        if !in_q {
+            if ch == '{' {
+                depth += 1;
+                if depth == 1 {
+                    continue;
+                }
+            } else if ch == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+        }
+        buf.push(ch);
+    }
+    for part in split_csv_respecting_quotes(&buf) {
+        let cleaned = part.trim().trim_matches('"').to_string();
+        if !cleaned.is_empty() {
+            out.push(cleaned);
+        }
+    }
+    out
+}
+
+fn extract_removed_columns(expr: &str) -> Vec<String> {
+    extract_column_list_after(expr, "Table.RemoveColumns")
+}
+
+fn extract_selected_columns(expr: &str) -> Vec<String> {
+    extract_column_list_after(expr, "Table.SelectColumns")
+}
+
+fn extract_row_filters(expr: &str) -> Vec<RowFilterRule> {
+    let mut rules = Vec::new();
+    let mut search_start = 0usize;
+    while let Some(rel_pos) = expr[search_start..].find("Table.SelectRows") {
+        let pos = search_start + rel_pos;
+        let rest = &expr[pos..];
+        let Some(end_paren) = rest.find(')') else {
+            break;
+        };
+        let clause = &rest[..end_paren];
+        // Parse `each [Col] <> null`, `each [Col] <> ""`, `each [Col] = "X"`, `each [Col] <> "X"`
+        if let Some(b_start) = clause.find('[') {
+            if let Some(b_rel_end) = clause[b_start + 1..].find(']') {
+                let col = clause[b_start + 1..b_start + 1 + b_rel_end].trim().to_string();
+                let rhs = clause[b_start + 1 + b_rel_end + 1..].trim();
+                if let Some(after_ne) = rhs.strip_prefix("<>").map(str::trim) {
+                    if after_ne.eq_ignore_ascii_case("null") {
+                        rules.push(RowFilterRule {
+                            column: col,
+                            op: RowFilterOp::NotNull,
+                        });
+                    } else if after_ne == "\"\"" {
+                        rules.push(RowFilterRule {
+                            column: col,
+                            op: RowFilterOp::NotEmpty,
+                        });
+                    } else if let Some(val) = after_ne.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+                        rules.push(RowFilterRule {
+                            column: col,
+                            op: RowFilterOp::NotEquals(val.to_string()),
+                        });
+                    }
+                } else if let Some(after_eq) = rhs.strip_prefix('=').map(str::trim) {
+                    if let Some(val) = after_eq.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+                        rules.push(RowFilterRule {
+                            column: col,
+                            op: RowFilterOp::Equals(val.to_string()),
+                        });
+                    }
+                }
+            }
+        }
+        search_start = pos + end_paren + 1;
+    }
+    rules
+}
+
+fn passes_row_filters(row: &Map<String, JsonValue>, rules: &[RowFilterRule]) -> bool {
+    if rules.is_empty() {
+        return true;
+    }
+    for rule in rules {
+        let val = row
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(&rule.column))
+            .map(|(_, v)| v);
+        match &rule.op {
+            RowFilterOp::NotNull => {
+                if val.is_none_or(|v| v.is_null()) {
+                    return false;
+                }
+            }
+            RowFilterOp::NotEmpty => {
+                let is_empty = match val {
+                    None | Some(JsonValue::Null) => true,
+                    Some(JsonValue::String(s)) => s.trim().is_empty(),
+                    _ => false,
+                };
+                if is_empty {
+                    return false;
+                }
+            }
+            RowFilterOp::Equals(expected) => {
+                let actual = match val {
+                    Some(JsonValue::String(s)) => s.clone(),
+                    Some(JsonValue::Number(n)) => n.to_string(),
+                    Some(JsonValue::Bool(b)) => b.to_string(),
+                    _ => String::new(),
+                };
+                if !actual.eq_ignore_ascii_case(expected) {
+                    return false;
+                }
+            }
+            RowFilterOp::NotEquals(forbidden) => {
+                let actual = match val {
+                    Some(JsonValue::String(s)) => s.clone(),
+                    Some(JsonValue::Number(n)) => n.to_string(),
+                    Some(JsonValue::Bool(b)) => b.to_string(),
+                    _ => String::new(),
+                };
+                if actual.eq_ignore_ascii_case(forbidden) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 fn extract_quoted_arg_after(haystack: &str, marker: &str) -> Option<String> {
@@ -612,4 +951,72 @@ fn days_to_civil(days: i32) -> (i32, u32, u32) {
 #[allow(dead_code)]
 fn _keep_sanitize_import(s: &str) -> String {
     sanitize_identifier(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_m_parsers_remove_select_and_filter() {
+        let m = r#"
+let
+    Source = Excel.Workbook(File.Contents("C:\Users\Teste\Documents\Rhino\Base.xlsx")),
+    Fato = Source{[Item="Fato",Kind="Sheet"]}[Data],
+    Removed = Table.RemoveColumns(Fato, {"Obs", "Temp"}),
+    Filtered = Table.SelectRows(Removed, each [Status] <> "Cancelado"),
+    Selected = Table.SelectColumns(Filtered, {"Data", "Valor", "Status"})
+in
+    Selected
+"#;
+        assert_eq!(extract_removed_columns(m), vec!["Obs", "Temp"]);
+        assert_eq!(extract_selected_columns(m), vec!["Data", "Valor", "Status"]);
+        let filters = extract_row_filters(m);
+        assert_eq!(filters.len(), 1);
+
+        let mut row_ok = Map::new();
+        row_ok.insert("Status".into(), JsonValue::String("Aprovado".into()));
+        assert!(passes_row_filters(&row_ok, &filters));
+
+        let mut row_bad = Map::new();
+        row_bad.insert("Status".into(), JsonValue::String("Cancelado".into()));
+        assert!(!passes_row_filters(&row_bad, &filters));
+    }
+
+    #[test]
+    fn test_resolve_source_path_subdirs_and_windows_mapping() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data_dir = tmp.path().join("dados");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let file = data_dir.join("base_fatos.xlsx");
+        std::fs::write(&file, b"stub").unwrap();
+
+        let resolved = resolve_source_path(r"D:\Projetos\Empresa\base_fatos.xlsx", tmp.path())
+            .expect("should find in dados subdir");
+        assert_eq!(resolved, file);
+    }
+
+    #[test]
+    fn test_refresh_single_table_csv_preserves_target_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let csv_path = tmp.path().join("export_erp.csv");
+        std::fs::write(&csv_path, "Mes,Total\nJan,100\nFev,250\n").unwrap();
+
+        let db = DuckDbStore::new_in_memory().expect("init duckdb");
+        let req = RefreshTableRequest {
+            table_name: "fLancamentos".into(),
+            source_type: "csv".into(),
+            file_path: Some(csv_path.to_string_lossy().to_string()),
+            sheet_name: None,
+            m_script: None,
+            pbip_root: None,
+        };
+        let payload = refresh_single_table(&req, &db).expect("refresh csv");
+        assert_eq!(payload.table_name, "fLancamentos");
+        assert_eq!(payload.total_rows, 2);
+        assert_eq!(
+            payload.source_path.as_deref(),
+            Some(csv_path.to_string_lossy().as_ref())
+        );
+    }
 }

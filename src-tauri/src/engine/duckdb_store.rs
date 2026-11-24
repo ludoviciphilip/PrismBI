@@ -33,6 +33,10 @@ pub struct ImportedTablePayload {
     pub rows: Vec<Map<String, JsonValue>>,
     pub total_rows: usize,
     pub truncated: bool,
+    #[serde(default)]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub sheet_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,7 +114,131 @@ impl DuckDbStore {
         conn.execute(&sql, [&path_str])
             .map_err(|e| format!("Erro ao importar CSV '{}': {}", path.display(), e))?;
 
-        build_table_payload(&conn, &safe_name, raw_name)
+        let mut payload = build_table_payload(&conn, &safe_name, raw_name)?;
+        payload.source_path = Some(path_str);
+        Ok(payload)
+    }
+
+    pub fn import_parquet(
+        &self,
+        path: &Path,
+        table_name: Option<&str>,
+    ) -> Result<ImportedTablePayload, String> {
+        if !path.exists() {
+            return Err(format!("Arquivo Parquet não encontrado: {}", path.display()));
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("tabela_parquet");
+        let raw_name = table_name.unwrap_or(stem);
+        let safe_name = sanitize_identifier(raw_name);
+        let path_str = path.to_string_lossy().to_string();
+
+        let conn = self.conn.lock().map_err(|_| "Lock DuckDB corrompido".to_string())?;
+        let sql = format!(
+            "CREATE OR REPLACE TABLE {} AS SELECT * FROM read_parquet(?)",
+            quote_ident(&safe_name)
+        );
+        conn.execute(&sql, [&path_str])
+            .map_err(|e| format!("Erro ao importar Parquet '{}': {}", path.display(), e))?;
+
+        let mut payload = build_table_payload(&conn, &safe_name, raw_name)?;
+        payload.source_path = Some(path_str);
+        Ok(payload)
+    }
+
+    pub fn import_json_file(
+        &self,
+        path: &Path,
+        table_name: Option<&str>,
+    ) -> Result<ImportedTablePayload, String> {
+        if !path.exists() {
+            return Err(format!("Arquivo JSON não encontrado: {}", path.display()));
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("tabela_json");
+        let raw_name = table_name.unwrap_or(stem);
+        let safe_name = sanitize_identifier(raw_name);
+        let path_str = path.to_string_lossy().to_string();
+
+        let conn = self.conn.lock().map_err(|_| "Lock DuckDB corrompido".to_string())?;
+        let sql = format!(
+            "CREATE OR REPLACE TABLE {} AS SELECT * FROM read_json_auto(?)",
+            quote_ident(&safe_name)
+        );
+        conn.execute(&sql, [&path_str])
+            .map_err(|e| format!("Erro ao importar JSON '{}': {}", path.display(), e))?;
+
+        let mut payload = build_table_payload(&conn, &safe_name, raw_name)?;
+        payload.source_path = Some(path_str);
+        Ok(payload)
+    }
+
+    pub fn import_xlsx_sheet(
+        &self,
+        path: &Path,
+        sheet_name: Option<&str>,
+        target_table_name: Option<&str>,
+    ) -> Result<ImportedTablePayload, String> {
+        if !path.exists() {
+            return Err(format!("Arquivo não encontrado: {}", path.display()));
+        }
+        let mut workbook = open_workbook_auto(path)
+            .map_err(|e| format!("Erro ao abrir planilha Excel '{}': {}", path.display(), e))?;
+
+        let sheet_names = workbook.sheet_names();
+        if sheet_names.is_empty() {
+            return Err("A planilha Excel não contém abas.".to_string());
+        }
+
+        let chosen_sheet = if let Some(req_sheet) = sheet_name.filter(|s| !s.trim().is_empty()) {
+            sheet_names
+                .iter()
+                .find(|s| s.eq_ignore_ascii_case(req_sheet.trim()))
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "Aba '{}' não encontrada na planilha '{}'. Abas disponíveis: {}",
+                        req_sheet,
+                        path.display(),
+                        sheet_names.join(", ")
+                    )
+                })?
+        } else {
+            sheet_names[0].clone()
+        };
+
+        let range = workbook
+            .worksheet_range(&chosen_sheet)
+            .map_err(|e| format!("Erro ao ler aba '{}': {}", chosen_sheet, e))?;
+        let file_stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("excel");
+        let raw_table_name = target_table_name
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                if chosen_sheet.eq_ignore_ascii_case("Sheet1")
+                    || chosen_sheet.eq_ignore_ascii_case("Planilha1")
+                {
+                    file_stem.to_string()
+                } else {
+                    chosen_sheet.clone()
+                }
+            });
+
+        let conn = self.conn.lock().map_err(|_| "Lock DuckDB corrompido".to_string())?;
+        let path_str = path.to_string_lossy().to_string();
+        let mut payload = load_worksheet_into_duckdb(&conn, range, &chosen_sheet, &raw_table_name, &path_str)?
+            .ok_or_else(|| format!("Aba '{}' não contém cabeçalho válido.", chosen_sheet))?;
+        if let Some(target) = target_table_name.filter(|s| !s.trim().is_empty()) {
+            payload.table_name = target.to_string();
+        }
+        Ok(payload)
     }
 
     pub fn import_xlsx(&self, path: &Path) -> Result<Vec<ImportedTablePayload>, String> {
@@ -131,27 +259,13 @@ impl DuckDbStore {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("excel");
+        let path_str = path.to_string_lossy().to_string();
 
         for sheet_name in sheet_names {
             let range = match workbook.worksheet_range(&sheet_name) {
                 Ok(r) => r,
                 Err(_) => continue,
             };
-            let mut rows_iter = range.rows();
-            let Some(header_row) = rows_iter.next() else {
-                continue;
-            };
-
-            let col_names = normalize_headers(header_row);
-            if col_names.is_empty() {
-                continue;
-            }
-
-            let data_rows: Vec<&[Data]> = rows_iter
-                .filter(|r| r.iter().any(|c| !matches!(c, Data::Empty)))
-                .collect();
-
-            let col_types = infer_excel_column_types(&col_names, &data_rows);
             let raw_table_name = if sheet_name.eq_ignore_ascii_case("Sheet1")
                 || sheet_name.eq_ignore_ascii_case("Planilha1")
             {
@@ -159,66 +273,16 @@ impl DuckDbStore {
             } else {
                 sheet_name.clone()
             };
-            let safe_table_name = sanitize_identifier(&raw_table_name);
 
-            let col_defs: Vec<String> = col_names
-                .iter()
-                .zip(col_types.iter())
-                .map(|(name, dtype)| format!("{} {}", quote_ident(name), dtype.duckdb_sql_type()))
-                .collect();
-
-            let create_sql = format!(
-                "CREATE OR REPLACE TABLE {} ({})",
-                quote_ident(&safe_table_name),
-                col_defs.join(", ")
-            );
-            conn.execute(&create_sql, [])
-                .map_err(|e| format!("Erro ao criar tabela '{}': {}", safe_table_name, e))?;
-
-            if !data_rows.is_empty() {
-                let placeholders: Vec<&str> = (0..col_names.len()).map(|_| "?").collect();
-                let insert_sql = format!(
-                    "INSERT INTO {} VALUES ({})",
-                    quote_ident(&safe_table_name),
-                    placeholders.join(", ")
-                );
-
-                conn.execute("BEGIN TRANSACTION", [])
-                    .map_err(|e| format!("Erro ao iniciar transação DuckDB: {}", e))?;
-
-                let insert_res: Result<(), String> = (|| {
-                    let mut stmt = conn
-                        .prepare(&insert_sql)
-                        .map_err(|e| format!("Erro ao preparar INSERT: {}", e))?;
-
-                    for row in &data_rows {
-                        let mut values: Vec<duckdb::types::Value> = Vec::with_capacity(col_names.len());
-                        for (idx, dtype) in col_types.iter().enumerate() {
-                            let cell = row.get(idx).unwrap_or(&Data::Empty);
-                            values.push(calamine_to_duckdb_value(cell, *dtype));
-                        }
-                        let params: Vec<&dyn ToSql> =
-                            values.iter().map(|v| v as &dyn ToSql).collect();
-                        stmt.execute(params_from_iter(params))
-                            .map_err(|e| format!("Erro ao inserir linha em '{}': {}", safe_table_name, e))?;
-                    }
-                    Ok(())
-                })();
-
-                match insert_res {
-                    Ok(()) => {
-                        conn.execute("COMMIT", [])
-                            .map_err(|e| format!("Erro ao confirmar transação DuckDB: {}", e))?;
-                    }
-                    Err(err) => {
-                        let _ = conn.execute("ROLLBACK", []);
-                        return Err(err);
-                    }
-                }
+            if let Some(payload) = load_worksheet_into_duckdb(
+                &conn,
+                range,
+                &sheet_name,
+                &raw_table_name,
+                &path_str,
+            )? {
+                imported.push(payload);
             }
-
-            let payload = build_table_payload(&conn, &safe_table_name, &raw_table_name)?;
-            imported.push(payload);
         }
 
         if imported.is_empty() {
@@ -546,6 +610,91 @@ fn calamine_to_duckdb_value(cell: &Data, dtype: InferredType) -> duckdb::types::
     }
 }
 
+fn load_worksheet_into_duckdb(
+    conn: &Connection,
+    range: calamine::Range<Data>,
+    sheet_name: &str,
+    raw_table_name: &str,
+    path_str: &str,
+) -> Result<Option<ImportedTablePayload>, String> {
+    let mut rows_iter = range.rows();
+    let Some(header_row) = rows_iter.next() else {
+        return Ok(None);
+    };
+
+    let col_names = normalize_headers(header_row);
+    if col_names.is_empty() {
+        return Ok(None);
+    }
+
+    let data_rows: Vec<&[Data]> = rows_iter
+        .filter(|r| r.iter().any(|c| !matches!(c, Data::Empty)))
+        .collect();
+
+    let col_types = infer_excel_column_types(&col_names, &data_rows);
+    let safe_table_name = sanitize_identifier(raw_table_name);
+
+    let col_defs: Vec<String> = col_names
+        .iter()
+        .zip(col_types.iter())
+        .map(|(name, dtype)| format!("{} {}", quote_ident(name), dtype.duckdb_sql_type()))
+        .collect();
+
+    let create_sql = format!(
+        "CREATE OR REPLACE TABLE {} ({})",
+        quote_ident(&safe_table_name),
+        col_defs.join(", ")
+    );
+    conn.execute(&create_sql, [])
+        .map_err(|e| format!("Erro ao criar tabela '{}': {}", safe_table_name, e))?;
+
+    if !data_rows.is_empty() {
+        let placeholders: Vec<&str> = (0..col_names.len()).map(|_| "?").collect();
+        let insert_sql = format!(
+            "INSERT INTO {} VALUES ({})",
+            quote_ident(&safe_table_name),
+            placeholders.join(", ")
+        );
+
+        conn.execute("BEGIN TRANSACTION", [])
+            .map_err(|e| format!("Erro ao iniciar transação DuckDB: {}", e))?;
+
+        let insert_res: Result<(), String> = (|| {
+            let mut stmt = conn
+                .prepare(&insert_sql)
+                .map_err(|e| format!("Erro ao preparar INSERT: {}", e))?;
+
+            for row in &data_rows {
+                let mut values: Vec<duckdb::types::Value> = Vec::with_capacity(col_names.len());
+                for (idx, dtype) in col_types.iter().enumerate() {
+                    let cell = row.get(idx).unwrap_or(&Data::Empty);
+                    values.push(calamine_to_duckdb_value(cell, *dtype));
+                }
+                let params: Vec<&dyn ToSql> = values.iter().map(|v| v as &dyn ToSql).collect();
+                stmt.execute(params_from_iter(params))
+                    .map_err(|e| format!("Erro ao inserir linha em '{}': {}", safe_table_name, e))?;
+            }
+            Ok(())
+        })();
+
+        match insert_res {
+            Ok(()) => {
+                conn.execute("COMMIT", [])
+                    .map_err(|e| format!("Erro ao confirmar transação DuckDB: {}", e))?;
+            }
+            Err(err) => {
+                let _ = conn.execute("ROLLBACK", []);
+                return Err(err);
+            }
+        }
+    }
+
+    let mut payload = build_table_payload(conn, &safe_table_name, raw_table_name)?;
+    payload.source_path = Some(path_str.to_string());
+    payload.sheet_name = Some(sheet_name.to_string());
+    Ok(Some(payload))
+}
+
 fn build_table_payload(
     conn: &Connection,
     safe_name: &str,
@@ -572,6 +721,8 @@ fn build_table_payload(
         rows: preview.rows,
         total_rows: total,
         truncated: total > PREVIEW_ROW_LIMIT,
+        source_path: None,
+        sheet_name: None,
     })
 }
 
@@ -835,5 +986,129 @@ mod tests {
         let info = store.get_engine_info().expect("engine info");
         assert_eq!(info.engine, "duckdb-native");
         assert!(info.table_count >= 1);
+        assert!(imported.source_path.is_some());
+    }
+
+    #[test]
+    fn test_duckdb_import_json_and_parquet() {
+        let store = DuckDbStore::new_in_memory().expect("init duckdb");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let json_path = dir.path().join("dados_teste.json");
+        std::fs::write(
+            &json_path,
+            r#"[{"Produto":"A","Valor":100.5},{"Produto":"B","Valor":250.0}]"#,
+        )
+        .expect("write json");
+
+        let json_payload = store
+            .import_json_file(&json_path, Some("t_json"))
+            .expect("import json");
+        assert_eq!(json_payload.table_name, "t_json");
+        assert_eq!(json_payload.total_rows, 2);
+        assert_eq!(
+            json_payload.source_path.as_deref(),
+            Some(json_path.to_string_lossy().as_ref())
+        );
+
+        let parquet_path = dir.path().join("dados_teste.parquet");
+        {
+            let conn = store.conn.lock().unwrap();
+            let sql = format!(
+                "COPY \"t_json\" TO '{}' (FORMAT PARQUET)",
+                parquet_path.to_string_lossy().replace('\'', "''")
+            );
+            conn.execute(&sql, []).expect("copy parquet");
+        }
+
+        let parquet_payload = store
+            .import_parquet(&parquet_path, Some("t_parquet"))
+            .expect("import parquet");
+        assert_eq!(parquet_payload.table_name, "t_parquet");
+        assert_eq!(parquet_payload.total_rows, 2);
+        assert_eq!(parquet_payload.columns.len(), 2);
+        assert_eq!(
+            parquet_payload.source_path.as_deref(),
+            Some(parquet_path.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn test_duckdb_import_xlsx_sheet_custom_target() {
+        use zip::write::SimpleFileOptions;
+        use zip::ZipWriter;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let xlsx_path = dir.path().join("planilha.xlsx");
+        {
+            let file = std::fs::File::create(&xlsx_path).expect("create xlsx");
+            let mut zip = ZipWriter::new(file);
+            let opts = SimpleFileOptions::default();
+
+            zip.start_file("[Content_Types].xml", opts).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"#,
+            )
+            .unwrap();
+
+            zip.start_file("_rels/.rels", opts).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#,
+            )
+            .unwrap();
+
+            zip.start_file("xl/workbook.xml", opts).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Fato" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"#,
+            )
+            .unwrap();
+
+            zip.start_file("xl/_rels/workbook.xml.rels", opts).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#,
+            )
+            .unwrap();
+
+            zip.start_file("xl/worksheets/sheet1.xml", opts).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>Descricao</t></is></c><c r="B1" t="inlineStr"><is><t>Valor</t></is></c></row>
+    <row r="2"><c r="A2" t="inlineStr"><is><t>Frete</t></is></c><c r="B2"><v>1234.5</v></c></row>
+  </sheetData>
+</worksheet>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let store = DuckDbStore::new_in_memory().expect("init duckdb");
+        let payload = store
+            .import_xlsx_sheet(&xlsx_path, Some("Fato"), Some("fLancamentos"))
+            .expect("import xlsx sheet");
+        assert_eq!(payload.table_name, "fLancamentos");
+        assert_eq!(payload.sheet_name.as_deref(), Some("Fato"));
+        assert_eq!(payload.total_rows, 1);
+        assert_eq!(
+            payload.rows[0].get("Descricao").and_then(|v| v.as_str()),
+            Some("Frete")
+        );
     }
 }

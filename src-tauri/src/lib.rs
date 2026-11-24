@@ -25,6 +25,13 @@ pub struct NativeDaxEvalResult {
     pub display: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshPbipResult {
+    pub loaded_tables: Vec<ImportedTablePayload>,
+    pub warnings: Vec<String>,
+}
+
 #[tauri::command]
 fn get_engine_info(state: State<'_, AppState>) -> Result<EngineInfo, String> {
     state.db.get_engine_info()
@@ -40,11 +47,63 @@ fn import_csv_native(
 }
 
 #[tauri::command]
+fn import_parquet_native(
+    state: State<'_, AppState>,
+    path: String,
+    table_name: Option<String>,
+) -> Result<ImportedTablePayload, String> {
+    state.db.import_parquet(&PathBuf::from(path), table_name.as_deref())
+}
+
+#[tauri::command]
+fn import_json_native(
+    state: State<'_, AppState>,
+    path: String,
+    table_name: Option<String>,
+) -> Result<ImportedTablePayload, String> {
+    state.db.import_json_file(&PathBuf::from(path), table_name.as_deref())
+}
+
+#[tauri::command]
 fn import_xlsx_native(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<Vec<ImportedTablePayload>, String> {
     state.db.import_xlsx(&PathBuf::from(path))
+}
+
+#[tauri::command]
+fn import_xlsx_sheet_native(
+    state: State<'_, AppState>,
+    path: String,
+    sheet_name: Option<String>,
+    table_name: Option<String>,
+) -> Result<ImportedTablePayload, String> {
+    state.db.import_xlsx_sheet(
+        &PathBuf::from(path),
+        sheet_name.as_deref(),
+        table_name.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn refresh_table_native(
+    state: State<'_, AppState>,
+    request: pbi::m_loader::RefreshTableRequest,
+) -> Result<ImportedTablePayload, String> {
+    pbi::m_loader::refresh_single_table(&request, &state.db)
+}
+
+#[tauri::command]
+fn refresh_pbip_tables(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<RefreshPbipResult, String> {
+    let summary = pbi::pbip::open_pbip_project(&PathBuf::from(path), Some(&state.db))?;
+    Ok(RefreshPbipResult {
+        loaded_tables: summary.loaded_tables,
+        warnings: summary.warnings,
+    })
 }
 
 #[tauri::command]
@@ -199,7 +258,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_engine_info,
             import_csv_native,
+            import_parquet_native,
+            import_json_native,
             import_xlsx_native,
+            import_xlsx_sheet_native,
+            refresh_table_native,
+            refresh_pbip_tables,
             query_duckdb,
             list_duckdb_tables,
             get_table_preview,

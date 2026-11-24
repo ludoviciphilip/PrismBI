@@ -11,6 +11,7 @@ import {
   WhatIfParameter,
   BiTheme,
   Column,
+  TableSourceConfig,
   CalculationGroup,
   UserDefinedFunction,
   DaxQueryTab,
@@ -22,6 +23,7 @@ export interface ProjectState {
   version: string;
   appVersion?: string;
   projectName: string;
+  sourcePbipPath?: string | null;
   tables: Table[];
   relationships: Relationship[];
   measures: Measure[];
@@ -58,6 +60,7 @@ export interface ChunkedTableRecord {
   name: string;
   originalName: string;
   columns: Column[];
+  sourceConfig?: TableSourceConfig;
   isCalculated?: boolean;
   isCalendar?: boolean;
   isHidden?: boolean;
@@ -153,6 +156,7 @@ export async function saveProjectToStorage(state: ProjectState): Promise<SaveRes
           name: table.name,
           originalName: table.originalName,
           columns: table.columns,
+          sourceConfig: table.sourceConfig,
           isCalculated: table.isCalculated,
           isCalendar: table.isCalendar,
           isHidden: table.isHidden,
@@ -232,6 +236,7 @@ export async function loadProjectFromStorage(): Promise<ProjectState | null> {
           originalName: rec.originalName,
           columns: rec.columns || [],
           rows,
+          sourceConfig: rec.sourceConfig,
           isCalculated: rec.isCalculated,
           isCalendar: rec.isCalendar,
           isHidden: rec.isHidden,
