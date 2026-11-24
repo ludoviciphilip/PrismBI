@@ -91,7 +91,31 @@ impl DaxValue {
                 }
             }
             DaxValue::Boolean(b) => format!("b:{}", b),
-            DaxValue::Text(s) => format!("t:{}", s.trim().to_lowercase()),
+            DaxValue::Text(s) => {
+                let t = s.trim();
+                if let Ok(n) = t.parse::<f64>() {
+                    if n.is_finite() {
+                        return DaxValue::Number(n).canonical_key();
+                    }
+                }
+                if t.is_ascii()
+                    && t.len() >= 19
+                    && (t.as_bytes()[10] == b'T' || t.as_bytes()[10] == b' ')
+                    && t[11..].starts_with("00:00:00")
+                {
+                    let date_part = &t[..10];
+                    if date_part.bytes().enumerate().all(|(i, b)| {
+                        if i == 4 || i == 7 {
+                            b == b'-'
+                        } else {
+                            b.is_ascii_digit()
+                        }
+                    }) {
+                        return format!("t:{}", date_part);
+                    }
+                }
+                format!("t:{}", t.to_lowercase())
+            }
         }
     }
 
@@ -324,7 +348,10 @@ impl DaxModel {
         }
 
         // Propagate filters along relationships (1/to -> N/from always, and from -> to if bidirectional)
+        // Track traversed relationships so a bidirectional edge never bounces propagated filters
+        // backward from a sparse table (e.g. monthly opening balances) onto the calendar table.
         let mut queue: VecDeque<String> = ctx.filters.keys().cloned().collect();
+        let mut used_rels: HashSet<usize> = HashSet::new();
         let mut hops = 0usize;
         while let Some(src_key) = queue.pop_front() {
             if hops > 64 {
@@ -332,8 +359,8 @@ impl DaxModel {
             }
             hops += 1;
 
-            for rel in &self.relationships {
-                if !rel.is_active {
+            for (rel_idx, rel) in self.relationships.iter().enumerate() {
+                if !rel.is_active || used_rels.contains(&rel_idx) {
                     continue;
                 }
                 let from_k = rel.from_table.to_lowercase();
@@ -348,6 +375,7 @@ impl DaxModel {
                             to_tbl.get_col_idx(&rel.to_column),
                             from_tbl.get_col_idx(&rel.from_column),
                         ) {
+                            used_rels.insert(rel_idx);
                             let to_mask = &table_masks[&to_k];
                             let allowed_keys: HashSet<String> = to_tbl
                                 .rows
@@ -381,6 +409,7 @@ impl DaxModel {
                             from_tbl.get_col_idx(&rel.from_column),
                             to_tbl.get_col_idx(&rel.to_column),
                         ) {
+                            used_rels.insert(rel_idx);
                             let from_mask = &table_masks[&from_k];
                             let allowed_keys: HashSet<String> = from_tbl
                                 .rows

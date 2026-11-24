@@ -1244,10 +1244,33 @@ mod tests {
             "Visual da DFC deve resolver Medidas.Abertura do Caixa Mês em vez de Medidas.Abertura do Caixa"
         );
 
+        let mut ctx_set = FilterContext::default();
+        ctx_set.set_column_filter(
+            "dCalendario",
+            "Ano",
+            [DaxValue::Text("2026".into()).canonical_key()].into_iter().collect(),
+        );
+        ctx_set.set_column_filter(
+            "dCalendario",
+            "Nome do Mês",
+            [DaxValue::Text("Setembro".into()).canonical_key()].into_iter().collect(),
+        );
+        let fat_set = model.evaluate_dax("[Faturamento]", &ctx_set).expect("eval Faturamento Setembro");
+        let sal_set = model.evaluate_dax("[Salários]", &ctx_set).expect("eval Salários Setembro");
+        let mut ctx_out = FilterContext::default();
+        ctx_out.set_column_filter(
+            "dCalendario",
+            "Nome do Mês",
+            [DaxValue::Text("Outubro".into()).canonical_key()].into_iter().collect(),
+        );
+        let fat_out = model.evaluate_dax("[Faturamento]", &ctx_out).expect("eval Faturamento Outubro");
         println!(
-            "RHINO REAL -> Faturamento={:?}, Salarios={:?}, DRE={:?}, Entradas={:?}, Saidas={:?}, LoadedTables={:?}",
+            "RHINO REAL -> Faturamento={:?}, Salarios={:?}, FatSet={:?}, SalariosSet={:?}, FatOut={:?}, DRE={:?}, Entradas={:?}, Saidas={:?}, LoadedTables={:?}",
             fat,
             salarios,
+            fat_set,
+            sal_set,
+            fat_out,
             dre,
             entradas,
             saidas,
@@ -1255,5 +1278,100 @@ mod tests {
         );
         assert!(fat.as_f64().unwrap_or(0.0) > 0.0);
         assert!(salarios.as_f64().unwrap_or(0.0).abs() > 0.0);
+        assert!(
+            fat_set.as_f64().unwrap_or(0.0) > 50_000.0 || fat_out.as_f64().unwrap_or(0.0) > 50_000.0,
+            "Faturamento mensal deve considerar o mês completo, não apenas o dia 1"
+        );
+    }
+
+    #[test]
+    fn test_bidirectional_relationship_no_bounce_back_and_numeric_string_filter() {
+        let mut model = DaxModel::new();
+        let cal_row = |d: &str, ano: i64, mes: i64| {
+            let mut m = serde_json::Map::new();
+            m.insert("Data".into(), serde_json::Value::String(d.into()));
+            m.insert("Ano".into(), serde_json::json!(ano));
+            m.insert("Mes".into(), serde_json::json!(mes));
+            m
+        };
+        let sale_row = |d: &str, v: f64| {
+            let mut m = serde_json::Map::new();
+            m.insert("Data".into(), serde_json::Value::String(d.into()));
+            m.insert("Valor".into(), serde_json::json!(v));
+            m
+        };
+        let open_row = |d: &str, v: f64| {
+            let mut m = serde_json::Map::new();
+            m.insert("Data".into(), serde_json::Value::String(d.into()));
+            m.insert("Saldo".into(), serde_json::json!(v));
+            m
+        };
+
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput {
+                    name: "dCal".into(),
+                    columns: vec!["Data".into(), "Ano".into(), "Mes".into()],
+                    rows: vec![
+                        cal_row("2026-03-01", 2026, 3),
+                        cal_row("2026-03-10", 2026, 3),
+                        cal_row("2026-03-20", 2026, 3),
+                    ],
+                },
+                DaxTableInput {
+                    name: "fVendas".into(),
+                    columns: vec!["Data".into(), "Valor".into()],
+                    rows: vec![
+                        sale_row("2026-03-01", 3117.20),
+                        sale_row("2026-03-10", 60000.00),
+                        sale_row("2026-03-20", 65606.32),
+                    ],
+                },
+                DaxTableInput {
+                    name: "fAberturas".into(),
+                    columns: vec!["Data".into(), "Saldo".into()],
+                    // Only day 1 of month exists in fAberturas
+                    rows: vec![open_row("2026-03-01", 10000.0)],
+                },
+            ],
+            relationships: vec![
+                DaxRelationshipInput {
+                    from_table: "fVendas".into(),
+                    from_column: "Data".into(),
+                    to_table: "dCal".into(),
+                    to_column: "Data".into(),
+                    cross_filter_direction: "single".into(),
+                    is_active: true,
+                },
+                DaxRelationshipInput {
+                    from_table: "dCal".into(),
+                    from_column: "Data".into(),
+                    to_table: "fAberturas".into(),
+                    to_column: "Data".into(),
+                    cross_filter_direction: "both".into(),
+                    is_active: true,
+                },
+            ],
+            measures: vec![DaxMeasureInput {
+                name: "Fat".into(),
+                table_name: "fVendas".into(),
+                formula: "SUM(fVendas[Valor])".into(),
+            }],
+        });
+
+        let mut ctx = FilterContext::default();
+        ctx.set_column_filter(
+            "dCal",
+            "Ano",
+            [DaxValue::Text("2026".into()).canonical_key()].into_iter().collect(),
+        );
+        ctx.set_column_filter(
+            "dCal",
+            "Mes",
+            [DaxValue::Text("3".into()).canonical_key()].into_iter().collect(),
+        );
+
+        let total = model.evaluate_dax("[Fat]", &ctx).unwrap().as_f64().unwrap();
+        assert!((total - 128723.52).abs() < 1e-6);
     }
 }
