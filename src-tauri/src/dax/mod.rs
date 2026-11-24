@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod evaluator;
+pub mod functions;
 pub mod lexer;
 pub mod parser;
 pub mod query_planner;
@@ -245,10 +246,22 @@ pub struct DaxModelSyncPayload {
     pub measures: Vec<DaxMeasureInput>,
 }
 
+#[derive(Debug, Clone)]
+pub struct RelOverride {
+    pub from_table: String,
+    pub from_column: String,
+    pub to_table: String,
+    pub to_column: String,
+    pub activate: Option<bool>,
+    pub direction: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FilterContext {
     /// table_lower -> col_lower -> allowed canonical keys
     pub filters: HashMap<String, HashMap<String, HashSet<String>>>,
+    /// Dynamic USERELATIONSHIP / CROSSFILTER overrides applied inside CALCULATE
+    pub rel_overrides: Vec<RelOverride>,
 }
 
 impl FilterContext {
@@ -347,6 +360,55 @@ impl DaxModel {
             table_masks.insert(tkey.clone(), mask);
         }
 
+        // Effective relationships after USERELATIONSHIP / CROSSFILTER overrides
+        let mut effective_rels: Vec<(usize, DaxRelationshipInput)> = Vec::with_capacity(self.relationships.len());
+        let activated_pairs: Vec<(String, String)> = ctx
+            .rel_overrides
+            .iter()
+            .filter(|o| o.activate == Some(true))
+            .map(|o| (o.from_table.to_lowercase(), o.to_table.to_lowercase()))
+            .collect();
+
+        for (rel_idx, rel) in self.relationships.iter().enumerate() {
+            let mut eff = rel.clone();
+            let from_l = rel.from_table.to_lowercase();
+            let to_l = rel.to_table.to_lowercase();
+
+            // If USERELATIONSHIP activated another relationship between this same table pair, temporarily deactivate this one
+            let pair_activated_elsewhere = activated_pairs
+                .iter()
+                .any(|(a, b)| (a == &from_l && b == &to_l) || (a == &to_l && b == &from_l));
+            if pair_activated_elsewhere && eff.is_active {
+                eff.is_active = false;
+            }
+
+            for ov in &ctx.rel_overrides {
+                let fwd = ov.from_table.eq_ignore_ascii_case(&rel.from_table)
+                    && ov.from_column.eq_ignore_ascii_case(&rel.from_column)
+                    && ov.to_table.eq_ignore_ascii_case(&rel.to_table)
+                    && ov.to_column.eq_ignore_ascii_case(&rel.to_column);
+                let rev = ov.from_table.eq_ignore_ascii_case(&rel.to_table)
+                    && ov.from_column.eq_ignore_ascii_case(&rel.to_column)
+                    && ov.to_table.eq_ignore_ascii_case(&rel.from_table)
+                    && ov.to_column.eq_ignore_ascii_case(&rel.from_column);
+                if fwd || rev {
+                    if let Some(act) = ov.activate {
+                        eff.is_active = act;
+                    }
+                    if let Some(ref dir) = ov.direction {
+                        if dir.eq_ignore_ascii_case("none") {
+                            eff.is_active = false;
+                        } else {
+                            eff.cross_filter_direction = dir.clone();
+                        }
+                    }
+                }
+            }
+            if eff.is_active {
+                effective_rels.push((rel_idx, eff));
+            }
+        }
+
         // Propagate filters along relationships (1/to -> N/from always, and from -> to if bidirectional)
         // Track traversed relationships so a bidirectional edge never bounces propagated filters
         // backward from a sparse table (e.g. monthly opening balances) onto the calendar table.
@@ -359,8 +421,8 @@ impl DaxModel {
             }
             hops += 1;
 
-            for (rel_idx, rel) in self.relationships.iter().enumerate() {
-                if !rel.is_active || used_rels.contains(&rel_idx) {
+            for &(rel_idx, ref rel) in &effective_rels {
+                if used_rels.contains(&rel_idx) {
                     continue;
                 }
                 let from_k = rel.from_table.to_lowercase();

@@ -1,8 +1,27 @@
-import React, { useRef, useEffect } from 'react';
-import { Plus, Copy, Trash2, Edit2, Smartphone, ArrowLeft, Target, X, LayoutGrid, Maximize2 } from 'lucide-react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
+import {
+  Plus,
+  Copy,
+  Trash2,
+  Edit2,
+  Smartphone,
+  ArrowLeft,
+  Target,
+  X,
+  LayoutGrid,
+  Maximize2,
+  AlignStartVertical,
+  AlignCenterVertical,
+  AlignEndVertical,
+  AlignStartHorizontal,
+  AlignCenterHorizontal,
+  AlignEndHorizontal,
+  AlignHorizontalDistributeCenter,
+  AlignVerticalDistributeCenter,
+} from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
-import { VisualCard } from './VisualCard';
+import { VisualCard, SnapGuide } from './VisualCard';
 import { ErrorBoundary } from '../shared/ErrorBoundary';
 import { useTranslation } from '../../i18n';
 import { getEffectiveCanvasSize } from '../../engine/shared/canvasPresets';
@@ -18,7 +37,14 @@ export const ReportView: React.FC = () => {
     duplicatePage,
     deletePage,
     selectedVisualId,
+    selectedVisualIds,
     setSelectedVisualId,
+    toggleVisualSelection,
+    moveVisualsDelta,
+    deleteSelectedVisuals,
+    alignSelectedVisuals,
+    undo,
+    redo,
     canvasZoom,
     setCanvasZoom,
     layoutMode,
@@ -37,7 +63,14 @@ export const ReportView: React.FC = () => {
     duplicatePage: s.duplicatePage,
     deletePage: s.deletePage,
     selectedVisualId: s.selectedVisualId,
+    selectedVisualIds: s.selectedVisualIds,
     setSelectedVisualId: s.setSelectedVisualId,
+    toggleVisualSelection: s.toggleVisualSelection,
+    moveVisualsDelta: s.moveVisualsDelta,
+    deleteSelectedVisuals: s.deleteSelectedVisuals,
+    alignSelectedVisuals: s.alignSelectedVisuals,
+    undo: s.undo,
+    redo: s.redo,
     canvasZoom: s.canvasZoom,
     setCanvasZoom: s.setCanvasZoom,
     layoutMode: s.layoutMode,
@@ -53,19 +86,79 @@ export const ReportView: React.FC = () => {
   const { width: canvasWidth, height: canvasHeight, label: canvasSizeLabel } = getEffectiveCanvasSize(activePage);
   const canvasRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
+
+  const handleSelectVisual = useCallback(
+    (id: string, additive?: boolean) => {
+      if (additive) {
+        toggleVisualSelection(id);
+      } else {
+        setSelectedVisualId(id);
+      }
+    },
+    [setSelectedVisualId, toggleVisualSelection]
+  );
 
   useEffect(() => {
+    const isEditableElement = (el: EventTarget | null) => {
+      const htmlEl = el as HTMLElement | null;
+      if (!htmlEl) return false;
+      const tag = htmlEl.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || htmlEl.isContentEditable;
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      if (e.key === '=' || e.key === '+') {
+      if (isEditableElement(e.target) || isEditableElement(document.activeElement)) {
+        return;
+      }
+
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === '=' || e.key === '+') {
+          e.preventDefault();
+          setCanvasZoom(useBiStore.getState().canvasZoom + 10);
+        } else if (e.key === '-' || e.key === '_') {
+          e.preventDefault();
+          setCanvasZoom(useBiStore.getState().canvasZoom - 10);
+        } else if (e.key === '0') {
+          e.preventDefault();
+          setCanvasZoom(100);
+        } else if (e.key.toLowerCase() === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          undo();
+        } else if (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey)) {
+          e.preventDefault();
+          redo();
+        }
+        return;
+      }
+
+      const currentSelected = useBiStore.getState().selectedVisualIds;
+      if (e.key === 'Escape' && currentSelected.length > 0) {
+        setSelectedVisualId(null);
+        return;
+      }
+
+      if ((e.key === 'Delete' || e.key === 'Backspace') && currentSelected.length > 0) {
         e.preventDefault();
-        setCanvasZoom(useBiStore.getState().canvasZoom + 10);
-      } else if (e.key === '-' || e.key === '_') {
-        e.preventDefault();
-        setCanvasZoom(useBiStore.getState().canvasZoom - 10);
-      } else if (e.key === '0') {
-        e.preventDefault();
-        setCanvasZoom(100);
+        deleteSelectedVisuals();
+        return;
+      }
+
+      if (currentSelected.length > 0 && !e.altKey) {
+        const step = e.shiftKey ? 10 : 1;
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          moveVisualsDelta(currentSelected, -step, 0);
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          moveVisualsDelta(currentSelected, step, 0);
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          moveVisualsDelta(currentSelected, 0, -step);
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          moveVisualsDelta(currentSelected, 0, step);
+        }
       }
     };
 
@@ -83,10 +176,10 @@ export const ReportView: React.FC = () => {
       window.removeEventListener('keydown', handleKeyDown);
       el?.removeEventListener('wheel', handleWheel);
     };
-  }, [setCanvasZoom]);
+  }, [setCanvasZoom, undo, redo, setSelectedVisualId, deleteSelectedVisuals, moveVisualsDelta]);
 
   const handleCanvasClick = (e: React.MouseEvent) => {
-    if (e.target === canvasRef.current) {
+    if (e.target === canvasRef.current || e.target === scrollContainerRef.current) {
       setSelectedVisualId(null);
     }
   };
@@ -181,36 +274,142 @@ export const ReportView: React.FC = () => {
             const gridSvgUri = showGrid
               ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='${gSize}' height='${gSize}'%3E%3Ccircle cx='1' cy='1' r='1' fill='${dotColor}'/%3E%3C/svg%3E")`
               : 'none';
+            const isMulti = selectedVisualIds.length >= 2;
             return (
-              <div
-                ref={canvasRef}
-                onClick={handleCanvasClick}
-                style={{
-                  transform: canvasZoom !== 100 ? `scale(${canvasZoom / 100})` : undefined,
-                  transformOrigin: canvasZoom !== 100 ? 'top center' : undefined,
-                  width: canvasWidth,
-                  height: canvasHeight,
-                  backgroundImage: gridSvgUri,
-                  backgroundSize: `${gSize}px ${gSize}px`,
-                }}
-                className="mx-auto bg-white dark:bg-slate-900 rounded shadow-sm border border-slate-300 dark:border-slate-800 relative shrink-0"
-              >
-                {activePage?.visuals.map(visual => (
-                  <ErrorBoundary key={visual.id} fallbackTitle={visual.title}>
-                    <VisualCard
-                      visual={visual}
-                      isSelected={selectedVisualId === visual.id}
-                      onSelect={setSelectedVisualId}
-                    />
-                  </ErrorBoundary>
-                ))}
+              <div className="relative flex flex-col items-center">
+                {isMulti && (
+                  <div
+                    onClick={e => e.stopPropagation()}
+                    className="sticky top-2 z-40 mb-3 flex items-center gap-1 px-3 py-1.5 rounded-full bg-white/95 dark:bg-slate-800/95 border border-slate-300 dark:border-slate-700 shadow-lg backdrop-blur-xs text-xs text-slate-700 dark:text-slate-200"
+                  >
+                    <span className="font-semibold text-amber-600 dark:text-amber-400 pr-2 border-r border-slate-200 dark:border-slate-700">
+                      {selectedVisualIds.length} selecionados
+                    </span>
+                    <button
+                      onClick={() => alignSelectedVisuals('left')}
+                      title="Alinhar à esquerda"
+                      className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
+                    >
+                      <AlignStartVertical className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => alignSelectedVisuals('center')}
+                      title="Centralizar horizontalmente"
+                      className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
+                    >
+                      <AlignCenterVertical className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => alignSelectedVisuals('right')}
+                      title="Alinhar à direita"
+                      className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
+                    >
+                      <AlignEndVertical className="w-3.5 h-3.5" />
+                    </button>
+                    <span className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5" />
+                    <button
+                      onClick={() => alignSelectedVisuals('top')}
+                      title="Alinhar ao topo"
+                      className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
+                    >
+                      <AlignStartHorizontal className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => alignSelectedVisuals('middle')}
+                      title="Centralizar verticalmente"
+                      className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
+                    >
+                      <AlignCenterHorizontal className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => alignSelectedVisuals('bottom')}
+                      title="Alinhar à base"
+                      className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
+                    >
+                      <AlignEndHorizontal className="w-3.5 h-3.5" />
+                    </button>
+                    {selectedVisualIds.length >= 3 && (
+                      <>
+                        <span className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5" />
+                        <button
+                          onClick={() => alignSelectedVisuals('distribute-h')}
+                          title="Distribuir horizontalmente"
+                          className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
+                        >
+                          <AlignHorizontalDistributeCenter className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => alignSelectedVisuals('distribute-v')}
+                          title="Distribuir verticalmente"
+                          className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer"
+                        >
+                          <AlignVerticalDistributeCenter className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    )}
+                    <span className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-0.5" />
+                    <button
+                      onClick={() => deleteSelectedVisuals()}
+                      title="Excluir selecionados (Delete)"
+                      className="p-1.5 rounded text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/50 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
 
-            {(!activePage?.visuals || activePage?.visuals.length === 0) && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 pointer-events-none">
-                <p className="text-sm font-semibold">{t.report.emptyPageTitle}</p>
-                <p className="text-xs mt-1">{t.report.emptyPageSubtitle}</p>
-              </div>
-            )}
+                <div
+                  ref={canvasRef}
+                  onClick={handleCanvasClick}
+                  style={{
+                    transform: canvasZoom !== 100 ? `scale(${canvasZoom / 100})` : undefined,
+                    transformOrigin: canvasZoom !== 100 ? 'top center' : undefined,
+                    width: canvasWidth,
+                    height: canvasHeight,
+                    backgroundImage: gridSvgUri,
+                    backgroundSize: `${gSize}px ${gSize}px`,
+                  }}
+                  className="mx-auto bg-white dark:bg-slate-900 rounded shadow-sm border border-slate-300 dark:border-slate-800 relative shrink-0"
+                >
+                  {activePage?.visuals.map(visual => {
+                    const visSelected = selectedVisualIds.includes(visual.id) || selectedVisualId === visual.id;
+                    return (
+                      <ErrorBoundary key={visual.id} fallbackTitle={visual.title}>
+                        <VisualCard
+                          visual={visual}
+                          isSelected={visSelected}
+                          isMultiSelected={isMulti && selectedVisualIds.includes(visual.id)}
+                          onSelect={handleSelectVisual}
+                          onSnapGuidesChange={setSnapGuides}
+                        />
+                      </ErrorBoundary>
+                    );
+                  })}
+
+                  {/* Smart Snap Guides (60fps canvas alignment lines) */}
+                  {snapGuides.map((g, idx) =>
+                    g.orientation === 'v' ? (
+                      <div
+                        key={`snap-v-${idx}`}
+                        className="absolute top-0 bottom-0 w-px bg-rose-500/90 pointer-events-none z-50 shadow-[0_0_4px_rgba(244,63,94,0.65)]"
+                        style={{ left: g.position }}
+                      />
+                    ) : (
+                      <div
+                        key={`snap-h-${idx}`}
+                        className="absolute left-0 right-0 h-px bg-rose-500/90 pointer-events-none z-50 shadow-[0_0_4px_rgba(244,63,94,0.65)]"
+                        style={{ top: g.position }}
+                      />
+                    )
+                  )}
+
+                  {(!activePage?.visuals || activePage?.visuals.length === 0) && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 pointer-events-none">
+                      <p className="text-sm font-semibold">{t.report.emptyPageTitle}</p>
+                      <p className="text-xs mt-1">{t.report.emptyPageSubtitle}</p>
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })()

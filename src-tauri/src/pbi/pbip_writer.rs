@@ -28,10 +28,20 @@ pub struct ExportMeasurePayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ExportFilterPayload {
+    pub table: String,
+    pub column: String,
+    pub values: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportTablePayload {
     pub name: String,
     pub columns: Vec<ExportColumnPayload>,
     pub is_hidden: Option<bool>,
+    #[serde(default)]
+    pub m_script: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +69,24 @@ pub struct ExportVisualPayload {
     pub x_axis_field: Option<String>,
     pub legend_field: Option<String>,
     pub y_axis_fields: Vec<String>,
+    #[serde(default)]
+    pub card_columns: Option<u32>,
+    #[serde(default)]
+    pub slicer_mode: Option<String>,
+    #[serde(default)]
+    pub text_content: Option<String>,
+    #[serde(default)]
+    pub action_type: Option<String>,
+    #[serde(default)]
+    pub action_target: Option<String>,
+    #[serde(default)]
+    pub show_title: Option<bool>,
+    #[serde(default)]
+    pub background_color: Option<String>,
+    #[serde(default)]
+    pub border_color: Option<String>,
+    #[serde(default)]
+    pub filters: Vec<ExportFilterPayload>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +97,8 @@ pub struct ExportPagePayload {
     pub width: f64,
     pub height: f64,
     pub visuals: Vec<ExportVisualPayload>,
+    #[serde(default)]
+    pub filters: Vec<ExportFilterPayload>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +109,10 @@ pub struct ExportPbipPayload {
     pub relationships: Vec<ExportRelationshipPayload>,
     pub measures: Vec<ExportMeasurePayload>,
     pub pages: Vec<ExportPagePayload>,
+    #[serde(default)]
+    pub theme_name: Option<String>,
+    #[serde(default)]
+    pub theme_palette: Option<Vec<String>>,
 }
 
 pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Result<String, String> {
@@ -173,6 +207,14 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
             tmdl.push('\n');
         }
 
+        if let Some(ref m_code) = tbl.m_script.as_deref().filter(|s| !s.trim().is_empty()) {
+            tmdl.push_str(&format!("\tpartition {} = m\n\t\tmode: import\n\t\tsource =\n", quote_tmdl_ident(&tbl.name)));
+            for line in m_code.lines() {
+                tmdl.push_str(&format!("\t\t\t\t{}\n", line));
+            }
+            tmdl.push('\n');
+        }
+
         let tfile = tables_dir.join(format!("{}.tmdl", sanitize_fs_name(&tbl.name)));
         fs::write(&tfile, tmdl).map_err(|e| format!("Erro ao gravar '{}': {}", tfile.display(), e))?;
     }
@@ -206,7 +248,8 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
 
     // 3. Write Report (PBIR)
     let rep_dir = root.join(&report_folder_name);
-    let pages_dir = rep_dir.join("definition").join("pages");
+    let rep_def_dir = rep_dir.join("definition");
+    let pages_dir = rep_def_dir.join("pages");
     fs::create_dir_all(&pages_dir).map_err(|e| format!("Erro ao criar pasta pages: {}", e))?;
 
     fs::write(
@@ -218,6 +261,34 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
         .unwrap(),
     )
     .map_err(|e| format!("Erro ao gravar definition.pbir: {}", e))?;
+
+    if let Some(ref palette) = payload.theme_palette.as_ref().filter(|p| !p.is_empty()) {
+        let res_dir = rep_dir.join("StaticResources").join("RegisteredResources");
+        fs::create_dir_all(&res_dir).map_err(|e| format!("Erro ao criar StaticResources: {}", e))?;
+        let theme_json = json!({
+            "name": payload.theme_name.clone().unwrap_or_else(|| "PrismTheme".to_string()),
+            "dataColors": palette,
+        });
+        fs::write(
+            res_dir.join("PrismTheme.json"),
+            serde_json::to_string_pretty(&theme_json).unwrap(),
+        )
+        .map_err(|e| format!("Erro ao gravar PrismTheme.json: {}", e))?;
+
+        let report_json = json!({
+            "themeCollection": {
+                "customTheme": {
+                    "name": "PrismTheme.json",
+                    "type": "RegisteredResources"
+                }
+            }
+        });
+        fs::write(
+            rep_def_dir.join("report.json"),
+            serde_json::to_string_pretty(&report_json).unwrap(),
+        )
+        .map_err(|e| format!("Erro ao gravar report.json: {}", e))?;
+    }
 
     let page_ids: Vec<String> = payload
         .pages
@@ -245,15 +316,18 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
         let vdir_root = pdir.join("visuals");
         fs::create_dir_all(&vdir_root).map_err(|e| format!("Erro ao criar visuals dir: {}", e))?;
 
+        let mut page_json = serde_json::Map::new();
+        page_json.insert("name".into(), json!(pid));
+        page_json.insert("displayName".into(), json!(page.name));
+        page_json.insert("width".into(), json!(page.width));
+        page_json.insert("height".into(), json!(page.height));
+        if !page.filters.is_empty() {
+            page_json.insert("filterConfig".into(), build_pbir_filter_config(&page.filters));
+        }
+
         fs::write(
             pdir.join("page.json"),
-            serde_json::to_string_pretty(&json!({
-                "name": pid,
-                "displayName": page.name,
-                "width": page.width,
-                "height": page.height
-            }))
-            .unwrap(),
+            serde_json::to_string_pretty(&serde_json::Value::Object(page_json)).unwrap(),
         )
         .map_err(|e| format!("Erro ao gravar page.json: {}", e))?;
 
@@ -263,7 +337,13 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
             let vdir = vdir_root.join(&vid);
             fs::create_dir_all(&vdir).map_err(|e| format!("Erro ao criar visual dir: {}", e))?;
 
-            let pbi_vtype = map_prism_to_pbi_visual_type(&vis.visual_type);
+            let pbi_vtype = if vis.visual_type == "slicer"
+                && vis.slicer_mode.as_deref() == Some("tiles")
+            {
+                "advancedSlicerVisual"
+            } else {
+                map_prism_to_pbi_visual_type(&vis.visual_type)
+            };
             let mut query_state = serde_json::Map::new();
 
             if let Some(cat) = &vis.x_axis_field {
@@ -316,23 +396,127 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
                 query_state.insert(role.to_string(), json!({ "projections": projs }));
             }
 
-            let vjson = json!({
-                "name": vid,
-                "position": { "x": vis.x, "y": vis.y, "width": vis.w, "height": vis.h },
-                "visual": {
-                    "visualType": pbi_vtype,
-                    "query": { "queryState": query_state }
+            let mut visual_inner = serde_json::Map::new();
+            visual_inner.insert("visualType".into(), json!(pbi_vtype));
+            if !query_state.is_empty() {
+                visual_inner.insert("query".into(), json!({ "queryState": query_state }));
+            }
+
+            let mut objects_map = serde_json::Map::new();
+            if let Some(cc) = vis.card_columns.filter(|&c| c > 0) {
+                objects_map.insert(
+                    "layout".into(),
+                    json!([{
+                        "properties": {
+                            "columnCount": { "expr": { "Literal": { "Value": format!("{}L", cc) } } }
+                        }
+                    }]),
+                );
+            }
+            if vis.visual_type == "textbox" {
+                let txt = vis.text_content.as_deref().unwrap_or(&vis.title);
+                objects_map.insert(
+                    "general".into(),
+                    json!([{
+                        "properties": {
+                            "paragraphs": [{ "textRuns": [{ "value": txt }] }]
+                        }
+                    }]),
+                );
+            }
+            if !objects_map.is_empty() {
+                visual_inner.insert("objects".into(), serde_json::Value::Object(objects_map));
+            }
+
+            let mut container_objects = serde_json::Map::new();
+            if !vis.title.trim().is_empty() {
+                let escaped_title = vis.title.replace('\'', "''");
+                container_objects.insert(
+                    "title".into(),
+                    json!([{
+                        "properties": {
+                            "show": { "expr": { "Literal": { "Value": if vis.show_title.unwrap_or(true) { "true" } else { "false" } } } },
+                            "text": { "expr": { "Literal": { "Value": format!("'{}'", escaped_title) } } }
+                        }
+                    }]),
+                );
+            }
+            if vis.visual_type == "action-button" {
+                let act_lit = if vis.action_type.as_deref() == Some("page-navigation") {
+                    "'PageNavigation'"
+                } else {
+                    "'Back'"
+                };
+                let mut link_props = serde_json::Map::new();
+                link_props.insert("type".into(), json!({ "expr": { "Literal": { "Value": act_lit } } }));
+                if let Some(ref target) = vis.action_target {
+                    let esc_target = target.replace('\'', "''");
+                    link_props.insert(
+                        "navigationSection".into(),
+                        json!({ "expr": { "Literal": { "Value": format!("'{}'", esc_target) } } }),
+                    );
                 }
-            });
+                container_objects.insert(
+                    "visualLink".into(),
+                    json!([{ "properties": serde_json::Value::Object(link_props) }]),
+                );
+            }
+            if !container_objects.is_empty() {
+                visual_inner.insert("visualContainerObjects".into(), serde_json::Value::Object(container_objects));
+            }
+
+            let mut vjson_map = serde_json::Map::new();
+            vjson_map.insert("name".into(), json!(vid));
+            vjson_map.insert("position".into(), json!({ "x": vis.x, "y": vis.y, "width": vis.w, "height": vis.h }));
+            vjson_map.insert("visual".into(), serde_json::Value::Object(visual_inner));
+            if !vis.filters.is_empty() {
+                vjson_map.insert("filterConfig".into(), build_pbir_filter_config(&vis.filters));
+            }
+
             fs::write(
                 vdir.join("visual.json"),
-                serde_json::to_string_pretty(&vjson).unwrap(),
+                serde_json::to_string_pretty(&serde_json::Value::Object(vjson_map)).unwrap(),
             )
             .map_err(|e| format!("Erro ao gravar visual.json: {}", e))?;
         }
     }
 
     Ok(pbip_path.to_string_lossy().to_string())
+}
+
+fn build_pbir_filter_config(filters: &[ExportFilterPayload]) -> serde_json::Value {
+    let filter_items: Vec<serde_json::Value> = filters
+        .iter()
+        .map(|f| {
+            let escaped_vals: Vec<serde_json::Value> = f
+                .values
+                .iter()
+                .map(|v| {
+                    let esc = v.replace('\'', "''");
+                    json!([{ "Literal": { "Value": format!("'{}'", esc) } }])
+                })
+                .collect();
+            json!({
+                "field": {
+                    "Column": {
+                        "Expression": { "SourceRef": { "Entity": f.table } },
+                        "Property": f.column
+                    }
+                },
+                "type": "Categorical",
+                "filter": {
+                    "Where": [{
+                        "Condition": {
+                            "In": {
+                                "Values": escaped_vals
+                            }
+                        }
+                    }]
+                }
+            })
+        })
+        .collect();
+    json!({ "filters": filter_items })
 }
 
 fn quote_tmdl_ident(name: &str) -> String {
@@ -390,6 +574,8 @@ fn map_prism_to_pbi_visual_type(vt: &str) -> &'static str {
         "matrix" => "pivotTable",
         "table" => "tableEx",
         "slicer" => "slicer",
+        "textbox" => "textbox",
+        "action-button" => "actionButton",
         _ => "clusteredColumnChart",
     }
 }
@@ -408,6 +594,7 @@ mod tests {
             tables: vec![ExportTablePayload {
                 name: "f_Vendas".into(),
                 is_hidden: Some(false),
+                m_script: Some("let\n    Fonte = Csv.Document(File.Contents(\"vendas.csv\"))\nin\n    Fonte".into()),
                 columns: vec![
                     ExportColumnPayload {
                         name: "Categoria".into(),
@@ -443,20 +630,60 @@ mod tests {
                 name: "Resumo".into(),
                 width: 1280.0,
                 height: 720.0,
-                visuals: vec![ExportVisualPayload {
-                    id: "vis_1".into(),
-                    visual_type: "matrix".into(),
-                    title: "Matriz".into(),
-                    x: 10.0,
-                    y: 20.0,
-                    w: 500.0,
-                    h: 300.0,
-                    table_id: "f_Vendas".into(),
-                    x_axis_field: Some("Categoria".into()),
-                    legend_field: None,
-                    y_axis_fields: vec!["Total Vendas".into()],
+                filters: vec![ExportFilterPayload {
+                    table: "f_Vendas".into(),
+                    column: "Categoria".into(),
+                    values: vec!["Eletronicos".into()],
                 }],
+                visuals: vec![
+                    ExportVisualPayload {
+                        id: "vis_1".into(),
+                        visual_type: "matrix".into(),
+                        title: "Matriz de Categorias".into(),
+                        x: 10.0,
+                        y: 20.0,
+                        w: 500.0,
+                        h: 300.0,
+                        table_id: "f_Vendas".into(),
+                        x_axis_field: Some("Categoria".into()),
+                        legend_field: None,
+                        y_axis_fields: vec!["Total Vendas".into()],
+                        card_columns: None,
+                        slicer_mode: None,
+                        text_content: None,
+                        action_type: None,
+                        action_target: None,
+                        show_title: Some(true),
+                        background_color: None,
+                        border_color: None,
+                        filters: vec![],
+                    },
+                    ExportVisualPayload {
+                        id: "vis_slicer".into(),
+                        visual_type: "slicer".into(),
+                        title: "Filtro Categoria".into(),
+                        x: 520.0,
+                        y: 20.0,
+                        w: 300.0,
+                        h: 80.0,
+                        table_id: "f_Vendas".into(),
+                        x_axis_field: Some("Categoria".into()),
+                        legend_field: None,
+                        y_axis_fields: vec![],
+                        card_columns: None,
+                        slicer_mode: Some("tiles".into()),
+                        text_content: None,
+                        action_type: None,
+                        action_target: None,
+                        show_title: Some(false),
+                        background_color: None,
+                        border_color: None,
+                        filters: vec![],
+                    },
+                ],
             }],
+            theme_name: Some("Tema PrismBI".into()),
+            theme_palette: Some(vec!["#f59e0b".into(), "#3b82f6".into()]),
         };
 
         let pbip_path = save_pbip_project(dir.path(), &payload).expect("save pbip");
@@ -465,7 +692,12 @@ mod tests {
         assert_eq!(reopened.tables.len(), 1);
         assert_eq!(reopened.tables[0].measures.len(), 1);
         assert_eq!(reopened.tables[0].measures[0].name, "Total Vendas");
+        assert_eq!(reopened.power_query_scripts.len(), 1);
         assert_eq!(reopened.pages.len(), 1);
+        assert_eq!(reopened.pages[0].filters.len(), 1);
+        assert_eq!(reopened.pages[0].filters[0].values, vec!["Eletronicos"]);
         assert_eq!(reopened.pages[0].visuals[0].visual_type, "matrix");
+        assert_eq!(reopened.pages[0].visuals[0].title, "Matriz de Categorias");
+        assert_eq!(reopened.pages[0].visuals[1].slicer_mode.as_deref(), Some("tiles"));
     }
 }

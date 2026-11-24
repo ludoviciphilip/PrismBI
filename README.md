@@ -4,7 +4,7 @@
 
 **Business Intelligence nativo para Linux — leve, rápido e compatível com projetos Power BI (`.pbip` / `.pbix`)**
 
-[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.5.0-f59e0b?style=flat-square)](./package.json)
+[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.6.0-f59e0b?style=flat-square)](./package.json)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 [![Rust](https://img.shields.io/badge/Rust-Engine_DAX-000000?style=flat-square&logo=rust&logoColor=white)](./src-tauri)
 [![DuckDB](https://img.shields.io/badge/DuckDB-Embarcado-FFF000?style=flat-square&logo=duckdb&logoColor=black)](https://duckdb.org/)
@@ -41,8 +41,8 @@ Construído com **Tauri v2 + Rust + DuckDB** no backend e **React + TypeScript +
 ## ✨ Principais Funcionalidades
 
 ### 📂 Compatibilidade com Power BI (`.pbip` / `.pbix`)
-- **Importação nativa em Rust:** leitura direta de pastas `.pbip` (`*.SemanticModel` em formato **TMDL** + `*.Report` em formato **PBIR**) e arquivos `.pbix` (`DataModelSchema`, `Report/Layout` UTF-16LE e `DataMashup`).
-- **Exportação `.pbip`:** salve projetos criados no PrismBI em estrutura compatível com TMDL/PBIR (`Exportar .pbip`), além de snapshots `.insight` e PDF.
+- **Importação nativa em Rust:** leitura direta de pastas `.pbip` (`*.SemanticModel` em formato **TMDL** + `*.Report` em formato **PBIR**) e arquivos `.pbix` (`DataModelSchema`, `Report/Layout` UTF-16LE e extração multi-query do `DataMashup`).
+- **Round-Trip `.pbip` (`v0.6.0`):** exportação preservando scripts Power Query (M), `columnCount` em cartões múltiplos, `advancedSlicerVisual` (`tiles`), `textbox`, `actionButton`, títulos, `filterConfig` em páginas/visuais e temas (`PrismTheme.json`), além de snapshots `.insight` e PDF.
 - **Fidelidade PBIR:** resolução correta de medidas renomeadas (`field.*.Property`), `columnCount` em cartões múltiplos, `filterConfig` em páginas/visuais, hierarquias de data, botões de ação (`actionButton`) e caixas de texto (`textbox`).
 
 ### 📊 Catálogo de Visuais Interativos
@@ -52,14 +52,15 @@ Construído com **Tauri v2 + Rust + DuckDB** no backend e **React + TypeScript +
 - **Funil & Cascata estilo Power BI:** Funil com `minSize` legível, topo `100%` e taxa de conversão no rodapé; Cascata real com variações positivas/negativas cruzando zero, linhas tracejadas conectoras e coluna `Total` final.
 - **Tabelas, Matrizes & Segmentadores:** Matriz Pivot com totais por linha/coluna, Tabela interativa com Drill-Through e Segmentadores no modo lista suspensa (`dropdown`) ou blocos clicáveis (`tiles`).
 
-### ⚡ Motor Analítico em Rust + DuckDB (`v0.5.0`)
+### ⚡ Motor Analítico em Rust + DuckDB (`v0.6.0`)
 - **DuckDB embarcado:** ingestão nativa rápida de **Excel (`.xlsx`/`.xls`)**, **CSV**, **Parquet**, **JSON** e endpoints **API REST (JSON)**, além de console SQL nativo.
 - **Atualização Real & Gestão de Tabelas:** botão **Atualizar Dados** que recarrega arquivos/fontes vinculados sem perder visuais, medidas ou relacionamentos — incluindo mapeamento de abas com nomes diferentes (ex.: aba `Fato` → `fLançamentos`), substituição de dados por outra planilha e renomeação completa de tabelas.
 - **Power Query (M) & Remapeamento Linux:** resolução automática de caminhos Windows → Linux em `.pbip` e suporte a `Table.RenameColumns`, `Table.RemoveColumns`, `Table.SelectColumns` e `Table.SelectRows`.
-- **Motor DAX & QueryPlanner em Rust:** avaliação de medidas com `CALCULATE`, `SWITCH`, `RANKX`, Time Intelligence (`TOTALYTD`, `TOTALMTD`, `PREVIOUSYEAR`, `PREVIOUSQUARTER`, `NEXTMONTH`), variáveis (`VAR` / `RETURN`), medidas encadeadas e propagação automática de filtros (`1:N`, `N:1`, bidirecional).
+- **Motor DAX Nativo (+110 funções) & QueryPlanner em Rust:** avaliação de medidas com `CALCULATE`, `SWITCH`, `RANKX`, funções matemáticas/trigonométricas, texto (`FORMAT`, `MID`, `FIND`, `SEARCH`, `CONTAINSSTRING`), estatísticas/iteradores (`MEDIAN`, `PERCENTILE.*`, `STDEV.*`, `VAR.*`, `CONCATENATEX`), relacionamentos/tabela (`VALUES`, `DISTINCT`, `TOPN`, `LOOKUPVALUE`, `USERELATIONSHIP`, `CROSSFILTER`), informação (`ISFILTERED`, `HASONEFILTER`, `ISINSCOPE`), financeiras (`PMT`, `PV`, `FV`, `NPER`) e Time Intelligence completo (`TOTALYTD`, `TOTALQTD`, `TOTALMTD`, `PARALLELPERIOD`, `DATESBETWEEN`, `DATESINPERIOD`, `PREVIOUSYEAR`, `PREVIOUSMONTH`, `STARTOF*`/`ENDOF*`, `OPENINGBALANCE*`/`CLOSINGBALANCE*`).
 - **Análise Interativa:** Cross-filtering bidirecional ao clicar em qualquer visual, Matriz com hierarquia expansível em 2 níveis, Drill-Through entre páginas, Cálculos Visuais e telemetria real no Performance Analyzer.
 
-### 🛠️ Produtividade, Modelagem & Governança
+### 🛠️ Produtividade, Modelagem & Edição Profissional
+- **Edição Profissional no Canvas:** **Undo / Redo** (`Ctrl+Z`, `Ctrl+Y` e botões na Ribbon), **seleção múltipla** (`Shift`/`Ctrl` + clique, arraste em grupo, nudge com setas, `Delete` e barra flutuante de alinhamento/distribuição) e **Smart Snap Guides** a 60fps.
 - **Visualização de Dados & Modelo:** inspeção tabular, gerenciador de relacionamentos com autodetecção e suporte a Tabelas Calendário.
 - **Power Query / ETL, Medidas Rápidas & Biblioteca UDF:** transformações de dados, assistente de medidas rápidas e editor DAX com IntelliSense.
 - **Governança & Temas:** simulação de RLS/OLS, parâmetros What-If, gerenciador de temas claros/escuros e suporte a i18n (`PT`, `EN`, `ES`) e moedas (`BRL`, `USD`, `EUR`).

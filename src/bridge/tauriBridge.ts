@@ -143,11 +143,18 @@ export interface PbiProjectSummary {
   warnings: string[];
 }
 
+export interface ExportPbipFilter {
+  table: string;
+  column: string;
+  values: string[];
+}
+
 export interface ExportPbipPayload {
   projectName: string;
   tables: {
     name: string;
     isHidden?: boolean;
+    mScript?: string | null;
     columns: {
       name: string;
       dataType: string;
@@ -179,6 +186,7 @@ export interface ExportPbipPayload {
     name: string;
     width: number;
     height: number;
+    filters?: ExportPbipFilter[];
     visuals: {
       id: string;
       visualType: string;
@@ -191,8 +199,19 @@ export interface ExportPbipPayload {
       xAxisField?: string | null;
       legendField?: string | null;
       yAxisFields: string[];
+      cardColumns?: number | null;
+      slicerMode?: string | null;
+      textContent?: string | null;
+      actionType?: string | null;
+      actionTarget?: string | null;
+      showTitle?: boolean | null;
+      backgroundColor?: string | null;
+      borderColor?: string | null;
+      filters?: ExportPbipFilter[];
     }[];
   }[];
+  themeName?: string | null;
+  themePalette?: string[] | null;
 }
 
 export interface DaxModelSyncPayload {

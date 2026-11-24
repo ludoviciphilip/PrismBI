@@ -27,10 +27,17 @@ import { VisualCalculationModal } from '../modals/VisualCalculationModal';
 import { useTranslation } from '../../i18n';
 import { getEffectiveCanvasSize } from '../../engine/shared/canvasPresets';
 
+export interface SnapGuide {
+  orientation: 'v' | 'h';
+  position: number;
+}
+
 interface VisualCardProps {
   visual: Visual;
   isSelected: boolean;
-  onSelect: (id: string) => void;
+  isMultiSelected?: boolean;
+  onSelect: (id: string, additive?: boolean) => void;
+  onSnapGuidesChange?: (guides: SnapGuide[]) => void;
   isMobile?: boolean;
 }
 
@@ -57,13 +64,15 @@ function formatCompactDisplay(val: number, isCurr: boolean, currSymbol: string):
   return isCurr ? `${sign}${currSymbol} ${numStr}${suffix}` : `${sign}${numStr}${suffix}`;
 }
 
-export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSelected, onSelect, isMobile }) => {
+export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSelected, isMultiSelected, onSelect, onSnapGuidesChange, isMobile }) => {
   const cardRef = useRef<HTMLDivElement>(null);
+  const didDragMoveRef = useRef(false);
   const filters = useBiStore(s => s.filters);
   const tables = useBiStore(s => s.tables);
   const measures = useBiStore(s => s.measures);
   const setCrossFilter = useBiStore(s => s.setCrossFilter);
   const updateVisual = useBiStore(s => s.updateVisual);
+  const moveVisualsDelta = useBiStore(s => s.moveVisualsDelta);
   const deleteVisual = useBiStore(s => s.deleteVisual);
   const pinVisualToDashboard = useBiStore(s => s.pinVisualToDashboard);
   const activePageId = useBiStore(s => s.activePageId);
@@ -120,7 +129,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     return false;
   };
 
-  // Mouse Drag to move visual freely within canvas (DOM-driven at 60fps, commits to store on mouseup)
+  // Mouse Drag to move visual (or multi-selected group) freely within canvas (DOM-driven at 60fps, commits on mouseup)
   const handleMouseDownDrag = (e: React.MouseEvent) => {
     if (isFocused || isMobile) return;
     // Don't drag if clicking buttons, inputs, selects, or tables
@@ -130,7 +139,39 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     }
     e.preventDefault();
     e.stopPropagation();
-    onSelect(visual.id);
+
+    const stateSnap = useBiStore.getState();
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+    const currentlySelected = stateSnap.selectedVisualIds;
+    const isAlreadyInSelection = currentlySelected.includes(visual.id);
+
+    if (!additive && !isAlreadyInSelection) {
+      onSelect(visual.id, false);
+    }
+
+    didDragMoveRef.current = false;
+    const dragGroupIds = !additive && isAlreadyInSelection && currentlySelected.length > 1
+      ? currentlySelected
+      : [visual.id];
+    const dragGroupSet = new Set(dragGroupIds);
+
+    const activePage = stateSnap.pages.find(p => p.id === activePageId);
+    const { width: canvasWidth, height: canvasHeight } = getEffectiveCanvasSize(activePage);
+    const allVisuals = activePage?.visuals || [];
+    const siblingVisuals = allVisuals.filter(v => !dragGroupSet.has(v.id));
+
+    const groupElements = dragGroupIds
+      .map(id => document.querySelector<HTMLElement>(`[data-visual-id="${id}"]`))
+      .filter((el): el is HTMLElement => Boolean(el));
+
+    // Precompute Snap Guide reference lines from sibling edges/centers + canvas center
+    const xRefs: number[] = [canvasWidth / 2];
+    const yRefs: number[] = [canvasHeight / 2];
+    for (const s of siblingVisuals) {
+      xRefs.push(s.x, s.x + s.w / 2, s.x + s.w);
+      yRefs.push(s.y, s.y + s.h / 2, s.y + s.h);
+    }
+
     setIsDragging(true);
     document.body.style.cursor = 'grabbing';
     document.body.style.userSelect = 'none';
@@ -139,26 +180,95 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     const startY = e.clientY;
     const origX = visual.x;
     const origY = visual.y;
-    let lastX = origX;
-    let lastY = origY;
+    let lastDx = 0;
+    let lastDy = 0;
+    let lastGuidesKey = '';
     let rafId: number | null = null;
     const zoomScale = Math.max(0.2, (canvasZoom || 100) / 100);
+    const gridStep = snapToGrid ? (gridSize || 10) : 1;
+    const SNAP_THRESHOLD = 6;
 
-    const activePage = useBiStore.getState().pages.find(p => p.id === activePageId);
-    const { width: canvasWidth, height: canvasHeight } = getEffectiveCanvasSize(activePage);
-    const step = snapToGrid ? (gridSize || 10) : 1;
+    const findBestSnap = (
+      anchors: number[], // [edgeStart, center, edgeEnd] relative to rawPos: [0, w/2, w]
+      rawPos: number,
+      refs: number[]
+    ): { snappedPos: number; guidePos: number | null } => {
+      let bestDist = SNAP_THRESHOLD + 1;
+      let bestOffset = 0;
+      let bestGuide: number | null = null;
+      for (const offset of anchors) {
+        const edge = rawPos + offset;
+        for (const ref of refs) {
+          const dist = Math.abs(edge - ref);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestOffset = ref - offset;
+            bestGuide = ref;
+          }
+        }
+      }
+      if (bestGuide !== null) {
+        return { snappedPos: Math.round(bestOffset), guidePos: Math.round(bestGuide) };
+      }
+      return { snappedPos: Math.round(rawPos), guidePos: null };
+    };
 
     const onMouseMove = (moveEvent: MouseEvent) => {
+      const pxDist = Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY);
+      if (pxDist > 3) {
+        didDragMoveRef.current = true;
+      }
+
       const deltaX = (moveEvent.clientX - startX) / zoomScale;
       const deltaY = (moveEvent.clientY - startY) / zoomScale;
       const rawX = origX + deltaX;
       const rawY = origY + deltaY;
-      lastX = Math.max(0, Math.min(canvasWidth - visual.w, Math.round(rawX / step) * step));
-      lastY = Math.max(0, Math.min(canvasHeight - visual.h, Math.round(rawY / step) * step));
+
+      let targetX: number;
+      let targetY: number;
+      const activeGuides: SnapGuide[] = [];
+
+      if (!moveEvent.altKey && dragGroupIds.length === 1) {
+        const snapX = findBestSnap([0, visual.w / 2, visual.w], rawX, xRefs);
+        const snapY = findBestSnap([0, visual.h / 2, visual.h], rawY, yRefs);
+
+        if (snapX.guidePos !== null) {
+          targetX = snapX.snappedPos;
+          activeGuides.push({ orientation: 'v', position: snapX.guidePos });
+        } else {
+          targetX = Math.round(rawX / gridStep) * gridStep;
+        }
+
+        if (snapY.guidePos !== null) {
+          targetY = snapY.snappedPos;
+          activeGuides.push({ orientation: 'h', position: snapY.guidePos });
+        } else {
+          targetY = Math.round(rawY / gridStep) * gridStep;
+        }
+      } else {
+        const step = moveEvent.altKey ? 1 : gridStep;
+        targetX = Math.round(rawX / step) * step;
+        targetY = Math.round(rawY / step) * step;
+      }
+
+      const clampedX = Math.max(0, Math.min(Math.max(0, canvasWidth - visual.w), targetX));
+      const clampedY = Math.max(0, Math.min(Math.max(0, canvasHeight - visual.h), targetY));
+      lastDx = clampedX - origX;
+      lastDy = clampedY - origY;
+
+      const guidesKey = activeGuides.map(g => `${g.orientation}:${g.position}`).join('|');
+      if (guidesKey !== lastGuidesKey) {
+        lastGuidesKey = guidesKey;
+        onSnapGuidesChange?.(activeGuides);
+      }
+
       if (rafId !== null) cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(() => {
-        if (cardRef.current) {
-          cardRef.current.style.transform = `translate3d(${lastX - origX}px, ${lastY - origY}px, 0)`;
+        for (const el of groupElements) {
+          el.style.transform = `translate3d(${lastDx}px, ${lastDy}px, 0)`;
+        }
+        if (groupElements.length === 0 && cardRef.current) {
+          cardRef.current.style.transform = `translate3d(${lastDx}px, ${lastDy}px, 0)`;
         }
         rafId = null;
       });
@@ -166,16 +276,26 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
     const onMouseUp = () => {
       if (rafId !== null) cancelAnimationFrame(rafId);
+      for (const el of groupElements) {
+        el.style.transform = '';
+      }
       if (cardRef.current) {
         cardRef.current.style.transform = '';
+      }
+      if (lastGuidesKey !== '') {
+        onSnapGuidesChange?.([]);
       }
       setIsDragging(false);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
-      if (lastX !== origX || lastY !== origY) {
-        updateVisual(visual.id, { x: lastX, y: lastY });
+      if (lastDx !== 0 || lastDy !== 0) {
+        if (dragGroupIds.length > 1) {
+          moveVisualsDelta(dragGroupIds, lastDx, lastDy);
+        } else {
+          updateVisual(visual.id, { x: origX + lastDx, y: origY + lastDy });
+        }
       }
     };
 
@@ -1072,7 +1192,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
   return (
     <div
       ref={cardRef}
-      onClick={() => onSelect(visual.id)}
+      data-visual-id={visual.id}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (didDragMoveRef.current) {
+          didDragMoveRef.current = false;
+          return;
+        }
+        onSelect(visual.id, e.shiftKey || e.ctrlKey || e.metaKey);
+      }}
       onMouseDown={(e) => {
         if (isMobile) return;
         const target = e.target as HTMLElement;
@@ -1100,6 +1228,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       className={`group flex flex-col border shadow-xs ${
         isMobile ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'
       } ${isSelected ? 'ring-2 ring-amber-400' : ''} ${
+        isMultiSelected ? 'ring-offset-1 ring-offset-sky-500/40' : ''
+      } ${
         isDragging ? 'opacity-90 shadow-2xl ring-2 ring-amber-500 cursor-grabbing' : ''
       }`}
     >

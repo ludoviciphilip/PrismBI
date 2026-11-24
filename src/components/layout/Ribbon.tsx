@@ -33,6 +33,8 @@ import {
   Sun,
   Moon,
   FileCode2,
+  Undo2,
+  Redo2,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
@@ -96,6 +98,11 @@ export const Ribbon: React.FC<{
     getProjectState,
     theme,
     setTheme,
+    activePalette,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
     setThemeModalOpen,
     themeMode,
     setThemeMode,
@@ -138,6 +145,11 @@ export const Ribbon: React.FC<{
     getProjectState: s.getProjectState,
     theme: s.theme,
     setTheme: s.setTheme,
+    activePalette: s.activePalette,
+    undo: s.undo,
+    redo: s.redo,
+    canUndo: s.canUndo,
+    canRedo: s.canRedo,
     setThemeModalOpen: s.setThemeModalOpen,
     themeMode: s.themeMode,
     setThemeMode: s.setThemeMode,
@@ -177,12 +189,22 @@ export const Ribbon: React.FC<{
     if (!folder) return;
 
     const state = getProjectState();
+    const resolveTableName = (tableId: string) =>
+      state.tables.find(t => t.id === tableId || t.name === tableId)?.name || tableId;
+    const toExportFilters = (list: typeof state.filters) =>
+      list.map(f => ({
+        table: resolveTableName(f.tableId),
+        column: f.column,
+        values: Array.isArray(f.value) ? f.value.map(String) : [String(f.value ?? '')],
+      }));
+
     try {
       const savedPath = await savePbipProject(folder, {
         projectName: state.projectName || projectName || 'PrismBI',
         tables: state.tables.map(t => ({
           name: t.name,
           isHidden: t.isHidden,
+          mScript: t.sourceConfig?.mScript ?? null,
           columns: t.columns.map(c => ({
             name: c.name,
             dataType: c.dataType,
@@ -214,6 +236,7 @@ export const Ribbon: React.FC<{
           name: p.name,
           width: p.canvasSize?.width || 1280,
           height: p.canvasSize?.height || 720,
+          filters: toExportFilters(state.filters.filter(f => f.level === 'page' && f.visualId === p.id)),
           visuals: p.visuals.map(v => ({
             id: v.id,
             visualType: v.type,
@@ -222,12 +245,23 @@ export const Ribbon: React.FC<{
             y: v.y,
             w: v.w,
             h: v.h,
-            tableId: v.dataConfig.tableId,
+            tableId: resolveTableName(v.dataConfig.tableId),
             xAxisField: v.dataConfig.xAxisField || null,
             legendField: v.dataConfig.legendField || null,
             yAxisFields: v.dataConfig.yAxisFields || [],
+            cardColumns: v.formatConfig.cardColumns ?? null,
+            slicerMode: v.dataConfig.slicerConfig?.mode ?? null,
+            textContent: v.formatConfig.textContent ?? null,
+            actionType: v.formatConfig.actionType ?? null,
+            actionTarget: v.formatConfig.actionTargetPageId ?? null,
+            showTitle: v.formatConfig.showTitle,
+            backgroundColor: v.formatConfig.backgroundColor ?? null,
+            borderColor: v.formatConfig.borderColor ?? null,
+            filters: toExportFilters(state.filters.filter(f => f.level === 'visual' && f.visualId === v.id)),
           })),
         })),
+        themeName: state.activeThemeId || theme || 'PrismTheme',
+        themePalette: activePalette,
       });
       alert(`Projeto .pbip exportado com sucesso em:\n${savedPath}`);
     } catch (err: any) {
@@ -521,8 +555,26 @@ export const Ribbon: React.FC<{
               </button>
             </div>
 
-            {/* Atualizar Dados das Fontes */}
+            {/* Atualizar Dados das Fontes + Histórico do Canvas */}
             <div className="flex items-center gap-1 px-2 border-r border-slate-200 dark:border-slate-800">
+              <button
+                onClick={() => undo()}
+                disabled={!canUndo}
+                title="Desfazer última ação no canvas (Ctrl+Z)"
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:pointer-events-none text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <Undo2 className="w-5 h-5 text-slate-600 dark:text-slate-300" />
+                <span className="text-[10px] font-semibold mt-0.5">Desfazer</span>
+              </button>
+              <button
+                onClick={() => redo()}
+                disabled={!canRedo}
+                title="Refazer ação no canvas (Ctrl+Y / Ctrl+Shift+Z)"
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:pointer-events-none text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <Redo2 className="w-5 h-5 text-slate-600 dark:text-slate-300" />
+                <span className="text-[10px] font-semibold mt-0.5">Refazer</span>
+              </button>
               <button
                 onClick={() => void refreshAllData()}
                 disabled={isRefreshingData}

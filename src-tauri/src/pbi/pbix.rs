@@ -121,16 +121,67 @@ fn extract_power_query_from_datamashup(bytes: &[u8]) -> Vec<PbiPowerQueryScript>
             if let Ok(m_bytes) = read_zip_entry_bytes(&mut inner_zip, &name) {
                 let text = decode_utf8_or_utf16(&m_bytes);
                 if !text.trim().is_empty() {
-                    scripts.push(PbiPowerQueryScript {
-                        name,
-                        script: text,
-                    });
+                    let sections = split_section1_m_queries(&text);
+                    if sections.len() > 1 {
+                        for (qname, qbody) in sections {
+                            scripts.push(PbiPowerQueryScript {
+                                name: qname,
+                                script: qbody,
+                            });
+                        }
+                    } else {
+                        scripts.push(PbiPowerQueryScript {
+                            name,
+                            script: text,
+                        });
+                    }
                 }
             }
         }
     }
 
     scripts
+}
+
+fn split_section1_m_queries(section_text: &str) -> Vec<(String, String)> {
+    let mut queries = Vec::new();
+    let mut cur_name: Option<String> = None;
+    let mut cur_lines: Vec<String> = Vec::new();
+
+    for line in section_text.lines() {
+        let trimmed = line.trim();
+        if let Some(after_shared) = trimmed.strip_prefix("shared ") {
+            if let Some(eq_idx) = after_shared.find('=') {
+                if let Some(prev_name) = cur_name.take() {
+                    let body = cur_lines.join("\n").trim().to_string();
+                    if !body.is_empty() {
+                        queries.push((prev_name, body));
+                    }
+                }
+                let raw_name = after_shared[..eq_idx].trim();
+                let clean_name = raw_name
+                    .strip_prefix("#\"")
+                    .and_then(|s| s.strip_suffix('"'))
+                    .unwrap_or(raw_name)
+                    .to_string();
+                cur_name = Some(clean_name);
+                cur_lines = vec![after_shared[eq_idx + 1..].trim_start().to_string()];
+                continue;
+            }
+        }
+        if cur_name.is_some() {
+            cur_lines.push(line.to_string());
+        }
+    }
+
+    if let Some(last_name) = cur_name {
+        let body = cur_lines.join("\n").trim().to_string();
+        if !body.is_empty() {
+            queries.push((last_name, body));
+        }
+    }
+
+    queries
 }
 
 #[cfg(test)]
@@ -175,5 +226,46 @@ mod tests {
         assert_eq!(summary.pages[0].visuals[0].category_field.as_deref(), Some("Produto"));
         assert_eq!(summary.tables.len(), 1);
         assert_eq!(summary.tables[0].measures[0].name, "Receita");
+    }
+
+    #[test]
+    fn test_extract_multi_query_section1_from_datamashup() {
+        let tmp = NamedTempFile::new().unwrap();
+        {
+            let mut inner_buf = Cursor::new(Vec::new());
+            {
+                let mut inner_zw = ZipWriter::new(&mut inner_buf);
+                let opts = SimpleFileOptions::default();
+                inner_zw.start_file("Formulas/Section1.m", opts).unwrap();
+                let m_code = r#"section Section1;
+
+shared fVendas = let
+    Source = Csv.Document(File.Contents("vendas.csv"))
+in
+    Source;
+
+shared #"d_Produtos" = let
+    Source = Excel.Workbook(File.Contents("prod.xlsx"))
+in
+    Source;
+"#;
+                inner_zw.write_all(m_code.as_bytes()).unwrap();
+                inner_zw.finish().unwrap();
+            }
+
+            let mut outer_zw = ZipWriter::new(tmp.reopen().unwrap());
+            let opts = SimpleFileOptions::default();
+            outer_zw.start_file("DataMashup", opts).unwrap();
+            outer_zw.write_all(&[0u8; 8]).unwrap();
+            outer_zw.write_all(&inner_buf.into_inner()).unwrap();
+            outer_zw.finish().unwrap();
+        }
+
+        let summary = open_pbix_file(tmp.path()).expect("open pbix with datamashup");
+        assert_eq!(summary.power_query_scripts.len(), 2);
+        assert_eq!(summary.power_query_scripts[0].name, "fVendas");
+        assert!(summary.power_query_scripts[0].script.contains("Csv.Document"));
+        assert_eq!(summary.power_query_scripts[1].name, "d_Produtos");
+        assert!(summary.power_query_scripts[1].script.contains("Excel.Workbook"));
     }
 }

@@ -1,6 +1,10 @@
 use crate::dax::ast::{BinaryOp, Expr, UnaryOp};
+use crate::dax::functions::{
+    add_days, add_months, calc_geomean, calc_median, calc_percentile, calc_stdev, calc_variance,
+    civil_to_days, days_in_month, parse_flexible_ymd, parse_iso_ymd, try_eval_scalar_fn,
+};
 use crate::dax::parser::parse_dax;
-use crate::dax::{DaxModel, DaxTableData, DaxValue, FilterContext};
+use crate::dax::{DaxModel, DaxTableData, DaxValue, FilterContext, RelOverride};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
@@ -306,7 +310,7 @@ fn eval_call(
             let exp = eval_arg(args, 1, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
             Ok(DaxValue::Number(base.powf(exp)))
         }
-        "TOTALYTD" | "TOTALMTD" => {
+        "TOTALYTD" | "TOTALMTD" | "TOTALQTD" => {
             if args.len() < 2 {
                 return Err(format!("{} requer (expressão, Tabela[Data])", fname));
             }
@@ -318,11 +322,58 @@ fn eval_call(
             } else {
                 ctx.clone()
             };
-            apply_period_to_date(model, ctx, &mut next_ctx, table, column, fname == "TOTALMTD");
+            let mode = match fname.as_str() {
+                "TOTALMTD" => "MTD",
+                "TOTALQTD" => "QTD",
+                _ => "YTD",
+            };
+            apply_period_to_date(model, ctx, &mut next_ctx, table, column, mode);
             for filter_expr in &args[2..] {
                 apply_calculate_modifier(filter_expr, model, ctx, &mut next_ctx, row_stack, vars)?;
             }
             evaluate_ast(&args[0], model, &next_ctx, &[], vars)
+        }
+        "OPENINGBALANCEMONTH" | "CLOSINGBALANCEMONTH"
+        | "OPENINGBALANCEQUARTER" | "CLOSINGBALANCEQUARTER"
+        | "OPENINGBALANCEYEAR" | "CLOSINGBALANCEYEAR" => {
+            if args.len() < 2 {
+                return Err(format!("{} requer (expressão, Tabela[Data])", fname));
+            }
+            let Some(Expr::TableColRef { table, column }) = args.get(1) else {
+                return Err(format!("{} requer coluna de data no 2º argumento", fname));
+            };
+            let mut next_ctx = if let Some(rc) = row_stack.last() {
+                apply_context_transition(ctx, rc)
+            } else {
+                ctx.clone()
+            };
+            let is_opening = fname.starts_with("OPENING");
+            let scope = if fname.ends_with("MONTH") {
+                "MONTH"
+            } else if fname.ends_with("QUARTER") {
+                "QUARTER"
+            } else {
+                "YEAR"
+            };
+            apply_period_boundary(model, ctx, &mut next_ctx, table, column, is_opening, scope);
+            for filter_expr in &args[2..] {
+                apply_calculate_modifier(filter_expr, model, ctx, &mut next_ctx, row_stack, vars)?;
+            }
+            evaluate_ast(&args[0], model, &next_ctx, &[], vars)
+        }
+        "FIRSTDATE" | "LASTDATE" | "STARTOFMONTH" | "ENDOFMONTH"
+        | "STARTOFQUARTER" | "ENDOFQUARTER" | "STARTOFYEAR" | "ENDOFYEAR" => {
+            let Some(Expr::TableColRef { table, column }) = args.first() else {
+                return Err(format!("{} requer referência Tabela[Data]", fname));
+            };
+            let bound_keys = resolve_date_boundary_keys(model, ctx, table, column, &fname);
+            if let Some(first) = bound_keys.into_iter().min() {
+                // Canonical key may be `t:YYYY-MM-DD`; strip prefix if present
+                let clean = first.strip_prefix("t:").unwrap_or(&first).to_string();
+                Ok(DaxValue::Text(clean))
+            } else {
+                Ok(DaxValue::Blank)
+            }
         }
         "RANKX" => {
             if args.len() < 2 {
@@ -366,22 +417,66 @@ fn eval_call(
                 .count();
             Ok(DaxValue::Number((better + 1) as f64))
         }
-        "SUM" | "AVERAGE" | "MIN" | "MAX" | "COUNT" | "COUNTA" | "DISTINCTCOUNT" => {
+        "SUM" | "AVERAGE" | "AVERAGEA" | "MIN" | "MINA" | "MAX" | "MAXA"
+        | "COUNT" | "COUNTA" | "COUNTBLANK" | "DISTINCTCOUNT" | "DISTINCTCOUNTNOBLANK"
+        | "MEDIAN" | "STDEV.S" | "STDEV.P" | "VAR.S" | "VAR.P" | "PRODUCT" | "GEOMEAN" => {
             let Some(Expr::TableColRef { table, column }) = args.first() else {
                 return Err(format!("{} requer referência Tabela[Coluna]", fname));
             };
             eval_column_agg(&fname, model, ctx, table, column)
         }
-        "COUNTROWS" => {
-            let tname = extract_table_name(args.first())?;
-            let vis = model.get_visible_row_indices(&tname, ctx);
-            Ok(DaxValue::Number(vis.len() as f64))
+        "PERCENTILE.INC" | "PERCENTILE.EXC" => {
+            if args.len() < 2 {
+                return Err(format!("{} requer (Tabela[Coluna], k)", fname));
+            }
+            let Some(Expr::TableColRef { table, column }) = args.first() else {
+                return Err(format!("{} requer referência Tabela[Coluna]", fname));
+            };
+            let k = evaluate_ast(&args[1], model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.5);
+            let tbl = model
+                .get_table(table)
+                .ok_or_else(|| format!("Tabela '{}' não encontrada", table))?;
+            let cidx = tbl
+                .get_col_idx(column)
+                .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", table, column))?;
+            let vis = model.get_visible_row_indices(table, ctx);
+            let nums: Vec<f64> = vis
+                .iter()
+                .filter_map(|&i| {
+                    let v = &tbl.rows[i][cidx];
+                    if v.is_blank() { None } else { v.as_f64() }
+                })
+                .collect();
+            Ok(calc_percentile(&nums, k, fname == "PERCENTILE.INC")
+                .map(DaxValue::Number)
+                .unwrap_or(DaxValue::Blank))
         }
-        "SUMX" | "AVERAGEX" | "MINX" | "MAXX" | "COUNTX" => {
+        "COUNTROWS" => {
+            let Some(first) = args.first() else {
+                return Err("COUNTROWS requer expressão de tabela".to_string());
+            };
+            let (_, indices, _) = eval_table_expr(first, model, ctx, row_stack, vars)?;
+            Ok(DaxValue::Number(indices.len() as f64))
+        }
+        "SUMX" | "AVERAGEX" | "MINX" | "MAXX" | "COUNTX" | "COUNTAX"
+        | "MEDIANX" | "STDEVX.S" | "STDEVX.P" | "VARX.S" | "VARX.P"
+        | "PRODUCTX" | "GEOMEANX" => {
             if args.len() < 2 {
                 return Err(format!("{} requer (tabela, expressão)", fname));
             }
             let (table_data, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+            if fname == "COUNTAX" {
+                let mut cnt = 0usize;
+                for r_idx in row_indices {
+                    let mut next_stack = row_stack.to_vec();
+                    next_stack.push(RowContext { table: table_data, row_idx: r_idx });
+                    let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
+                    if !v.is_blank() {
+                        cnt += 1;
+                    }
+                }
+                return Ok(DaxValue::Number(cnt as f64));
+            }
             let mut vals = Vec::new();
             for r_idx in row_indices {
                 let mut next_stack = row_stack.to_vec();
@@ -400,14 +495,87 @@ fn eval_call(
                 return Ok(DaxValue::Blank);
             }
             let res = match fname.as_str() {
-                "SUMX" => vals.iter().sum(),
-                "AVERAGEX" => vals.iter().sum::<f64>() / vals.len() as f64,
-                "MINX" => vals.iter().copied().fold(f64::INFINITY, f64::min),
-                "MAXX" => vals.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-                "COUNTX" => vals.len() as f64,
-                _ => 0.0,
+                "SUMX" => Some(vals.iter().sum()),
+                "AVERAGEX" => Some(vals.iter().sum::<f64>() / vals.len() as f64),
+                "MINX" => Some(vals.iter().copied().fold(f64::INFINITY, f64::min)),
+                "MAXX" => Some(vals.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
+                "COUNTX" => Some(vals.len() as f64),
+                "MEDIANX" => calc_median(&vals),
+                "STDEVX.S" => calc_stdev(&vals, true),
+                "STDEVX.P" => calc_stdev(&vals, false),
+                "VARX.S" => calc_variance(&vals, true),
+                "VARX.P" => calc_variance(&vals, false),
+                "PRODUCTX" => Some(vals.iter().product()),
+                "GEOMEANX" => calc_geomean(&vals),
+                _ => None,
             };
-            Ok(DaxValue::Number(res))
+            Ok(res.map(DaxValue::Number).unwrap_or(DaxValue::Blank))
+        }
+        "PERCENTILEX.INC" | "PERCENTILEX.EXC" => {
+            if args.len() < 3 {
+                return Err(format!("{} requer (tabela, expressão, k)", fname));
+            }
+            let (table_data, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+            let k = evaluate_ast(&args[2], model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.5);
+            let mut vals = Vec::new();
+            for r_idx in row_indices {
+                let mut next_stack = row_stack.to_vec();
+                next_stack.push(RowContext { table: table_data, row_idx: r_idx });
+                let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
+                if !v.is_blank() {
+                    if let Some(n) = v.as_f64() {
+                        vals.push(n);
+                    }
+                }
+            }
+            Ok(calc_percentile(&vals, k, fname == "PERCENTILEX.INC")
+                .map(DaxValue::Number)
+                .unwrap_or(DaxValue::Blank))
+        }
+        "CONCATENATEX" => {
+            if args.len() < 2 {
+                return Err("CONCATENATEX requer (tabela, expressão, [delimitador])".to_string());
+            }
+            let (table_data, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+            let delim = if args.len() >= 3 {
+                evaluate_ast(&args[2], model, ctx, row_stack, vars)?.as_display_string()
+            } else {
+                String::new()
+            };
+            let sort_asc = args.get(4).is_some_and(|e| matches!(e, Expr::Ident(s) if s.eq_ignore_ascii_case("ASC")));
+            let mut items: Vec<(String, String)> = Vec::new();
+            for r_idx in row_indices {
+                let mut next_stack = row_stack.to_vec();
+                next_stack.push(RowContext { table: table_data, row_idx: r_idx });
+                let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
+                if !v.is_blank() {
+                    let text = v.as_display_string();
+                    let sort_k = if let Some(ord_e) = args.get(3) {
+                        evaluate_ast(ord_e, model, &iter_ctx, &next_stack, vars)?.as_display_string()
+                    } else {
+                        String::new()
+                    };
+                    items.push((text, sort_k));
+                }
+            }
+            if args.len() >= 4 {
+                items.sort_by(|a, b| {
+                    let cmp = a.1.cmp(&b.1);
+                    if sort_asc || args.len() < 5 { cmp } else { cmp.reverse() }
+                });
+            }
+            let joined: Vec<String> = items.into_iter().map(|(t, _)| t).collect();
+            Ok(DaxValue::Text(joined.join(&delim)))
+        }
+        "LOOKUPVALUE" => {
+            if args.len() < 3 || (args.len() % 2 == 0) {
+                // Can be (result, search_col, search_val) [odd len] or with alternateValue at end? Wait:
+                // 3 args: res, c1, v1 (odd)
+                // 4 args: res, c1, v1, alt (even!)
+                // 5 args: res, c1, v1, c2, v2 (odd)
+                // 6 args: res, c1, v1, c2, v2, alt (even!)
+            }
+            eval_lookupvalue(args, model, ctx, row_stack, vars)
         }
         "CALCULATE" => {
             if args.is_empty() {
@@ -434,12 +602,59 @@ fn eval_call(
             };
             eval_selected_value(model, ctx, table, column, alt)
         }
-        "HASONEVALUE" => {
+        "HASONEVALUE" | "HASONEFILTER" => {
+            let Some(Expr::TableColRef { table, column }) = args.first() else {
+                return Ok(DaxValue::Boolean(false));
+            };
+            if fname == "HASONEFILTER" {
+                let direct_count = ctx
+                    .filters
+                    .get(&table.to_lowercase())
+                    .and_then(|cols| cols.get(&column.to_lowercase()))
+                    .map(|s| s.len())
+                    .unwrap_or(0);
+                Ok(DaxValue::Boolean(direct_count == 1))
+            } else {
+                let count = count_distinct_visible(model, ctx, table, column);
+                Ok(DaxValue::Boolean(count == 1))
+            }
+        }
+        "ISFILTERED" => {
+            let Some(Expr::TableColRef { table, column }) = args.first() else {
+                return Ok(DaxValue::Boolean(false));
+            };
+            let is_direct = ctx
+                .filters
+                .get(&table.to_lowercase())
+                .and_then(|cols| cols.get(&column.to_lowercase()))
+                .is_some_and(|s| !s.is_empty());
+            Ok(DaxValue::Boolean(is_direct))
+        }
+        "ISCROSSFILTERED" => {
+            let Some(Expr::TableColRef { table, column }) = args.first() else {
+                return Ok(DaxValue::Boolean(false));
+            };
+            if let Some(tbl) = model.get_table(table) {
+                let vis_count = model.get_visible_row_indices(table, ctx).len();
+                let direct = ctx.filters.get(&tbl.name.to_lowercase()).is_some_and(|c| !c.is_empty());
+                let is_filtered = direct || vis_count < tbl.rows.len();
+                let _ = column;
+                Ok(DaxValue::Boolean(is_filtered))
+            } else {
+                Ok(DaxValue::Boolean(false))
+            }
+        }
+        "ISINSCOPE" => {
             let Some(Expr::TableColRef { table, column }) = args.first() else {
                 return Ok(DaxValue::Boolean(false));
             };
             let count = count_distinct_visible(model, ctx, table, column);
-            Ok(DaxValue::Boolean(count == 1))
+            let direct = ctx
+                .filters
+                .get(&table.to_lowercase())
+                .and_then(|cols| cols.get(&column.to_lowercase()))
+                .is_some();
+            Ok(DaxValue::Boolean(direct || count == 1))
         }
         "RELATED" => {
             let Some(Expr::TableColRef { table, column }) = args.first() else {
@@ -490,7 +705,17 @@ fn eval_call(
                 Ok(DaxValue::Blank)
             }
         }
-        _ => Err(format!("Função DAX '{}' ainda não implementada no motor nativo.", fname)),
+        _ => {
+            let mut eval_args = Vec::with_capacity(args.len());
+            for a in args {
+                eval_args.push(evaluate_ast(a, model, ctx, row_stack, vars)?);
+            }
+            if let Some(scalar) = try_eval_scalar_fn(&fname, &eval_args)? {
+                Ok(scalar)
+            } else {
+                Err(format!("Função DAX '{}' ainda não implementada no motor nativo.", fname))
+            }
+        }
     }
 }
 
@@ -530,20 +755,105 @@ fn eval_table_expr<'a>(
             let indices = model.get_visible_row_indices(tname, ctx);
             Ok((tbl, indices, ctx.clone()))
         }
-        Expr::Call { name, args } if name.eq_ignore_ascii_case("ALL") => {
-            let tname = extract_table_name(args.first())?;
-            let tbl = model
-                .get_table(&tname)
-                .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
-            let mut cleared_ctx = ctx.clone();
-            cleared_ctx.clear_table(&tbl.name);
-            // Expanded-table semantics: clearing an N-side table also clears its active 1-side targets
-            for rel in &model.relationships {
-                if rel.is_active && rel.from_table.eq_ignore_ascii_case(&tbl.name) {
-                    cleared_ctx.clear_table(&rel.to_table);
+        Expr::Call { name, args } if name.eq_ignore_ascii_case("ALL") || name.eq_ignore_ascii_case("ALLSELECTED") => {
+            match args.first() {
+                Some(Expr::TableColRef { table, column }) => {
+                    let tbl = model
+                        .get_table(table)
+                        .ok_or_else(|| format!("Tabela '{}' não encontrada", table))?;
+                    let cidx = tbl
+                        .get_col_idx(column)
+                        .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", table, column))?;
+                    let mut cleared_ctx = ctx.clone();
+                    cleared_ctx.clear_column(&tbl.name, column);
+                    let mut seen = HashSet::new();
+                    let mut rep_indices = Vec::new();
+                    for (r_idx, row) in tbl.rows.iter().enumerate() {
+                        let k = row[cidx].canonical_key();
+                        if seen.insert(k) {
+                            rep_indices.push(r_idx);
+                        }
+                    }
+                    Ok((tbl, rep_indices, cleared_ctx))
+                }
+                _ => {
+                    let tname = extract_table_name(args.first())?;
+                    let tbl = model
+                        .get_table(&tname)
+                        .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
+                    let mut cleared_ctx = ctx.clone();
+                    cleared_ctx.clear_table(&tbl.name);
+                    for rel in &model.relationships {
+                        if rel.is_active && rel.from_table.eq_ignore_ascii_case(&tbl.name) {
+                            cleared_ctx.clear_table(&rel.to_table);
+                        }
+                    }
+                    Ok((tbl, (0..tbl.rows.len()).collect(), cleared_ctx))
                 }
             }
-            Ok((tbl, (0..tbl.rows.len()).collect(), cleared_ctx))
+        }
+        Expr::Call { name, args } if name.eq_ignore_ascii_case("VALUES") || name.eq_ignore_ascii_case("DISTINCT") => {
+            match args.first() {
+                Some(Expr::TableColRef { table, column }) => {
+                    let tbl = model
+                        .get_table(table)
+                        .ok_or_else(|| format!("Tabela '{}' não encontrada", table))?;
+                    let cidx = tbl
+                        .get_col_idx(column)
+                        .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", table, column))?;
+                    let visible = model.get_visible_row_indices(table, ctx);
+                    let mut seen = HashSet::new();
+                    let mut rep_indices = Vec::new();
+                    for r_idx in visible {
+                        let k = tbl.rows[r_idx][cidx].canonical_key();
+                        if seen.insert(k) {
+                            rep_indices.push(r_idx);
+                        }
+                    }
+                    Ok((tbl, rep_indices, ctx.clone()))
+                }
+                _ => {
+                    let tname = extract_table_name(args.first())?;
+                    let tbl = model
+                        .get_table(&tname)
+                        .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
+                    let indices = model.get_visible_row_indices(&tname, ctx);
+                    Ok((tbl, indices, ctx.clone()))
+                }
+            }
+        }
+        Expr::Call { name, args } if name.eq_ignore_ascii_case("TOPN") => {
+            if args.len() < 2 {
+                return Err("TOPN requer (N, tabela, [ordem])".to_string());
+            }
+            let top_n = evaluate_ast(&args[0], model, ctx, row_stack, vars)?
+                .as_f64()
+                .unwrap_or(0.0)
+                .max(0.0) as usize;
+            let (tbl, indices, base_ctx) = eval_table_expr(&args[1], model, ctx, row_stack, vars)?;
+            if top_n == 0 {
+                return Ok((tbl, Vec::new(), base_ctx));
+            }
+            let ascending = args.get(3).is_some_and(|e| matches!(e, Expr::Ident(s) if s.eq_ignore_ascii_case("ASC")));
+            if let Some(ord_expr) = args.get(2) {
+                let mut scored: Vec<(usize, f64)> = Vec::with_capacity(indices.len());
+                for r_idx in indices {
+                    let mut next_stack = row_stack.to_vec();
+                    next_stack.push(RowContext { table: tbl, row_idx: r_idx });
+                    let val = evaluate_ast(ord_expr, model, &base_ctx, &next_stack, vars)?
+                        .as_f64()
+                        .unwrap_or(f64::NEG_INFINITY);
+                    scored.push((r_idx, val));
+                }
+                scored.sort_by(|a, b| {
+                    let ord = a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal);
+                    if ascending { ord } else { ord.reverse() }
+                });
+                let kept = scored.into_iter().take(top_n).map(|(i, _)| i).collect();
+                Ok((tbl, kept, base_ctx))
+            } else {
+                Ok((tbl, indices.into_iter().take(top_n).collect(), base_ctx))
+            }
         }
         Expr::Call { name, args } if name.eq_ignore_ascii_case("FILTER") => {
             if args.len() < 2 {
@@ -577,7 +887,7 @@ fn apply_calculate_modifier(
         Expr::Call { name, args } => {
             let upper = name.trim().to_uppercase();
             match upper.as_str() {
-                "REMOVEFILTERS" | "ALL" => {
+                "REMOVEFILTERS" | "ALL" | "ALLSELECTED" => {
                     if args.is_empty() {
                         next_ctx.filters.clear();
                     } else {
@@ -588,6 +898,50 @@ fn apply_calculate_modifier(
                                 _ => {}
                             }
                         }
+                    }
+                    return Ok(());
+                }
+                "USERELATIONSHIP" => {
+                    if let (
+                        Some(Expr::TableColRef { table: t1, column: c1 }),
+                        Some(Expr::TableColRef { table: t2, column: c2 }),
+                    ) = (args.first(), args.get(1))
+                    {
+                        next_ctx.rel_overrides.push(RelOverride {
+                            from_table: t1.clone(),
+                            from_column: c1.clone(),
+                            to_table: t2.clone(),
+                            to_column: c2.clone(),
+                            activate: Some(true),
+                            direction: None,
+                        });
+                    }
+                    return Ok(());
+                }
+                "CROSSFILTER" => {
+                    if let (
+                        Some(Expr::TableColRef { table: t1, column: c1 }),
+                        Some(Expr::TableColRef { table: t2, column: c2 }),
+                        Some(dir_arg),
+                    ) = (args.first(), args.get(1), args.get(2))
+                    {
+                        let raw_dir = match dir_arg {
+                            Expr::Ident(s) | Expr::Text(s) => s.to_uppercase(),
+                            _ => "BOTH".to_string(),
+                        };
+                        let mapped = match raw_dir.as_str() {
+                            "NONE" => "none",
+                            "ONEWAY" | "ONEWAY_LEFTFILTERSRIGHT" | "ONEWAY_RIGHTFILTERSLEFT" | "SINGLE" => "single",
+                            _ => "both",
+                        };
+                        next_ctx.rel_overrides.push(RelOverride {
+                            from_table: t1.clone(),
+                            from_column: c1.clone(),
+                            to_table: t2.clone(),
+                            to_column: c2.clone(),
+                            activate: None,
+                            direction: Some(mapped.to_string()),
+                        });
                     }
                     return Ok(());
                 }
@@ -625,6 +979,18 @@ fn apply_calculate_modifier(
                     }
                     return Ok(());
                 }
+                "PREVIOUSDAY" => {
+                    if let Some(Expr::TableColRef { table, column }) = args.first() {
+                        apply_date_shift(model, outer_ctx, next_ctx, table, column, -1, "DAY");
+                    }
+                    return Ok(());
+                }
+                "NEXTDAY" => {
+                    if let Some(Expr::TableColRef { table, column }) = args.first() {
+                        apply_date_shift(model, outer_ctx, next_ctx, table, column, 1, "DAY");
+                    }
+                    return Ok(());
+                }
                 "PREVIOUSMONTH" => {
                     if let Some(Expr::TableColRef { table, column }) = args.first() {
                         apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, -1, "MONTH");
@@ -640,6 +1006,12 @@ fn apply_calculate_modifier(
                 "PREVIOUSQUARTER" => {
                     if let Some(Expr::TableColRef { table, column }) = args.first() {
                         apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, -1, "QUARTER");
+                    }
+                    return Ok(());
+                }
+                "NEXTQUARTER" => {
+                    if let Some(Expr::TableColRef { table, column }) = args.first() {
+                        apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, 1, "QUARTER");
                     }
                     return Ok(());
                 }
@@ -661,9 +1033,64 @@ fn apply_calculate_modifier(
                     }
                     return Ok(());
                 }
-                "DATESYTD" | "DATESMTD" => {
+                "PARALLELPERIOD" => {
+                    if args.len() >= 3 {
+                        if let Expr::TableColRef { table, column } = &args[0] {
+                            let shift = evaluate_ast(&args[1], model, outer_ctx, row_stack, vars)?
+                                .as_f64()
+                                .unwrap_or(0.0) as i32;
+                            let interval = match &args[2] {
+                                Expr::Ident(s) => s.to_uppercase(),
+                                _ => "MONTH".to_string(),
+                            };
+                            apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, shift, &interval);
+                        }
+                    }
+                    return Ok(());
+                }
+                "DATESYTD" | "DATESMTD" | "DATESQTD" => {
                     if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_period_to_date(model, outer_ctx, next_ctx, table, column, upper == "DATESMTD");
+                        let mode = match upper.as_str() {
+                            "DATESMTD" => "MTD",
+                            "DATESQTD" => "QTD",
+                            _ => "YTD",
+                        };
+                        apply_period_to_date(model, outer_ctx, next_ctx, table, column, mode);
+                    }
+                    return Ok(());
+                }
+                "DATESBETWEEN" => {
+                    if args.len() >= 3 {
+                        if let Expr::TableColRef { table, column } = &args[0] {
+                            let start_s = evaluate_ast(&args[1], model, outer_ctx, row_stack, vars)?.as_display_string();
+                            let end_s = evaluate_ast(&args[2], model, outer_ctx, row_stack, vars)?.as_display_string();
+                            apply_dates_between(model, next_ctx, table, column, &start_s, &end_s);
+                        }
+                    }
+                    return Ok(());
+                }
+                "DATESINPERIOD" => {
+                    if args.len() >= 4 {
+                        if let Expr::TableColRef { table, column } = &args[0] {
+                            let start_s = evaluate_ast(&args[1], model, outer_ctx, row_stack, vars)?.as_display_string();
+                            let count = evaluate_ast(&args[2], model, outer_ctx, row_stack, vars)?.as_f64().unwrap_or(0.0) as i32;
+                            let interval = match &args[3] {
+                                Expr::Ident(s) => s.to_uppercase(),
+                                _ => "DAY".to_string(),
+                            };
+                            apply_dates_in_period(model, next_ctx, table, column, &start_s, count, &interval);
+                        }
+                    }
+                    return Ok(());
+                }
+                "FIRSTDATE" | "LASTDATE" | "STARTOFMONTH" | "ENDOFMONTH"
+                | "STARTOFQUARTER" | "ENDOFQUARTER" | "STARTOFYEAR" | "ENDOFYEAR" => {
+                    if let Some(Expr::TableColRef { table, column }) = args.first() {
+                        let allowed = resolve_date_boundary_keys(model, outer_ctx, table, column, &upper);
+                        if let Some(tbl) = model.get_table(table) {
+                            next_ctx.clear_table(&tbl.name);
+                            next_ctx.set_column_filter(&tbl.name, column, allowed);
+                        }
                     }
                     return Ok(());
                 }
@@ -869,7 +1296,7 @@ fn apply_period_to_date(
     next_ctx: &mut FilterContext,
     table_name: &str,
     col_name: &str,
-    is_mtd: bool,
+    mode: &str, // "MTD" | "QTD" | "YTD"
 ) {
     let Some(tbl) = model.get_table(table_name) else { return };
     let Some(cidx) = tbl.get_col_idx(col_name) else { return };
@@ -888,15 +1315,16 @@ fn apply_period_to_date(
     let Some((max_y, max_m, max_d)) = max_ymd else {
         return;
     };
+    let max_q = (max_m - 1) / 3;
 
     let mut allowed = HashSet::new();
     for row in &tbl.rows {
         let s = row[cidx].as_display_string();
         if let Some((y, m, d)) = parse_iso_ymd(&s) {
-            let in_period = if is_mtd {
-                y == max_y && m == max_m && d <= max_d
-            } else {
-                y == max_y && (m, d) <= (max_m, max_d)
+            let in_period = match mode {
+                "MTD" => y == max_y && m == max_m && d <= max_d,
+                "QTD" => y == max_y && ((m - 1) / 3) == max_q && (m, d) <= (max_m, max_d),
+                _ => y == max_y && (m, d) <= (max_m, max_d),
             };
             if in_period {
                 allowed.insert(row[cidx].canonical_key());
@@ -905,6 +1333,257 @@ fn apply_period_to_date(
     }
     next_ctx.clear_table(&tbl.name);
     next_ctx.set_column_filter(&tbl.name, col_name, allowed);
+}
+
+fn resolve_date_boundary_keys(
+    model: &DaxModel,
+    ctx: &FilterContext,
+    table_name: &str,
+    col_name: &str,
+    func_name: &str,
+) -> HashSet<String> {
+    let mut allowed = HashSet::new();
+    let Some(tbl) = model.get_table(table_name) else { return allowed };
+    let Some(cidx) = tbl.get_col_idx(col_name) else { return allowed };
+    let visible = model.get_visible_row_indices(table_name, ctx);
+
+    let mut min_ymd: Option<(i32, u32, u32)> = None;
+    let mut max_ymd: Option<(i32, u32, u32)> = None;
+    for r_idx in visible {
+        let s = tbl.rows[r_idx][cidx].as_display_string();
+        if let Some(ymd) = parse_iso_ymd(&s) {
+            if min_ymd.is_none_or(|cur| ymd < cur) {
+                min_ymd = Some(ymd);
+            }
+            if max_ymd.is_none_or(|cur| ymd > cur) {
+                max_ymd = Some(ymd);
+            }
+        }
+    }
+
+    let is_end = func_name.starts_with("ENDOF") || func_name == "LASTDATE";
+    let target_ymd = match func_name {
+        "FIRSTDATE" => min_ymd,
+        "LASTDATE" => max_ymd,
+        "STARTOFMONTH" | "ENDOFMONTH" => max_ymd.and_then(|(y, m, _)| {
+            let candidates: Vec<(i32, u32, u32)> = tbl
+                .rows
+                .iter()
+                .filter_map(|r| parse_iso_ymd(&r[cidx].as_display_string()))
+                .filter(|&(ry, rm, _)| ry == y && rm == m)
+                .collect();
+            if is_end { candidates.into_iter().max() } else { candidates.into_iter().min() }
+        }),
+        "STARTOFQUARTER" | "ENDOFQUARTER" => max_ymd.and_then(|(y, m, _)| {
+            let q = (m - 1) / 3;
+            let candidates: Vec<(i32, u32, u32)> = tbl
+                .rows
+                .iter()
+                .filter_map(|r| parse_iso_ymd(&r[cidx].as_display_string()))
+                .filter(|&(ry, rm, _)| ry == y && ((rm - 1) / 3) == q)
+                .collect();
+            if is_end { candidates.into_iter().max() } else { candidates.into_iter().min() }
+        }),
+        "STARTOFYEAR" | "ENDOFYEAR" => max_ymd.and_then(|(y, _, _)| {
+            let candidates: Vec<(i32, u32, u32)> = tbl
+                .rows
+                .iter()
+                .filter_map(|r| parse_iso_ymd(&r[cidx].as_display_string()))
+                .filter(|&(ry, _, _)| ry == y)
+                .collect();
+            if is_end { candidates.into_iter().max() } else { candidates.into_iter().min() }
+        }),
+        _ => None,
+    };
+
+    if let Some(t) = target_ymd {
+        for row in &tbl.rows {
+            let s = row[cidx].as_display_string();
+            if parse_iso_ymd(&s) == Some(t) {
+                allowed.insert(row[cidx].canonical_key());
+            }
+        }
+    }
+    allowed
+}
+
+fn apply_period_boundary(
+    model: &DaxModel,
+    outer_ctx: &FilterContext,
+    next_ctx: &mut FilterContext,
+    table_name: &str,
+    col_name: &str,
+    is_opening: bool,
+    scope: &str,
+) {
+    let fname = match (is_opening, scope) {
+        (true, "MONTH") => "STARTOFMONTH",
+        (false, "MONTH") => "ENDOFMONTH",
+        (true, "QUARTER") => "STARTOFQUARTER",
+        (false, "QUARTER") => "ENDOFQUARTER",
+        (true, _) => "STARTOFYEAR",
+        (false, _) => "ENDOFYEAR",
+    };
+    let mut keys = HashSet::new();
+    if is_opening {
+        // Opening balance evaluates at the closing date of the immediately preceding period
+        if let Some(tbl) = model.get_table(table_name) {
+            if let Some(cidx) = tbl.get_col_idx(col_name) {
+                let visible = model.get_visible_row_indices(table_name, outer_ctx);
+                let min_cur = visible
+                    .into_iter()
+                    .filter_map(|i| parse_iso_ymd(&tbl.rows[i][cidx].as_display_string()))
+                    .min();
+                if let Some((y, m, d)) = min_cur {
+                    let prev_day = add_days(y, m, d, -1);
+                    for row in &tbl.rows {
+                        if parse_iso_ymd(&row[cidx].as_display_string()) == Some(prev_day) {
+                            keys.insert(row[cidx].canonical_key());
+                        }
+                    }
+                }
+            }
+        }
+        if keys.is_empty() {
+            keys = resolve_date_boundary_keys(model, outer_ctx, table_name, col_name, fname);
+        }
+    } else {
+        keys = resolve_date_boundary_keys(model, outer_ctx, table_name, col_name, fname);
+    }
+    if let Some(tbl) = model.get_table(table_name) {
+        next_ctx.clear_table(&tbl.name);
+        next_ctx.set_column_filter(&tbl.name, col_name, keys);
+    }
+}
+
+fn apply_dates_between(
+    model: &DaxModel,
+    next_ctx: &mut FilterContext,
+    table_name: &str,
+    col_name: &str,
+    start_str: &str,
+    end_str: &str,
+) {
+    let Some(tbl) = model.get_table(table_name) else { return };
+    let Some(cidx) = tbl.get_col_idx(col_name) else { return };
+    let start_days = parse_flexible_ymd(start_str).map(|(y, m, d)| civil_to_days(y, m, d));
+    let end_days = parse_flexible_ymd(end_str).map(|(y, m, d)| civil_to_days(y, m, d));
+
+    let mut allowed = HashSet::new();
+    for row in &tbl.rows {
+        let s = row[cidx].as_display_string();
+        if let Some((y, m, d)) = parse_iso_ymd(&s) {
+            let cur = civil_to_days(y, m, d);
+            let ge_start = start_days.is_none_or(|sd| cur >= sd);
+            let le_end = end_days.is_none_or(|ed| cur <= ed);
+            if ge_start && le_end {
+                allowed.insert(row[cidx].canonical_key());
+            }
+        }
+    }
+    next_ctx.clear_table(&tbl.name);
+    next_ctx.set_column_filter(&tbl.name, col_name, allowed);
+}
+
+fn apply_dates_in_period(
+    model: &DaxModel,
+    next_ctx: &mut FilterContext,
+    table_name: &str,
+    col_name: &str,
+    anchor_str: &str,
+    count: i32,
+    interval: &str,
+) {
+    let Some((ay, am, ad)) = parse_flexible_ymd(anchor_str) else { return };
+    let (start_d, end_d) = if count == 0 {
+        (civil_to_days(ay, am, ad), civil_to_days(ay, am, ad) - 1)
+    } else {
+        let shifted = match interval {
+            "YEAR" => add_months(ay, am, ad, count * 12),
+            "QUARTER" => add_months(ay, am, ad, count * 3),
+            "MONTH" => add_months(ay, am, ad, count),
+            _ => add_days(ay, am, ad, count),
+        };
+        let a_days = civil_to_days(ay, am, ad);
+        let s_days = civil_to_days(shifted.0, shifted.1, shifted.2);
+        if count > 0 {
+            (a_days, s_days - 1)
+        } else {
+            (s_days + 1, a_days)
+        }
+    };
+
+    let Some(tbl) = model.get_table(table_name) else { return };
+    let Some(cidx) = tbl.get_col_idx(col_name) else { return };
+    let mut allowed = HashSet::new();
+    for row in &tbl.rows {
+        let s = row[cidx].as_display_string();
+        if let Some((y, m, d)) = parse_iso_ymd(&s) {
+            let cur = civil_to_days(y, m, d);
+            if cur >= start_d && cur <= end_d {
+                allowed.insert(row[cidx].canonical_key());
+            }
+        }
+    }
+    next_ctx.clear_table(&tbl.name);
+    next_ctx.set_column_filter(&tbl.name, col_name, allowed);
+}
+
+fn eval_lookupvalue(
+    args: &[Expr],
+    model: &DaxModel,
+    ctx: &FilterContext,
+    row_stack: &[RowContext<'_>],
+    vars: &HashMap<String, DaxValue>,
+) -> Result<DaxValue, String> {
+    let Some(Expr::TableColRef { table: res_table, column: res_col }) = args.first() else {
+        return Err("LOOKUPVALUE requer Tabela[ColunaResultado] no 1º argumento".to_string());
+    };
+    let tbl = model
+        .get_table(res_table)
+        .ok_or_else(|| format!("Tabela '{}' não encontrada em LOOKUPVALUE", res_table))?;
+    let res_cidx = tbl
+        .get_col_idx(res_col)
+        .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada em LOOKUPVALUE", res_table, res_col))?;
+
+    let has_alternate = args.len() >= 4 && args.len() % 2 == 0;
+    let pairs_end = if has_alternate { args.len() - 1 } else { args.len() };
+    let alternate = if has_alternate {
+        evaluate_ast(&args[args.len() - 1], model, ctx, row_stack, vars)?
+    } else {
+        DaxValue::Blank
+    };
+
+    let mut criteria: Vec<(usize, DaxValue)> = Vec::new();
+    let mut i = 1;
+    while i + 1 < pairs_end {
+        let Some(Expr::TableColRef { column: scol, .. }) = args.get(i) else {
+            return Err("LOOKUPVALUE espera pares (Tabela[ColunaBusca], ValorBusca)".to_string());
+        };
+        let scidx = tbl
+            .get_col_idx(scol)
+            .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", tbl.name, scol))?;
+        let target_val = evaluate_ast(&args[i + 1], model, ctx, row_stack, vars)?;
+        criteria.push((scidx, target_val));
+        i += 2;
+    }
+
+    let mut found: Option<DaxValue> = None;
+    for row in &tbl.rows {
+        let matches = criteria.iter().all(|(cidx, expected)| row[*cidx].dax_equals(expected));
+        if matches {
+            let candidate = row[res_cidx].clone();
+            if let Some(ref prev) = found {
+                if !prev.dax_equals(&candidate) {
+                    return Ok(alternate);
+                }
+            } else {
+                found = Some(candidate);
+            }
+        }
+    }
+
+    Ok(found.unwrap_or(alternate))
 }
 
 fn eval_column_agg(
@@ -926,7 +1605,18 @@ fn eval_column_agg(
         let cnt = visible.iter().filter(|&&i| !tbl.rows[i][cidx].is_blank()).count();
         return Ok(DaxValue::Number(cnt as f64));
     }
+    if func == "COUNTBLANK" {
+        let cnt = visible.iter().filter(|&&i| tbl.rows[i][cidx].is_blank()).count();
+        return Ok(DaxValue::Number(cnt as f64));
+    }
     if func == "DISTINCTCOUNT" {
+        let distinct: HashSet<String> = visible
+            .iter()
+            .map(|&i| tbl.rows[i][cidx].canonical_key())
+            .collect();
+        return Ok(DaxValue::Number(distinct.len() as f64));
+    }
+    if func == "DISTINCTCOUNTNOBLANK" {
         let distinct: HashSet<String> = visible
             .iter()
             .filter(|&&i| !tbl.rows[i][cidx].is_blank())
@@ -939,7 +1629,18 @@ fn eval_column_agg(
         .iter()
         .filter_map(|&i| {
             let v = &tbl.rows[i][cidx];
-            if v.is_blank() { None } else { v.as_f64() }
+            if v.is_blank() {
+                None
+            } else if matches!(func, "AVERAGEA" | "MINA" | "MAXA") {
+                match v {
+                    DaxValue::Number(n) => Some(*n),
+                    DaxValue::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
+                    DaxValue::Text(_) => Some(0.0),
+                    DaxValue::Blank => None,
+                }
+            } else {
+                v.as_f64()
+            }
         })
         .collect();
 
@@ -947,13 +1648,20 @@ fn eval_column_agg(
         return Ok(DaxValue::Blank);
     }
     let out = match func {
-        "SUM" => nums.iter().sum(),
-        "AVERAGE" => nums.iter().sum::<f64>() / nums.len() as f64,
-        "MIN" => nums.iter().copied().fold(f64::INFINITY, f64::min),
-        "MAX" => nums.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-        _ => 0.0,
+        "SUM" => Some(nums.iter().sum()),
+        "AVERAGE" | "AVERAGEA" => Some(nums.iter().sum::<f64>() / nums.len() as f64),
+        "MIN" | "MINA" => Some(nums.iter().copied().fold(f64::INFINITY, f64::min)),
+        "MAX" | "MAXA" => Some(nums.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
+        "MEDIAN" => calc_median(&nums),
+        "STDEV.S" => calc_stdev(&nums, true),
+        "STDEV.P" => calc_stdev(&nums, false),
+        "VAR.S" => calc_variance(&nums, true),
+        "VAR.P" => calc_variance(&nums, false),
+        "PRODUCT" => Some(nums.iter().product()),
+        "GEOMEAN" => calc_geomean(&nums),
+        _ => None,
     };
-    Ok(DaxValue::Number(out))
+    Ok(out.map(DaxValue::Number).unwrap_or(DaxValue::Blank))
 }
 
 fn eval_selected_value(
@@ -1037,62 +1745,6 @@ fn resolve_related(
         }
     }
     None
-}
-
-fn parse_iso_ymd(s: &str) -> Option<(i32, u32, u32)> {
-    let date_part = s.split('T').next()?.trim();
-    let mut parts = date_part.split('-');
-    let y = parts.next()?.parse::<i32>().ok()?;
-    let m = parts.next()?.parse::<u32>().ok()?;
-    let d = parts.next()?.parse::<u32>().ok()?;
-    Some((y, m, d))
-}
-
-fn add_months(y: i32, m: u32, d: u32, delta_months: i32) -> (i32, u32, u32) {
-    let total_m = y * 12 + (m as i32 - 1) + delta_months;
-    let ny = total_m.div_euclid(12);
-    let nm = (total_m.rem_euclid(12) + 1) as u32;
-    let max_d = days_in_month(ny, nm);
-    (ny, nm, d.min(max_d))
-}
-
-fn add_days(y: i32, m: u32, d: u32, delta_days: i32) -> (i32, u32, u32) {
-    let mut cur_y = y;
-    let mut cur_m = m;
-    let mut cur_d = d as i32 + delta_days;
-    while cur_d > days_in_month(cur_y, cur_m) as i32 {
-        cur_d -= days_in_month(cur_y, cur_m) as i32;
-        cur_m += 1;
-        if cur_m > 12 {
-            cur_m = 1;
-            cur_y += 1;
-        }
-    }
-    while cur_d < 1 {
-        if cur_m == 1 {
-            cur_m = 12;
-            cur_y -= 1;
-        } else {
-            cur_m -= 1;
-        }
-        cur_d += days_in_month(cur_y, cur_m) as i32;
-    }
-    (cur_y, cur_m, cur_d as u32)
-}
-
-fn days_in_month(y: i32, m: u32) -> u32 {
-    match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            if (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 30,
-    }
 }
 
 #[cfg(test)]
@@ -1626,5 +2278,117 @@ mod tests {
 
         let total = model.evaluate_dax("[Fat]", &ctx).unwrap().as_f64().unwrap();
         assert!((total - 128723.52).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_dax_v06_stats_lookup_topn_time_intel_and_userelationship() {
+        let mut model = DaxModel::new();
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput {
+                    name: "dCal".into(),
+                    columns: vec!["Data".into(), "Trimestre".into()],
+                    rows: vec![
+                        serde_json::from_value(json!({"Data": "2026-01-10", "Trimestre": "T1"})).unwrap(),
+                        serde_json::from_value(json!({"Data": "2026-02-15", "Trimestre": "T1"})).unwrap(),
+                        serde_json::from_value(json!({"Data": "2026-04-05", "Trimestre": "T2"})).unwrap(),
+                        serde_json::from_value(json!({"Data": "2026-04-30", "Trimestre": "T2"})).unwrap(),
+                    ],
+                },
+                DaxTableInput {
+                    name: "dClientes".into(),
+                    columns: vec!["Id".into(), "Nome".into()],
+                    rows: vec![
+                        serde_json::from_value(json!({"Id": 1, "Nome": "Alpha"})).unwrap(),
+                        serde_json::from_value(json!({"Id": 2, "Nome": "Beta"})).unwrap(),
+                    ],
+                },
+                DaxTableInput {
+                    name: "fPedidos".into(),
+                    columns: vec!["DataPedido".into(), "DataEntrega".into(), "ClienteId".into(), "Valor".into()],
+                    rows: vec![
+                        serde_json::from_value(json!({"DataPedido": "2026-01-10", "DataEntrega": "2026-04-05", "ClienteId": 1, "Valor": 100.0})).unwrap(),
+                        serde_json::from_value(json!({"DataPedido": "2026-02-15", "DataEntrega": "2026-04-30", "ClienteId": 2, "Valor": 300.0})).unwrap(),
+                        serde_json::from_value(json!({"DataPedido": "2026-04-05", "DataEntrega": "2026-04-30", "ClienteId": 1, "Valor": 500.0})).unwrap(),
+                        serde_json::from_value(json!({"DataPedido": "2026-04-30", "DataEntrega": "2026-04-30", "ClienteId": 2, "Valor": 700.0})).unwrap(),
+                    ],
+                },
+            ],
+            relationships: vec![
+                DaxRelationshipInput {
+                    from_table: "fPedidos".into(),
+                    from_column: "DataPedido".into(),
+                    to_table: "dCal".into(),
+                    to_column: "Data".into(),
+                    cross_filter_direction: "single".into(),
+                    is_active: true,
+                },
+                DaxRelationshipInput {
+                    from_table: "fPedidos".into(),
+                    from_column: "DataEntrega".into(),
+                    to_table: "dCal".into(),
+                    to_column: "Data".into(),
+                    cross_filter_direction: "single".into(),
+                    is_active: false,
+                },
+            ],
+            measures: vec![
+                DaxMeasureInput {
+                    name: "Total".into(),
+                    table_name: "fPedidos".into(),
+                    formula: "SUM(fPedidos[Valor])".into(),
+                },
+                DaxMeasureInput {
+                    name: "QTD T2".into(),
+                    table_name: "fPedidos".into(),
+                    formula: "TOTALQTD([Total], dCal[Data])".into(),
+                },
+            ],
+        });
+
+        let ctx = FilterContext::default();
+
+        // Stats + Lookup + TopN + Values + Concat
+        let median = model.evaluate_dax("MEDIAN(fPedidos[Valor])", &ctx).unwrap().as_f64().unwrap();
+        assert!((median - 400.0).abs() < 1e-6);
+        let p25 = model.evaluate_dax("PERCENTILE.INC(fPedidos[Valor], 0.5)", &ctx).unwrap().as_f64().unwrap();
+        assert!((p25 - 400.0).abs() < 1e-6);
+        let stdev = model.evaluate_dax("STDEV.S(fPedidos[Valor])", &ctx).unwrap().as_f64().unwrap();
+        assert!(stdev > 200.0);
+
+        let cli = model.evaluate_dax("LOOKUPVALUE(dClientes[Nome], dClientes[Id], 2)", &ctx).unwrap().as_display_string();
+        assert_eq!(cli, "Beta");
+
+        let top2 = model.evaluate_dax("SUMX(TOPN(2, fPedidos, fPedidos[Valor], DESC), fPedidos[Valor])", &ctx).unwrap().as_f64().unwrap();
+        assert!((top2 - 1200.0).abs() < 1e-6);
+
+        let distinct_cli = model.evaluate_dax("COUNTROWS(VALUES(fPedidos[ClienteId]))", &ctx).unwrap().as_f64().unwrap();
+        assert!((distinct_cli - 2.0).abs() < 1e-6);
+
+        let concat = model.evaluate_dax("CONCATENATEX(dClientes, dClientes[Nome], \", \", dClientes[Id], ASC)", &ctx).unwrap().as_display_string();
+        assert_eq!(concat, "Alpha, Beta");
+
+        // Time intelligence: DATESBETWEEN & CLOSINGBALANCEMONTH
+        let between = model
+            .evaluate_dax("CALCULATE([Total], DATESBETWEEN(dCal[Data], \"2026-01-01\", \"2026-03-01\"))", &ctx)
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!((between - 400.0).abs() < 1e-6);
+
+        let mut ctx_apr = FilterContext::default();
+        ctx_apr.set_column_filter("dCal", "Trimestre", [DaxValue::Text("T2".into()).canonical_key()].into_iter().collect());
+        let qtd = model.evaluate_dax("[QTD T2]", &ctx_apr).unwrap().as_f64().unwrap();
+        assert!((qtd - 1200.0).abs() < 1e-6);
+        let close_m = model.evaluate_dax("CLOSINGBALANCEMONTH([Total], dCal[Data])", &ctx_apr).unwrap().as_f64().unwrap();
+        assert!((close_m - 700.0).abs() < 1e-6);
+
+        // USERELATIONSHIP activates delivery date instead of order date (100 + 300 + 500 + 700 = 1600 all delivered in T2!)
+        let by_delivery = model
+            .evaluate_dax("CALCULATE([Total], USERELATIONSHIP(fPedidos[DataEntrega], dCal[Data]))", &ctx_apr)
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!((by_delivery - 1600.0).abs() < 1e-6);
     }
 }

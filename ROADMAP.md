@@ -34,7 +34,7 @@ Foco em escalar consultas para o backend Rust nativo e melhorar a análise hier�
 
 ---
 
-## `v0.5.0` — Atualização Real de Fontes, Mapeamento de Tabelas & Conectores Nativos (Atual)
+## `v0.5.0` — Atualização Real de Fontes, Mapeamento de Tabelas & Conectores Nativos (Concluído)
 Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dados:
 - [x] **Atualização Real (`Atualizar Dados`):** recarregamento direto dos arquivos vinculados (`.xlsx`, `.csv`, `.parquet`, `.json`, REST e `.pbip`) preservando páginas, visuais, medidas, filtros e relacionamentos.
 - [x] **Mapeamento, Substituição & Renomeação de Tabelas:** vincular qualquer aba do Excel (ex.: aba `Fato` → tabela `fLançamentos`), substituir dados de tabelas existentes sem quebrar o relatório e renomear tabelas atualizando automaticamente fórmulas DAX, relacionamentos, visuais e filtros.
@@ -43,10 +43,10 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 
 ---
 
-## `v0.6.0` — Edição Profissional & Round-Trip `.pbip`
-- **Undo / Redo** no canvas, guias inteligentes de alinhamento (snap guides) e seleção múltipla de visuais.
-- Preservar formatação, filtros e temas no exportador `.pbip` para editar no PrismBI e reabrir no Power BI Desktop sem perdas.
-- Extração aprimorada de modelos e visuais a partir de arquivos `.pbix`.
+## `v0.6.0` — Edição Profissional, Round-Trip `.pbip` & Biblioteca DAX Completa (Atual)
+- [x] **Motor DAX Nativo Expandido (+110 funções alinhadas à especificação pública DAX):** funções matemáticas/trigonométricas, texto (`FORMAT`, `MID`, `TRIM`, `FIND`, `SEARCH`, `SUBSTITUTE`, `CONTAINSSTRING`), data/hora (`DATE`, `EDATE`, `EOMONTH`, `DATEDIFF`, `NETWORKDAYS`, `WEEKDAY`, `WEEKNUM`, `QUARTER`), estatísticas/iteradores (`MEDIAN`, `PERCENTILE.*`, `STDEV.*`, `VAR.*`, `PRODUCT`, `GEOMEAN`, `CONCATENATEX`, `COUNTBLANK`), tabela/relacionamento (`VALUES`, `DISTINCT`, `TOPN`, `ALLSELECTED`, `LOOKUPVALUE`, `USERELATIONSHIP`, `CROSSFILTER`), informação (`ISFILTERED`, `ISCROSSFILTERED`, `HASONEFILTER`, `ISINSCOPE`), financeiras (`PMT`, `PV`, `FV`, `NPER`) e Time Intelligence completo (`TOTALQTD`, `DATESQTD`, `PARALLELPERIOD`, `DATESBETWEEN`, `DATESINPERIOD`, `STARTOF*`/`ENDOF*`, `FIRSTDATE`/`LASTDATE`, `OPENINGBALANCE*`/`CLOSINGBALANCE*`).
+- [x] **Edição Profissional no Canvas:** histórico **Undo / Redo** (`Ctrl+Z` / `Ctrl+Y` / Ribbon), **seleção múltipla** (`Shift`/`Ctrl` + clique, arraste em grupo, nudge com setas, `Delete` e barra flutuante de alinhamento/distribuição) e **Smart Snap Guides** a 60fps.
+- [x] **Round-Trip `.pbip` & Extração `.pbix` Aprimorada:** exportação preservando scripts Power Query (M), colunas de cartões múltiplos, `advancedSlicerVisual` (`tiles`), `textbox`, `actionButton`, títulos, `filterConfig` em páginas/visuais e temas (`PrismTheme.json`), além de extração multi-query do `DataMashup` em `.pbix`.
 
 ---
 

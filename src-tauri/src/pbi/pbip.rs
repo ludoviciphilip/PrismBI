@@ -421,9 +421,8 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .unwrap_or_else(|| format!("{}_v{}", page_id, v_idx + 1));
-    let mut title = value_fields
-        .first()
-        .cloned()
+    let mut title = extract_pbir_visual_title(visual_obj)
+        .or_else(|| value_fields.first().cloned())
         .or_else(|| category_field.clone())
         .unwrap_or_else(|| format!("Visual {}", v_idx + 1));
 
@@ -475,6 +474,29 @@ fn strip_pbir_literal(raw: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+fn extract_pbir_visual_title(visual_obj: &JsonValue) -> Option<String> {
+    let titles = visual_obj
+        .get("visualContainerObjects")
+        .and_then(|o| o.get("title"))
+        .and_then(|v| v.as_array())?;
+    for item in titles {
+        if let Some(raw) = item
+            .get("properties")
+            .and_then(|p| p.get("text"))
+            .and_then(|t| t.get("expr"))
+            .and_then(|e| e.get("Literal"))
+            .and_then(|l| l.get("Value"))
+            .and_then(|v| v.as_str())
+        {
+            let clean = strip_pbir_literal(raw);
+            if !clean.is_empty() {
+                return Some(clean);
+            }
+        }
+    }
+    None
 }
 
 fn extract_pbir_column_count(visual_obj: &JsonValue) -> Option<u32> {

@@ -31,6 +31,7 @@ import { EtlEngine } from '../engine/etlEngine';
 import { saveProjectToStorage, loadProjectFromStorage, ProjectState } from '../engine/storage';
 import { migrateProjectState, syncWhatIfWithModel } from '../engine/migrations';
 import { globalDuckDb } from '../engine/duckdbEngine';
+import { getEffectiveCanvasSize } from '../engine/shared/canvasPresets';
 import {
   isTauriRuntime,
   syncModelToRust,
@@ -171,9 +172,14 @@ interface BiState {
   pages: Page[];
   activePageId: string;
   selectedVisualId: string | null;
+  selectedVisualIds: string[];
   canvasZoom: number;
   isPresentationMode: boolean;
   layoutMode: 'desktop' | 'mobile';
+  historyPast: Page[][];
+  historyFuture: Page[][];
+  canUndo: boolean;
+  canRedo: boolean;
 
   setActivePageId: (id: string) => void;
   addPage: (name?: string) => void;
@@ -182,6 +188,8 @@ interface BiState {
   deletePage: (id: string) => void;
   setPageCanvasSize: (pageId: string, canvasSize: CanvasSizeConfig, applyToAllPages?: boolean) => void;
   setSelectedVisualId: (id: string | null) => void;
+  setSelectedVisualIds: (ids: string[]) => void;
+  toggleVisualSelection: (id: string) => void;
   setCanvasZoom: (zoom: number) => void;
   setIsPresentationMode: (val: boolean) => void;
   setLayoutMode: (mode: 'desktop' | 'mobile') => void;
@@ -189,6 +197,13 @@ interface BiState {
   addVisual: (type: VisualType, tableId?: string) => void;
   updateVisual: (id: string, partial: Partial<Visual>) => void;
   deleteVisual: (id: string) => void;
+  moveVisualsDelta: (ids: string[], dx: number, dy: number) => void;
+  deleteSelectedVisuals: () => void;
+  alignSelectedVisuals: (
+    mode: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom' | 'distribute-h' | 'distribute-v'
+  ) => void;
+  undo: () => void;
+  redo: () => void;
 
   // Filtering & Cross-filtering
   filters: Filter[];
@@ -736,10 +751,65 @@ function inferColumnsFromJsonRows(rows: Record<string, any>[], tableId: string):
   });
 }
 
+const MAX_CANVAS_HISTORY = 50;
+
+function clonePagesSnapshot(pages: Page[]): Page[] {
+  return pages.map(p => ({
+    ...p,
+    canvasSize: p.canvasSize ? { ...p.canvasSize } : undefined,
+    visuals: p.visuals.map(v => ({
+      ...v,
+      dataConfig: {
+        ...v.dataConfig,
+        yAxisFields: v.dataConfig.yAxisFields ? [...v.dataConfig.yAxisFields] : undefined,
+        tooltipFields: v.dataConfig.tooltipFields ? [...v.dataConfig.tooltipFields] : undefined,
+        drillFields: v.dataConfig.drillFields ? [...v.dataConfig.drillFields] : undefined,
+        visualCalculations: v.dataConfig.visualCalculations
+          ? v.dataConfig.visualCalculations.map(c => ({ ...c }))
+          : undefined,
+        slicerConfig: v.dataConfig.slicerConfig
+          ? {
+              ...v.dataConfig.slicerConfig,
+              selectedValues: v.dataConfig.slicerConfig.selectedValues
+                ? [...v.dataConfig.slicerConfig.selectedValues]
+                : undefined,
+              dateRange: v.dataConfig.slicerConfig.dateRange
+                ? { ...v.dataConfig.slicerConfig.dateRange }
+                : undefined,
+            }
+          : undefined,
+      },
+      formatConfig: {
+        ...v.formatConfig,
+        colorPalette: v.formatConfig.colorPalette ? [...v.formatConfig.colorPalette] : undefined,
+        conditionalFormatting: v.formatConfig.conditionalFormatting
+          ? {
+              ...v.formatConfig.conditionalFormatting,
+              rules: v.formatConfig.conditionalFormatting.rules.map(r => ({ ...r })),
+            }
+          : undefined,
+      },
+      visualCalculations: v.visualCalculations ? v.visualCalculations.map(c => ({ ...c })) : undefined,
+    })),
+  }));
+}
+
 export const useBiStore = create<BiState>((set, get) => {
   const initialData = getSampleDatasets();
   const initialSynced = syncWhatIfWithModel(initialWhatIf, initialData.tables, initialData.measures);
   globalDataEngine.setSchema(initialSynced.tables, initialData.relationships, initialSynced.measures);
+
+  const pushPagesHistory = (nextPages: Page[], extra: Partial<BiState> = {}) => {
+    const past = [...get().historyPast, clonePagesSnapshot(get().pages)].slice(-MAX_CANVAS_HISTORY);
+    set({
+      pages: nextPages,
+      historyPast: past,
+      historyFuture: [],
+      canUndo: past.length > 0,
+      canRedo: false,
+      ...extra,
+    });
+  };
 
   return {
     language: initialLanguage,
@@ -1616,11 +1686,16 @@ export const useBiStore = create<BiState>((set, get) => {
     ],
     activePageId: defaultPageId,
     selectedVisualId: null,
+    selectedVisualIds: [],
     canvasZoom: 100,
     isPresentationMode: false,
     layoutMode: 'desktop',
+    historyPast: [],
+    historyFuture: [],
+    canUndo: false,
+    canRedo: false,
 
-    setActivePageId: (id) => set({ activePageId: id, selectedVisualId: null }),
+    setActivePageId: (id) => set({ activePageId: id, selectedVisualId: null, selectedVisualIds: [] }),
 
     addPage: (name) => {
       const newPageId = 'page_' + Math.random().toString(36).substr(2, 6);
@@ -1630,13 +1705,15 @@ export const useBiStore = create<BiState>((set, get) => {
         order: get().pages.length + 1,
         visuals: [],
       };
-      set({ pages: [...get().pages, newPage], activePageId: newPageId });
+      pushPagesHistory([...get().pages, newPage], {
+        activePageId: newPageId,
+        selectedVisualId: null,
+        selectedVisualIds: [],
+      });
     },
 
     renamePage: (id, newName) => {
-      set({
-        pages: get().pages.map(p => (p.id === id ? { ...p, name: newName } : p)),
-      });
+      pushPagesHistory(get().pages.map(p => (p.id === id ? { ...p, name: newName } : p)));
     },
 
     duplicatePage: (id) => {
@@ -1653,15 +1730,20 @@ export const useBiStore = create<BiState>((set, get) => {
           id: 'vis_' + Math.random().toString(36).substr(2, 6),
         })),
       };
-      set({ pages: [...get().pages, duplicated], activePageId: newId });
+      pushPagesHistory([...get().pages, duplicated], {
+        activePageId: newId,
+        selectedVisualId: null,
+        selectedVisualIds: [],
+      });
     },
 
     deletePage: (id) => {
       if (get().pages.length <= 1) return;
       const remaining = get().pages.filter(p => p.id !== id);
-      set({
-        pages: remaining,
+      pushPagesHistory(remaining, {
         activePageId: remaining[0].id,
+        selectedVisualId: null,
+        selectedVisualIds: [],
       });
     },
 
@@ -1674,17 +1756,33 @@ export const useBiStore = create<BiState>((set, get) => {
         height: sanitizedHeight,
       };
 
-      set({
-        pages: get().pages.map(p => {
+      pushPagesHistory(
+        get().pages.map(p => {
           if (applyToAllPages || p.id === pageId) {
             return { ...p, canvasSize: safeConfig };
           }
           return p;
-        }),
-      });
+        })
+      );
     },
 
-    setSelectedVisualId: (id) => set({ selectedVisualId: id }),
+    setSelectedVisualId: (id) => set({ selectedVisualId: id, selectedVisualIds: id ? [id] : [] }),
+    setSelectedVisualIds: (ids) => {
+      const unique = Array.from(new Set(ids));
+      set({
+        selectedVisualIds: unique,
+        selectedVisualId: unique[unique.length - 1] || null,
+      });
+    },
+    toggleVisualSelection: (id) => {
+      const curr = get().selectedVisualIds;
+      const exists = curr.includes(id);
+      const next = exists ? curr.filter(x => x !== id) : [...curr, id];
+      set({
+        selectedVisualIds: next,
+        selectedVisualId: next[next.length - 1] || null,
+      });
+    },
     setCanvasZoom: (zoom) => set({ canvasZoom: Math.max(30, Math.min(200, zoom)) }),
     setIsPresentationMode: (val) => set({ isPresentationMode: val }),
     setLayoutMode: (mode) => set({ layoutMode: mode }),
@@ -1721,30 +1819,186 @@ export const useBiStore = create<BiState>((set, get) => {
         },
       };
 
-      set({
-        pages: get().pages.map(p =>
+      pushPagesHistory(
+        get().pages.map(p =>
           p.id === get().activePageId ? { ...p, visuals: [...p.visuals, newVisual] } : p
         ),
-        selectedVisualId: newVisual.id,
-      });
+        {
+          selectedVisualId: newVisual.id,
+          selectedVisualIds: [newVisual.id],
+        }
+      );
     },
 
     updateVisual: (id, partial) => {
-      set({
-        pages: get().pages.map(p => ({
+      pushPagesHistory(
+        get().pages.map(p => ({
           ...p,
           visuals: p.visuals.map(v => (v.id === id ? { ...v, ...partial } : v)),
-        })),
-      });
+        }))
+      );
     },
 
     deleteVisual: (id) => {
-      set({
-        pages: get().pages.map(p => ({
+      const nextSelected = get().selectedVisualIds.filter(x => x !== id);
+      pushPagesHistory(
+        get().pages.map(p => ({
           ...p,
           visuals: p.visuals.filter(v => v.id !== id),
         })),
-        selectedVisualId: get().selectedVisualId === id ? null : get().selectedVisualId,
+        {
+          selectedVisualId: nextSelected[nextSelected.length - 1] || null,
+          selectedVisualIds: nextSelected,
+        }
+      );
+    },
+
+    moveVisualsDelta: (ids, dx, dy) => {
+      if (!ids.length || (dx === 0 && dy === 0)) return;
+      const activePageId = get().activePageId;
+      const activePage = get().pages.find(p => p.id === activePageId);
+      if (!activePage) return;
+      const { width: canvasWidth, height: canvasHeight } = getEffectiveCanvasSize(activePage);
+      const idSet = new Set(ids);
+      let changed = false;
+
+      const nextPages = get().pages.map(p => {
+        if (p.id !== activePageId) return p;
+        return {
+          ...p,
+          visuals: p.visuals.map(v => {
+            if (!idSet.has(v.id)) return v;
+            const nx = Math.max(0, Math.min(Math.max(0, canvasWidth - v.w), Math.round(v.x + dx)));
+            const ny = Math.max(0, Math.min(Math.max(0, canvasHeight - v.h), Math.round(v.y + dy)));
+            if (nx !== v.x || ny !== v.y) changed = true;
+            return { ...v, x: nx, y: ny };
+          }),
+        };
+      });
+
+      if (changed) {
+        pushPagesHistory(nextPages);
+      }
+    },
+
+    deleteSelectedVisuals: () => {
+      const ids = get().selectedVisualIds;
+      if (!ids.length) return;
+      const activePageId = get().activePageId;
+      const idSet = new Set(ids);
+      pushPagesHistory(
+        get().pages.map(p =>
+          p.id === activePageId ? { ...p, visuals: p.visuals.filter(v => !idSet.has(v.id)) } : p
+        ),
+        {
+          selectedVisualId: null,
+          selectedVisualIds: [],
+        }
+      );
+    },
+
+    alignSelectedVisuals: (mode) => {
+      const ids = get().selectedVisualIds;
+      if (ids.length < 2) return;
+      const activePageId = get().activePageId;
+      const activePage = get().pages.find(p => p.id === activePageId);
+      if (!activePage) return;
+      const idSet = new Set(ids);
+      const selected = activePage.visuals.filter(v => idSet.has(v.id));
+      if (selected.length < 2) return;
+
+      const minX = Math.min(...selected.map(v => v.x));
+      const maxR = Math.max(...selected.map(v => v.x + v.w));
+      const midCenterX = (minX + maxR) / 2;
+      const minY = Math.min(...selected.map(v => v.y));
+      const maxB = Math.max(...selected.map(v => v.y + v.h));
+      const midCenterY = (minY + maxB) / 2;
+
+      const nextPos = new Map<string, { x: number; y: number }>();
+
+      if (mode === 'distribute-h' && selected.length >= 3) {
+        const sorted = [...selected].sort((a, b) => a.x - b.x);
+        const totalWidth = sorted.reduce((acc, v) => acc + v.w, 0);
+        const span = sorted[sorted.length - 1].x + sorted[sorted.length - 1].w - sorted[0].x;
+        const gap = (span - totalWidth) / (sorted.length - 1);
+        let cursor = sorted[0].x;
+        for (const v of sorted) {
+          nextPos.set(v.id, { x: Math.round(cursor), y: v.y });
+          cursor += v.w + gap;
+        }
+      } else if (mode === 'distribute-v' && selected.length >= 3) {
+        const sorted = [...selected].sort((a, b) => a.y - b.y);
+        const totalHeight = sorted.reduce((acc, v) => acc + v.h, 0);
+        const span = sorted[sorted.length - 1].y + sorted[sorted.length - 1].h - sorted[0].y;
+        const gap = (span - totalHeight) / (sorted.length - 1);
+        let cursor = sorted[0].y;
+        for (const v of sorted) {
+          nextPos.set(v.id, { x: v.x, y: Math.round(cursor) });
+          cursor += v.h + gap;
+        }
+      } else {
+        for (const v of selected) {
+          let x = v.x;
+          let y = v.y;
+          if (mode === 'left') x = minX;
+          else if (mode === 'center') x = Math.round(midCenterX - v.w / 2);
+          else if (mode === 'right') x = maxR - v.w;
+          else if (mode === 'top') y = minY;
+          else if (mode === 'middle') y = Math.round(midCenterY - v.h / 2);
+          else if (mode === 'bottom') y = maxB - v.h;
+          nextPos.set(v.id, { x: Math.max(0, x), y: Math.max(0, y) });
+        }
+      }
+
+      const nextPages = get().pages.map(p =>
+        p.id === activePageId
+          ? {
+              ...p,
+              visuals: p.visuals.map(v => {
+                const pos = nextPos.get(v.id);
+                return pos ? { ...v, x: pos.x, y: pos.y } : v;
+              }),
+            }
+          : p
+      );
+      pushPagesHistory(nextPages);
+    },
+
+    undo: () => {
+      const { historyPast, historyFuture, pages, activePageId } = get();
+      if (historyPast.length === 0) return;
+      const previous = clonePagesSnapshot(historyPast[historyPast.length - 1]);
+      const nextPast = historyPast.slice(0, -1);
+      const nextFuture = [clonePagesSnapshot(pages), ...historyFuture].slice(0, MAX_CANVAS_HISTORY);
+      const nextActivePage = previous.find(p => p.id === activePageId) || previous[0];
+      set({
+        pages: previous,
+        activePageId: nextActivePage ? nextActivePage.id : activePageId,
+        selectedVisualId: null,
+        selectedVisualIds: [],
+        historyPast: nextPast,
+        historyFuture: nextFuture,
+        canUndo: nextPast.length > 0,
+        canRedo: nextFuture.length > 0,
+      });
+    },
+
+    redo: () => {
+      const { historyPast, historyFuture, pages, activePageId } = get();
+      if (historyFuture.length === 0) return;
+      const next = clonePagesSnapshot(historyFuture[0]);
+      const nextFuture = historyFuture.slice(1);
+      const nextPast = [...historyPast, clonePagesSnapshot(pages)].slice(-MAX_CANVAS_HISTORY);
+      const nextActivePage = next.find(p => p.id === activePageId) || next[0];
+      set({
+        pages: next,
+        activePageId: nextActivePage ? nextActivePage.id : activePageId,
+        selectedVisualId: null,
+        selectedVisualIds: [],
+        historyPast: nextPast,
+        historyFuture: nextFuture,
+        canUndo: nextPast.length > 0,
+        canRedo: nextFuture.length > 0,
       });
     },
 
@@ -2257,6 +2511,11 @@ export const useBiStore = create<BiState>((set, get) => {
         ],
         activePageId: blankPageId,
         selectedVisualId: null,
+        selectedVisualIds: [],
+        historyPast: [],
+        historyFuture: [],
+        canUndo: false,
+        canRedo: false,
         activeView: 'report' as ActiveView,
         filters: [],
         bookmarks: [],
@@ -2383,6 +2642,12 @@ export const useBiStore = create<BiState>((set, get) => {
         measures: state.measures || [],
         pages: state.pages || [],
         activePageId: state.activePageId || state.pages?.[0]?.id || defaultPageId,
+        selectedVisualId: null,
+        selectedVisualIds: [],
+        historyPast: [],
+        historyFuture: [],
+        canUndo: false,
+        canRedo: false,
         filters: state.filters || [],
         bookmarks: state.bookmarks || [],
         dashboardTiles: state.dashboardTiles || [],
