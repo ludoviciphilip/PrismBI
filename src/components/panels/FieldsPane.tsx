@@ -14,11 +14,12 @@ import {
   Edit2,
   Trash2,
 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { Column, Measure } from '../../types/bi';
 import { useTranslation } from '../../i18n';
 
-export const FieldsPane: React.FC = () => {
+export const FieldsPane: React.FC = React.memo(() => {
   const { t } = useTranslation();
   const {
     tables,
@@ -31,7 +32,18 @@ export const FieldsPane: React.FC = () => {
     setCustomMeasureModalOpen,
     deleteMeasure,
     openCustomMeasureModal,
-  } = useBiStore();
+  } = useBiStore(useShallow(s => ({
+    tables: s.tables,
+    measures: s.measures,
+    selectedVisualId: s.selectedVisualId,
+    updateVisual: s.updateVisual,
+    pages: s.pages,
+    activePageId: s.activePageId,
+    setQuickMeasureModalOpen: s.setQuickMeasureModalOpen,
+    setCustomMeasureModalOpen: s.setCustomMeasureModalOpen,
+    deleteMeasure: s.deleteMeasure,
+    openCustomMeasureModal: s.openCustomMeasureModal,
+  })));
   const [searchTerm, setSearchTerm] = useState('');
   const [deletingMeasureId, setDeletingMeasureId] = useState<string | null>(null);
   const [expandedTables, setExpandedTables] = useState<Record<string, boolean>>({
@@ -344,4 +356,4 @@ export const FieldsPane: React.FC = () => {
       )}
     </div>
   );
-};
+});

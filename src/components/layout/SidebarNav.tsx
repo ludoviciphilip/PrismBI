@@ -13,12 +13,19 @@ import {
   Sun,
   Moon,
 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { ActiveView } from '../../types/bi';
 import { useTranslation } from '../../i18n';
 
-export const SidebarNav: React.FC = () => {
-  const { activeView, setActiveView, setLimitationsModalOpen, isDarkMode, toggleThemeMode } = useBiStore();
+export const SidebarNav: React.FC = React.memo(() => {
+  const { activeView, setActiveView, setLimitationsModalOpen, isDarkMode, toggleThemeMode } = useBiStore(useShallow(s => ({
+    activeView: s.activeView,
+    setActiveView: s.setActiveView,
+    setLimitationsModalOpen: s.setLimitationsModalOpen,
+    isDarkMode: s.isDarkMode,
+    toggleThemeMode: s.toggleThemeMode,
+  })));
   const { t } = useTranslation();
 
   const navItems: { view: ActiveView; label: string; icon: any }[] = [
@@ -80,4 +87,4 @@ export const SidebarNav: React.FC = () => {
       </div>
     </div>
   );
-};
+});

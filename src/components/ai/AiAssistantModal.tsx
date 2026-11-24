@@ -10,6 +10,7 @@ import {
   HelpCircle,
   ShieldAlert,
 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { askData, summarize, daxAssist } from '../../services/aiClient';
 import { shouldPromptPrivacyConsent, hasConfiguredApiKey } from '../../services/aiConfig';
@@ -28,7 +29,16 @@ export const AiAssistantModal: React.FC = () => {
     setActiveView,
     addMeasure,
     setAiSettingsModalOpen,
-  } = useBiStore();
+  } = useBiStore(useShallow(s => ({
+    aiModalOpen: s.aiModalOpen,
+    setAiModalOpen: s.setAiModalOpen,
+    tables: s.tables,
+    measures: s.measures,
+    addVisual: s.addVisual,
+    setActiveView: s.setActiveView,
+    addMeasure: s.addMeasure,
+    setAiSettingsModalOpen: s.setAiSettingsModalOpen,
+  })));
 
   const [activeTab, setActiveTab] = useState<'nlq' | 'narrative' | 'dax'>('nlq');
 

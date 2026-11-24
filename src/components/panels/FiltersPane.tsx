@@ -1,11 +1,18 @@
 import React, { useState } from 'react';
 import { Filter as FilterIcon, X, Trash2, Plus, Check } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { Filter } from '../../types/bi';
 import { useTranslation } from '../../i18n';
 
-export const FiltersPane: React.FC = () => {
-  const { filters, removeFilter, clearFilters, tables, addFilter } = useBiStore();
+export const FiltersPane: React.FC = React.memo(() => {
+  const { filters, removeFilter, clearFilters, tables, addFilter } = useBiStore(useShallow(s => ({
+    filters: s.filters,
+    removeFilter: s.removeFilter,
+    clearFilters: s.clearFilters,
+    tables: s.tables,
+    addFilter: s.addFilter,
+  })));
   const { t } = useTranslation();
   const [showAddFilter, setShowAddFilter] = useState(false);
   const [selectedTableId, setSelectedTableId] = useState(tables[0]?.id || '');
@@ -184,4 +191,4 @@ export const FiltersPane: React.FC = () => {
       </div>
     </div>
   );
-};
+});

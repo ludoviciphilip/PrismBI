@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Sigma, CheckCircle2, AlertCircle, Sparkles, BookOpen, Trash2 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { DaxEngine } from '../../engine/daxEngine';
 import { Measure } from '../../types/bi';
@@ -17,7 +18,17 @@ export const CustomMeasureModal: React.FC = () => {
     deleteMeasure,
     editingMeasureId,
     setEditingMeasureId,
-  } = useBiStore();
+  } = useBiStore(useShallow(s => ({
+    customMeasureModalOpen: s.customMeasureModalOpen,
+    setCustomMeasureModalOpen: s.setCustomMeasureModalOpen,
+    tables: s.tables,
+    measures: s.measures,
+    addMeasure: s.addMeasure,
+    updateMeasure: s.updateMeasure,
+    deleteMeasure: s.deleteMeasure,
+    editingMeasureId: s.editingMeasureId,
+    setEditingMeasureId: s.setEditingMeasureId,
+  })));
 
   const [name, setName] = useState('');
   const [tableName, setTableName] = useState(tables[0]?.name || 'f_Vendas');

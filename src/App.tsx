@@ -30,7 +30,9 @@ import { CanvasSizeModal } from './components/modals/CanvasSizeModal';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
 
 export default function App() {
-  const { activeView, loadProject, isPresentationMode } = useBiStore();
+  const activeView = useBiStore(s => s.activeView);
+  const loadProject = useBiStore(s => s.loadProject);
+  const isPresentationMode = useBiStore(s => s.isPresentationMode);
 
   const [showFiltersPane, setShowFiltersPane] = useState(true);
   const [showVisualsPane, setShowVisualsPane] = useState(true);

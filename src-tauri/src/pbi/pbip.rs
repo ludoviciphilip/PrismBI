@@ -338,12 +338,14 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
                 continue;
             };
             for proj in projs {
-                let extracted = if let Some(qref) = proj.get("queryRef").and_then(|v| v.as_str()) {
-                    Some(normalize_pbir_query_ref(qref))
+                let qref = proj.get("queryRef").and_then(|v| v.as_str());
+                let extracted = if qref.is_some_and(|q| q.contains(".Variation.Date Hierarchy.")) {
+                    qref.map(normalize_pbir_query_ref)
                 } else if let Some(field) = proj.get("field") {
                     extract_pbir_field_entity_prop(field)
+                        .or_else(|| qref.map(normalize_pbir_query_ref))
                 } else {
-                    None
+                    qref.map(normalize_pbir_query_ref)
                 };
 
                 let Some((tbl, fld)) = extracted else {
@@ -502,5 +504,52 @@ mod tests {
         assert_eq!(summary.pages[0].visuals[0].visual_type, "matrix");
         assert_eq!(summary.pages[0].visuals[0].category_field.as_deref(), Some("f_Vendas.Categoria"));
         assert_eq!(summary.pages[0].visuals[0].value_fields, vec!["Receita"]);
+    }
+
+    #[test]
+    fn test_pbir_prefers_field_property_over_stale_query_ref_and_keeps_date_hierarchy() {
+        let vj: JsonValue = serde_json::json!({
+            "name": "vis_renamed",
+            "position": { "x": 10, "y": 20, "width": 400, "height": 200 },
+            "visual": {
+                "visualType": "cardVisual",
+                "query": {
+                    "queryState": {
+                        "Category": {
+                            "projections": [
+                                {
+                                    "field": {
+                                        "Column": {
+                                            "Expression": { "SourceRef": { "Entity": "dCalendario" } },
+                                            "Property": "Data"
+                                        }
+                                    },
+                                    "queryRef": "dCalendario.Data.Variation.Date Hierarchy.Year",
+                                    "nativeQueryRef": "Data Year"
+                                }
+                            ]
+                        },
+                        "Data": {
+                            "projections": [
+                                {
+                                    "field": {
+                                        "Measure": {
+                                            "Expression": { "SourceRef": { "Entity": "Medidas" } },
+                                            "Property": "Salários"
+                                        }
+                                    },
+                                    "queryRef": "Medidas.Despesas com Pessoal",
+                                    "nativeQueryRef": "Salários"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        });
+
+        let meta = parse_pbir_visual_json(&vj, "page1", 0).expect("parsed visual");
+        assert_eq!(meta.category_field.as_deref(), Some("dCalendario.Ano"));
+        assert_eq!(meta.value_fields, vec!["Salários"]);
     }
 }

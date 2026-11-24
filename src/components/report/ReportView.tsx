@@ -1,5 +1,6 @@
 import React, { useRef } from 'react';
 import { Plus, Copy, Trash2, Edit2, Smartphone, ArrowLeft, Target, X, LayoutGrid, Maximize2 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { VisualCard } from './VisualCard';
 import { ErrorBoundary } from '../shared/ErrorBoundary';
@@ -26,7 +27,25 @@ export const ReportView: React.FC = () => {
     clearDrillthrough,
     setCanvasSizeModalOpen,
     isDarkMode,
-  } = useBiStore();
+  } = useBiStore(useShallow(s => ({
+    pages: s.pages,
+    activePageId: s.activePageId,
+    setActivePageId: s.setActivePageId,
+    addPage: s.addPage,
+    renamePage: s.renamePage,
+    duplicatePage: s.duplicatePage,
+    deletePage: s.deletePage,
+    selectedVisualId: s.selectedVisualId,
+    setSelectedVisualId: s.setSelectedVisualId,
+    canvasZoom: s.canvasZoom,
+    layoutMode: s.layoutMode,
+    gridSize: s.gridSize,
+    showGrid: s.showGrid,
+    activeDrillthrough: s.activeDrillthrough,
+    clearDrillthrough: s.clearDrillthrough,
+    setCanvasSizeModalOpen: s.setCanvasSizeModalOpen,
+    isDarkMode: s.isDarkMode,
+  })));
 
   const activePage = pages.find(p => p.id === activePageId) || pages[0];
   const { width: canvasWidth, height: canvasHeight, label: canvasSizeLabel } = getEffectiveCanvasSize(activePage);
@@ -108,7 +127,7 @@ export const ReportView: React.FC = () => {
                     visual={visual}
                     isMobile={true}
                     isSelected={selectedVisualId === visual.id}
-                    onSelect={() => setSelectedVisualId(visual.id)}
+                    onSelect={setSelectedVisualId}
                   />
                 </ErrorBoundary>
               </div>
@@ -121,33 +140,35 @@ export const ReportView: React.FC = () => {
           </div>
         ) : (
           // Desktop Free Canvas
-          <div
-            ref={canvasRef}
-            onClick={handleCanvasClick}
-            style={{
-              transform: `scale(${canvasZoom / 100})`,
-              transformOrigin: 'top center',
-              width: canvasWidth,
-              height: canvasHeight,
-              backgroundImage: showGrid
-                ? isDarkMode
-                  ? 'radial-gradient(#334155 1.2px, transparent 1.2px)'
-                  : 'radial-gradient(#cbd5e1 1.2px, transparent 1.2px)'
-                : 'none',
-              backgroundSize: `${gridSize || 20}px ${gridSize || 20}px`,
-              backgroundPosition: '0 0, 10px 10px',
-            }}
-            className="mx-auto bg-white dark:bg-slate-900 rounded shadow-sm border border-slate-300 dark:border-slate-800 relative shrink-0 transition-transform duration-75"
-          >
-            {activePage?.visuals.map(visual => (
-              <ErrorBoundary key={visual.id} fallbackTitle={visual.title}>
-                <VisualCard
-                  visual={visual}
-                  isSelected={selectedVisualId === visual.id}
-                  onSelect={() => setSelectedVisualId(visual.id)}
-                />
-              </ErrorBoundary>
-            ))}
+          (() => {
+            const gSize = gridSize || 20;
+            const dotColor = isDarkMode ? '%23334155' : '%23cbd5e1';
+            const gridSvgUri = showGrid
+              ? `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='${gSize}' height='${gSize}'%3E%3Ccircle cx='1' cy='1' r='1' fill='${dotColor}'/%3E%3C/svg%3E")`
+              : 'none';
+            return (
+              <div
+                ref={canvasRef}
+                onClick={handleCanvasClick}
+                style={{
+                  transform: canvasZoom !== 100 ? `scale(${canvasZoom / 100})` : undefined,
+                  transformOrigin: canvasZoom !== 100 ? 'top center' : undefined,
+                  width: canvasWidth,
+                  height: canvasHeight,
+                  backgroundImage: gridSvgUri,
+                  backgroundSize: `${gSize}px ${gSize}px`,
+                }}
+                className="mx-auto bg-white dark:bg-slate-900 rounded shadow-sm border border-slate-300 dark:border-slate-800 relative shrink-0"
+              >
+                {activePage?.visuals.map(visual => (
+                  <ErrorBoundary key={visual.id} fallbackTitle={visual.title}>
+                    <VisualCard
+                      visual={visual}
+                      isSelected={selectedVisualId === visual.id}
+                      onSelect={setSelectedVisualId}
+                    />
+                  </ErrorBoundary>
+                ))}
 
             {(!activePage?.visuals || activePage?.visuals.length === 0) && (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 pointer-events-none">
@@ -155,7 +176,9 @@ export const ReportView: React.FC = () => {
                 <p className="text-xs mt-1">{t.report.emptyPageSubtitle}</p>
               </div>
             )}
-          </div>
+              </div>
+            );
+          })()
         )}
       </div>
 

@@ -10,6 +10,7 @@ import {
   RotateCcw,
   LayoutGrid,
 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import {
   CANVAS_PRESETS,
@@ -28,7 +29,13 @@ export const CanvasSizeModal: React.FC = () => {
     pages,
     activePageId,
     setPageCanvasSize,
-  } = useBiStore();
+  } = useBiStore(useShallow(s => ({
+    canvasSizeModalOpen: s.canvasSizeModalOpen,
+    setCanvasSizeModalOpen: s.setCanvasSizeModalOpen,
+    pages: s.pages,
+    activePageId: s.activePageId,
+    setPageCanvasSize: s.setPageCanvasSize,
+  })));
 
   const { t } = useTranslation();
 

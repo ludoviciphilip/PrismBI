@@ -1,10 +1,14 @@
 import React from 'react';
 import { Info, AlertTriangle, ShieldAlert, CheckCircle2, Server, BrainCircuit } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { APP_VERSION } from '../../version';
 
 export const LimitationsModal: React.FC = () => {
-  const { limitationsModalOpen, setLimitationsModalOpen } = useBiStore();
+  const { limitationsModalOpen, setLimitationsModalOpen } = useBiStore(useShallow(s => ({
+    limitationsModalOpen: s.limitationsModalOpen,
+    setLimitationsModalOpen: s.setLimitationsModalOpen,
+  })));
 
   if (!limitationsModalOpen) return null;
 

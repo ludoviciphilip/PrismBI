@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useRef, useCallback } from 'react';
 import ReactECharts from 'echarts-for-react';
 import {
   Pin,
@@ -26,11 +26,12 @@ import { getEffectiveCanvasSize } from '../../engine/shared/canvasPresets';
 interface VisualCardProps {
   visual: Visual;
   isSelected: boolean;
-  onSelect: () => void;
+  onSelect: (id: string) => void;
   isMobile?: boolean;
 }
 
 export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSelected, onSelect, isMobile }) => {
+  const cardRef = useRef<HTMLDivElement>(null);
   const filters = useBiStore(s => s.filters);
   const tables = useBiStore(s => s.tables);
   const measures = useBiStore(s => s.measures);
@@ -39,7 +40,6 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
   const deleteVisual = useBiStore(s => s.deleteVisual);
   const pinVisualToDashboard = useBiStore(s => s.pinVisualToDashboard);
   const activePageId = useBiStore(s => s.activePageId);
-  const pages = useBiStore(s => s.pages);
   const executeDrillthrough = useBiStore(s => s.executeDrillthrough);
   const canvasZoom = useBiStore(s => s.canvasZoom);
   const activePalette = useBiStore(s => s.activePalette);
@@ -91,7 +91,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     return false;
   };
 
-  // Mouse Drag to move visual freely within canvas
+  // Mouse Drag to move visual freely within canvas (DOM-driven at 60fps, commits to store on mouseup)
   const handleMouseDownDrag = (e: React.MouseEvent) => {
     if (isFocused || isMobile) return;
     // Don't drag if clicking buttons, inputs, selects, or tables
@@ -101,7 +101,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     }
     e.preventDefault();
     e.stopPropagation();
-    onSelect();
+    onSelect(visual.id);
     setIsDragging(true);
     document.body.style.cursor = 'grabbing';
     document.body.style.userSelect = 'none';
@@ -110,60 +110,91 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     const startY = e.clientY;
     const origX = visual.x;
     const origY = visual.y;
+    let lastX = origX;
+    let lastY = origY;
+    let rafId: number | null = null;
     const zoomScale = Math.max(0.2, (canvasZoom || 100) / 100);
 
-    const activePage = pages.find(p => p.id === activePageId);
+    const activePage = useBiStore.getState().pages.find(p => p.id === activePageId);
     const { width: canvasWidth, height: canvasHeight } = getEffectiveCanvasSize(activePage);
+    const step = snapToGrid ? (gridSize || 10) : 1;
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const deltaX = (moveEvent.clientX - startX) / zoomScale;
       const deltaY = (moveEvent.clientY - startY) / zoomScale;
       const rawX = origX + deltaX;
       const rawY = origY + deltaY;
-      const step = snapToGrid ? (gridSize || 10) : 1;
-      const clampedX = Math.max(0, Math.min(canvasWidth - visual.w, Math.round(rawX / step) * step));
-      const clampedY = Math.max(0, Math.min(canvasHeight - visual.h, Math.round(rawY / step) * step));
-      updateVisual(visual.id, { x: clampedX, y: clampedY });
+      lastX = Math.max(0, Math.min(canvasWidth - visual.w, Math.round(rawX / step) * step));
+      lastY = Math.max(0, Math.min(canvasHeight - visual.h, Math.round(rawY / step) * step));
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        if (cardRef.current) {
+          cardRef.current.style.transform = `translate3d(${lastX - origX}px, ${lastY - origY}px, 0)`;
+        }
+        rafId = null;
+      });
     };
 
     const onMouseUp = () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (cardRef.current) {
+        cardRef.current.style.transform = '';
+      }
       setIsDragging(false);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      if (lastX !== origX || lastY !== origY) {
+        updateVisual(visual.id, { x: lastX, y: lastY });
+      }
     };
 
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
   };
 
-  // Mouse drag to resize visual
+  // Mouse drag to resize visual (DOM-driven at 60fps, commits to store on mouseup)
   const handleMouseDownResize = (e: React.MouseEvent) => {
     if (isMobile) return;
     e.preventDefault();
     e.stopPropagation();
 
-    const activePage = pages.find(p => p.id === activePageId);
+    const activePage = useBiStore.getState().pages.find(p => p.id === activePageId);
     const { width: canvasWidth, height: canvasHeight } = getEffectiveCanvasSize(activePage);
+    const zoomScale = Math.max(0.2, (canvasZoom || 100) / 100);
+    const step = snapToGrid ? (gridSize || 10) : 10;
 
     const startX = e.clientX;
     const startY = e.clientY;
     const origW = visual.w;
     const origH = visual.h;
+    let lastW = origW;
+    let lastH = origH;
+    let rafId: number | null = null;
 
     const onMouseMove = (moveEvent: MouseEvent) => {
-      const deltaW = moveEvent.clientX - startX;
-      const deltaH = moveEvent.clientY - startY;
-      const step = snapToGrid ? (gridSize || 10) : 10;
-      const newW = Math.max(160, Math.min(canvasWidth - visual.x, Math.round((origW + deltaW) / step) * step));
-      const newH = Math.max(100, Math.min(canvasHeight - visual.y, Math.round((origH + deltaH) / step) * step));
-      updateVisual(visual.id, { w: newW, h: newH });
+      const deltaW = (moveEvent.clientX - startX) / zoomScale;
+      const deltaH = (moveEvent.clientY - startY) / zoomScale;
+      lastW = Math.max(160, Math.min(canvasWidth - visual.x, Math.round((origW + deltaW) / step) * step));
+      lastH = Math.max(100, Math.min(canvasHeight - visual.y, Math.round((origH + deltaH) / step) * step));
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        if (cardRef.current) {
+          cardRef.current.style.width = `${lastW}px`;
+          cardRef.current.style.height = `${lastH}px`;
+        }
+        rafId = null;
+      });
     };
 
     const onMouseUp = () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      if (lastW !== origW || lastH !== origH) {
+        updateVisual(visual.id, { w: lastW, h: lastH });
+      }
     };
 
     window.addEventListener('mousemove', onMouseMove);
@@ -191,13 +222,14 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     value: any;
   } | null>(null);
 
-  // Available destination pages for drillthrough
+  // Available destination pages for drillthrough (only resolved while popover is open)
   const targetPages = useMemo(() => {
-    return pages.filter(p => p.id !== activePageId);
-  }, [pages, activePageId]);
+    if (!drillPop) return [];
+    return useBiStore.getState().pages.filter(p => p.id !== activePageId);
+  }, [drillPop, activePageId]);
 
   // Handle cross-filtering & drill-through prompt when user clicks on a chart data point
-  const onChartClick = (params: any) => {
+  const onChartClick = useCallback((params: any) => {
     if (!params) return;
     const catName = params.name || params.data?.name;
     if (catName && catName !== 'Sem dados' && visual.dataConfig.xAxisField) {
@@ -207,11 +239,11 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
         value: catName,
       });
     }
-  };
+  }, [visual.dataConfig.tableId, visual.dataConfig.xAxisField, setCrossFilter]);
 
-  const onEvents = {
+  const onEvents = useMemo(() => ({
     click: onChartClick,
-  };
+  }), [onChartClick]);
 
   // Build ECharts Options based on visual.type
   const echartsOption = useMemo(() => {
@@ -232,6 +264,9 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       borderColor: isDarkMode ? '#334155' : '#e2e8f0',
       borderWidth: 1,
       textStyle: { color: tooltipTitleColor, fontSize: 12 },
+      transitionDuration: 0,
+      confine: true,
+      extraCssText: 'pointer-events: none;',
     };
 
     const baseGrid = {
@@ -246,6 +281,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       case 'column':
       case 'stacked-column':
         return {
+          animation: false,
           color: colors,
           grid: baseGrid,
           tooltip: {
@@ -301,6 +337,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       case 'bar':
       case 'stacked-bar':
         return {
+          animation: false,
           color: colors,
           grid: baseGrid,
           tooltip: {
@@ -354,6 +391,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       case 'line':
       case 'area':
         return {
+          animation: false,
           color: colors,
           grid: baseGrid,
           tooltip: {
@@ -445,6 +483,10 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
         };
 
         return {
+          animation: true,
+          animationDuration: 0,
+          animationDurationUpdate: 0,
+          stateAnimation: { duration: 0 },
           color: colors,
           tooltip: {
             ...baseTooltip,
@@ -510,6 +552,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           value: series[0]?.data[i] || 0,
         }));
         return {
+          animation: false,
           color: colors,
           tooltip: {
             ...baseTooltip,
@@ -551,6 +594,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
         });
 
         return {
+          animation: false,
           grid: baseGrid,
           tooltip: { ...baseTooltip, trigger: 'axis', axisPointer: { type: 'shadow' } },
           xAxis: {
@@ -591,6 +635,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
       case 'combo': {
         return {
+          animation: false,
           color: colors,
           grid: baseGrid,
           tooltip: {
@@ -632,6 +677,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
         const val = Number(queryResult.summaryValue ?? series[0]?.data[0] ?? 0) || 0;
         const target = visual.dataConfig.kpiTarget || Math.max(100, Math.abs(val) * 1.25);
         return {
+          animation: false,
           tooltip: { ...baseTooltip, trigger: 'item' },
           series: [
             {
@@ -644,7 +690,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               splitLine: { length: 8, lineStyle: { width: 2, color: axisColor } },
               axisLabel: { distance: 16, color: axisColor, fontSize: 10 },
               detail: {
-                valueAnimation: true,
+                valueAnimation: false,
                 fontSize: 16,
                 color: tooltipTitleColor,
                 formatter: (v: number) => (isYCurrency ? formatCurrency(v) : formatNumber(v)),
@@ -663,6 +709,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
         }));
         const maxVal = Math.max(1, ...funnelData.map(d => d.value));
         return {
+          animation: false,
           color: colors,
           tooltip: {
             ...baseTooltip,
@@ -707,6 +754,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           Number(r[visual.dataConfig.yAxisFields?.[0] || 'CustoTotalViagem']) || 0,
         ]);
         return {
+          animation: false,
           grid: baseGrid,
           tooltip: { ...baseTooltip, trigger: 'item' },
           xAxis: {
@@ -737,7 +785,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       default:
         return {};
     }
-  }, [visual, queryResult, activePalette, isDarkMode]);
+  }, [visual.type, visual.title, visual.dataConfig, visual.formatConfig, queryResult, activePalette, isDarkMode]);
 
   const handleExportCSV = () => {
     if (!queryResult.rawRows.length) return;
@@ -756,7 +804,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
   return (
     <div
-      onClick={onSelect}
+      ref={cardRef}
+      onClick={() => onSelect(visual.id)}
       onMouseDown={(e) => {
         if (isMobile) return;
         const target = e.target as HTMLElement;
@@ -771,7 +820,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
         left: isMobile ? undefined : isFocused ? 70 : visual.x,
         width: isMobile ? '100%' : isFocused ? 'calc(100vw - 140px)' : visual.w,
         height: isMobile ? '100%' : isFocused ? 'calc(100vh - 140px)' : visual.h,
-        zIndex: isFocused ? 9999 : isSelected ? 50 : visual.zIndex || 1,
+        zIndex: isFocused ? 9999 : isSelected ? 20 : visual.zIndex || 1,
+        contain: isFocused || isDragging ? undefined : 'layout style',
         backgroundColor: visual.formatConfig.backgroundColor && visual.formatConfig.backgroundColor !== '#ffffff'
           ? visual.formatConfig.backgroundColor
           : (isDarkMode ? '#1e293b' : '#ffffff'),
@@ -780,7 +830,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           : visual.formatConfig.borderColor || (isDarkMode ? '#334155' : '#e2e8f0'),
         borderRadius: visual.formatConfig.borderRadius ?? 8,
       }}
-      className={`group flex flex-col border shadow-xs transition-shadow hover:shadow-md ${
+      className={`group flex flex-col border shadow-xs ${
         isMobile ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'
       } ${isSelected ? 'ring-2 ring-amber-400' : ''} ${
         isDragging ? 'opacity-90 shadow-2xl ring-2 ring-amber-500 cursor-grabbing' : ''
@@ -1300,20 +1350,22 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       )}
 
       {/* Visual Calculation Editor Modal */}
-      <VisualCalculationModal
-        visual={visual}
-        isOpen={isVisualCalcModalOpen}
-        onClose={() => setIsVisualCalcModalOpen(false)}
-        onSave={(updatedCalcs) => {
-          updateVisual(visual.id, {
-            visualCalculations: updatedCalcs,
-            dataConfig: {
-              ...visual.dataConfig,
+      {isVisualCalcModalOpen && (
+        <VisualCalculationModal
+          visual={visual}
+          isOpen={true}
+          onClose={() => setIsVisualCalcModalOpen(false)}
+          onSave={(updatedCalcs) => {
+            updateVisual(visual.id, {
               visualCalculations: updatedCalcs,
-            },
-          });
-        }}
-      />
+              dataConfig: {
+                ...visual.dataConfig,
+                visualCalculations: updatedCalcs,
+              },
+            });
+          }}
+        />
+      )}
     </div>
   );
 });

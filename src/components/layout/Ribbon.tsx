@@ -33,6 +33,7 @@ import {
   Moon,
   FileCode2,
 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { exportProjectToFile } from '../../engine/storage';
 import { useTranslation } from '../../i18n';
@@ -105,7 +106,46 @@ export const Ribbon: React.FC<{
     lastSavedAt,
     projectName,
     setProjectName,
-  } = useBiStore();
+  } = useBiStore(useShallow(s => ({
+    setActiveView: s.setActiveView,
+    addVisual: s.addVisual,
+    canvasZoom: s.canvasZoom,
+    setCanvasZoom: s.setCanvasZoom,
+    layoutMode: s.layoutMode,
+    setLayoutMode: s.setLayoutMode,
+    isPresentationMode: s.isPresentationMode,
+    setIsPresentationMode: s.setIsPresentationMode,
+    setDataSourceModalOpen: s.setDataSourceModalOpen,
+    setQuickMeasureModalOpen: s.setQuickMeasureModalOpen,
+    setCustomMeasureModalOpen: s.setCustomMeasureModalOpen,
+    setLimitationsModalOpen: s.setLimitationsModalOpen,
+    setAiModalOpen: s.setAiModalOpen,
+    setAiSettingsModalOpen: s.setAiSettingsModalOpen,
+    setCanvasSizeModalOpen: s.setCanvasSizeModalOpen,
+    pages: s.pages,
+    activePageId: s.activePageId,
+    newProject: s.newProject,
+    loadInitialSampleData: s.loadInitialSampleData,
+    generateCalendar: s.generateCalendar,
+    saveProject: s.saveProject,
+    getProjectState: s.getProjectState,
+    theme: s.theme,
+    setTheme: s.setTheme,
+    setThemeModalOpen: s.setThemeModalOpen,
+    themeMode: s.themeMode,
+    setThemeMode: s.setThemeMode,
+    isDarkMode: s.isDarkMode,
+    gridSize: s.gridSize,
+    setGridSize: s.setGridSize,
+    showGrid: s.showGrid,
+    setShowGrid: s.setShowGrid,
+    snapToGrid: s.snapToGrid,
+    setSnapToGrid: s.setSnapToGrid,
+    loadStateFromProject: s.loadStateFromProject,
+    lastSavedAt: s.lastSavedAt,
+    projectName: s.projectName,
+    setProjectName: s.setProjectName,
+  })));
 
   const activeRibbonPage = pages.find(p => p.id === activePageId) || pages[0];
   const { width: ribbonCanvasWidth, height: ribbonCanvasHeight } = getEffectiveCanvasSize(activeRibbonPage);
@@ -405,7 +445,10 @@ export const Ribbon: React.FC<{
                 <span className="text-[10px] font-semibold mt-0.5">{t.ribbonActions.getData}</span>
               </button>
               <button
-                onClick={() => setShowPbiImportModal(true)}
+                onClick={() => {
+                  useBiStore.getState().setSelectedVisualId(null);
+                  setShowPbiImportModal(true);
+                }}
                 className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 group transition-all cursor-pointer"
                 title="Abrir projeto Power BI (.pbip / .pbix)"
               >
@@ -847,7 +890,7 @@ export const Ribbon: React.FC<{
 
       {/* Modal de Confirmação Novo Projeto */}
       {showNewProjectModal && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-xl bg-amber-100 text-amber-700">

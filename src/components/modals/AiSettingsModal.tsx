@@ -12,6 +12,7 @@ import {
   ExternalLink,
   Cpu,
 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import {
   getAiSettings,
@@ -23,7 +24,10 @@ import {
 import { testConnectionAndListModels } from '../../services/aiClient';
 
 export const AiSettingsModal: React.FC = () => {
-  const { aiSettingsModalOpen, setAiSettingsModalOpen } = useBiStore();
+  const { aiSettingsModalOpen, setAiSettingsModalOpen } = useBiStore(useShallow(s => ({
+    aiSettingsModalOpen: s.aiSettingsModalOpen,
+    setAiSettingsModalOpen: s.setAiSettingsModalOpen,
+  })));
 
   const [apiKey, setApiKey] = useState('');
   const [storageType, setStorageType] = useState<StorageType>('local');

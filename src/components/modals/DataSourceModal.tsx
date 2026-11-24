@@ -20,6 +20,7 @@ import {
   ChevronRight,
   Sparkles,
 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { mockDbAdapter, restApiAdapter } from '../../adapters/dataSourceAdapter';
 import { postgresMockConnector, POSTGRES_TABLES, PostgresTableDef } from '../../adapters/postgresMockAdapter';
@@ -41,7 +42,14 @@ interface SheetImportItem {
 }
 
 export const DataSourceModal: React.FC = () => {
-  const { dataSourceModalOpen, setDataSourceModalOpen, addTable, addTables, addRelationship, loadInitialSampleData } = useBiStore();
+  const { dataSourceModalOpen, setDataSourceModalOpen, addTable, addTables, addRelationship, loadInitialSampleData } = useBiStore(useShallow(s => ({
+    dataSourceModalOpen: s.dataSourceModalOpen,
+    setDataSourceModalOpen: s.setDataSourceModalOpen,
+    addTable: s.addTable,
+    addTables: s.addTables,
+    addRelationship: s.addRelationship,
+    loadInitialSampleData: s.loadInitialSampleData,
+  })));
   const [activeTab, setActiveTab] = useState<'files' | 'postgres' | 'api' | 'db' | 'samples'>('files');
   const [nativeImporting, setNativeImporting] = useState(false);
 

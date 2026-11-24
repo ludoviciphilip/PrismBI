@@ -21,6 +21,7 @@ import {
   ScatterChart,
 } from 'lucide-react';
 import { VisualType, Visual } from '../../types/bi';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { useTranslation } from '../../i18n';
 
@@ -46,9 +47,17 @@ const visualTypes: { type: VisualType; label: string; icon: any }[] = [
   { type: 'slicer', label: 'Segmentador', icon: Sliders },
 ];
 
-export const VisualizationsPane: React.FC = () => {
+export const VisualizationsPane: React.FC = React.memo(() => {
   const { t } = useTranslation();
-  const { pages, activePageId, selectedVisualId, updateVisual, tables, measures, relationships } = useBiStore();
+  const { pages, activePageId, selectedVisualId, updateVisual, tables, measures, relationships } = useBiStore(useShallow(s => ({
+    pages: s.pages,
+    activePageId: s.activePageId,
+    selectedVisualId: s.selectedVisualId,
+    updateVisual: s.updateVisual,
+    tables: s.tables,
+    measures: s.measures,
+    relationships: s.relationships,
+  })));
   const [activeTab, setActiveTab] = useState<'build' | 'format'>('build');
 
   const activePage = pages.find(p => p.id === activePageId);
@@ -622,4 +631,4 @@ export const VisualizationsPane: React.FC = () => {
       )}
     </div>
   );
-};
+});

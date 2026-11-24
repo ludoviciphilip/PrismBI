@@ -966,17 +966,37 @@ mod tests {
 
         let ctx = FilterContext::default();
         let fat = model.evaluate_dax("[Faturamento]", &ctx).expect("eval Faturamento");
+        let salarios = model.evaluate_dax("[Salários]", &ctx).expect("eval Salários");
         let dre = model.evaluate_dax("[DRE]", &ctx).expect("eval DRE");
         let entradas = model.evaluate_dax("[Entradas]", &ctx).expect("eval Entradas");
         let saidas = model.evaluate_dax("[Saídas]", &ctx).expect("eval Saídas");
+
+        let all_value_fields: Vec<&str> = summary
+            .pages
+            .iter()
+            .flat_map(|p| p.visuals.iter())
+            .flat_map(|v| v.value_fields.iter())
+            .map(|s| s.as_str())
+            .collect();
+        assert!(
+            all_value_fields.contains(&"Salários"),
+            "Visual multi-card da DRE deve resolver Medidas.Salários em vez de Medidas.Despesas com Pessoal"
+        );
+        assert!(
+            all_value_fields.contains(&"Abertura do Caixa Mês"),
+            "Visual da DFC deve resolver Medidas.Abertura do Caixa Mês em vez de Medidas.Abertura do Caixa"
+        );
+
         println!(
-            "RHINO REAL -> Faturamento={:?}, DRE={:?}, Entradas={:?}, Saidas={:?}, LoadedTables={:?}",
+            "RHINO REAL -> Faturamento={:?}, Salarios={:?}, DRE={:?}, Entradas={:?}, Saidas={:?}, LoadedTables={:?}",
             fat,
+            salarios,
             dre,
             entradas,
             saidas,
             summary.loaded_tables.iter().map(|t| (&t.table_name, t.total_rows)).collect::<Vec<_>>()
         );
         assert!(fat.as_f64().unwrap_or(0.0) > 0.0);
+        assert!(salarios.as_f64().unwrap_or(0.0).abs() > 0.0);
     }
 }

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Palette, Check, Plus, Trash2, X, Sparkles, Sun, Moon, Monitor, LayoutDashboard } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore, PRESET_THEMES } from '../../store/useBiStore';
 import { BiTheme } from '../../types/bi';
 
@@ -15,7 +16,18 @@ export const ThemeManagerModal: React.FC = () => {
     themeMode,
     setThemeMode,
     isDarkMode,
-  } = useBiStore();
+  } = useBiStore(useShallow(s => ({
+    themeModalOpen: s.themeModalOpen,
+    setThemeModalOpen: s.setThemeModalOpen,
+    activeThemeId: s.activeThemeId,
+    setThemeId: s.setThemeId,
+    customThemes: s.customThemes,
+    addCustomTheme: s.addCustomTheme,
+    deleteCustomTheme: s.deleteCustomTheme,
+    themeMode: s.themeMode,
+    setThemeMode: s.setThemeMode,
+    isDarkMode: s.isDarkMode,
+  })));
 
   const [activeTab, setActiveTab] = useState<'interface' | 'presets' | 'custom'>('interface');
   const [customName, setCustomName] = useState('Novo Tema');

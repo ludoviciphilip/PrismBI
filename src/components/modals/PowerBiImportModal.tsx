@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   FileCode2,
   Table as TableIcon,
@@ -17,6 +18,7 @@ import {
   openPbixFile,
   pickPowerBiFile,
 } from '../../bridge/tauriBridge';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { Measure, Page, Relationship, Table, Visual, VisualType } from '../../types/bi';
 import { CURRENT_ENGINE_VERSION } from '../../engine/migrations';
@@ -27,7 +29,11 @@ interface PowerBiImportModalProps {
 }
 
 export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({ isOpen, onClose }) => {
-  const { loadStateFromProject, setActiveView, projectName } = useBiStore();
+  const { loadStateFromProject, setActiveView, projectName } = useBiStore(useShallow(s => ({
+    loadStateFromProject: s.loadStateFromProject,
+    setActiveView: s.setActiveView,
+    projectName: s.projectName,
+  })));
   const [summary, setSummary] = useState<PbiProjectSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -227,8 +233,8 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({ isOpen, 
   const totalMeasures = summary?.tables.reduce((acc, t) => acc + t.measures.length, 0) || 0;
   const totalVisuals = summary?.pages.reduce((acc, p) => acc + p.visuals.length, 0) || 0;
 
-  return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+  return createPortal(
+    <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4">
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-4xl w-full p-6 text-xs flex flex-col max-h-[88vh] overflow-hidden">
         <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
           <div className="flex items-center gap-2.5">
@@ -498,6 +504,7 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({ isOpen, 
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

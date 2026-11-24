@@ -1,12 +1,19 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Zap, CheckCircle2, AlertCircle, Code, Calendar, HelpCircle } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { DaxEngine } from '../../engine/daxEngine';
 import { Measure } from '../../types/bi';
 import { QuickMeasureType, generateQuickMeasure } from '../../engine/expr/quickMeasures';
 
 export const QuickMeasureModal: React.FC = () => {
-  const { quickMeasureModalOpen, setQuickMeasureModalOpen, tables, measures, addMeasure } = useBiStore();
+  const { quickMeasureModalOpen, setQuickMeasureModalOpen, tables, measures, addMeasure } = useBiStore(useShallow(s => ({
+    quickMeasureModalOpen: s.quickMeasureModalOpen,
+    setQuickMeasureModalOpen: s.setQuickMeasureModalOpen,
+    tables: s.tables,
+    measures: s.measures,
+    addMeasure: s.addMeasure,
+  })));
 
   const [calculationType, setCalculationType] = useState<QuickMeasureType>('ytd');
   const [baseTable, setBaseTable] = useState(tables[0]?.name || 'f_Vendas');

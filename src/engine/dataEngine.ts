@@ -40,6 +40,8 @@ export class DataEngine implements ModelAccess {
   private measuresById: Map<string, Measure> = new Map();
   private measureNamesToId: Map<string, string> = new Map();
   private registeredAlaSqlTables: Set<string> = new Set();
+  private schemaVersion = 0;
+  private visualQueryCache: Map<string, ReturnType<QueryPlanner['query']>> = new Map();
 
   constructor() {
     // Inject self into DaxEngine to decouple from global window
@@ -130,6 +132,8 @@ export class DataEngine implements ModelAccess {
     this.measuresById.clear();
     this.measureNamesToId.clear();
     this.registeredAlaSqlTables.clear();
+    this.schemaVersion += 1;
+    this.visualQueryCache.clear();
 
     const effectiveTables = this.recomputeCalculatedTables(tables, measures);
 
@@ -303,8 +307,20 @@ export class DataEngine implements ModelAccess {
     grandTotal?: number;
     queryTimeMs?: number;
   } {
+    const roleId = DaxEngine.getActiveRole()?.id ?? '';
+    const cacheKey = `${this.schemaVersion}|${roleId}|${visual.id}|${visual.type}|${JSON.stringify(visual.dataConfig)}|${JSON.stringify(visual.visualCalculations ?? null)}|${JSON.stringify(activeFilters)}`;
+    const cached = this.visualQueryCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const planner = new QueryPlanner(this);
-    return planner.query(visual, activeFilters);
+    const result = planner.query(visual, activeFilters);
+    if (this.visualQueryCache.size >= 200) {
+      this.visualQueryCache.clear();
+    }
+    this.visualQueryCache.set(cacheKey, result);
+    return result;
   }
 
   /**
