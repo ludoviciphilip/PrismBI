@@ -2,10 +2,34 @@ pub mod ast;
 pub mod evaluator;
 pub mod lexer;
 pub mod parser;
+pub mod query_planner;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet, VecDeque};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeFilterInput {
+    pub table_id: String,
+    pub column: String,
+    pub values: Vec<JsonValue>,
+}
+
+pub fn build_filter_context(filters: &[NativeFilterInput]) -> FilterContext {
+    let mut ctx = FilterContext::default();
+    for f in filters {
+        let allowed: HashSet<String> = f
+            .values
+            .iter()
+            .map(|v| DaxValue::from_json(v).canonical_key())
+            .collect();
+        if !allowed.is_empty() {
+            ctx.set_column_filter(&f.table_id, &f.column, allowed);
+        }
+    }
+    ctx
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DaxValue {

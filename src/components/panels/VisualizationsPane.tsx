@@ -499,6 +499,40 @@ export const VisualizationsPane: React.FC = React.memo(() => {
               </select>
             </div>
           )}
+
+          {selectedVisual.type === 'matrix' && (
+            <div>
+              <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
+                Sub-linha (Hierarquia Expansível)
+              </label>
+              <select
+                value={selectedVisual.dataConfig.drillFields?.[0] || ''}
+                onChange={(e) =>
+                  updateVisual(selectedVisual.id, {
+                    dataConfig: {
+                      ...selectedVisual.dataConfig,
+                      drillFields: e.target.value ? [e.target.value] : [],
+                    },
+                  })
+                }
+                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded px-2 py-1 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+              >
+                <option value="">(Nenhuma sub-linha)</option>
+                {selectedTable?.columns.map(c => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+                {relatedTables.map(relT =>
+                  relT.columns.map(c => (
+                    <option key={`${relT.name}.${c.name}`} value={`${relT.name}.${c.name}`}>
+                      {relT.name}.{c.name}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+          )}
         </div>
       )}
 

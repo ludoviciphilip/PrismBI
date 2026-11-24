@@ -2,13 +2,13 @@ pub mod dax;
 pub mod engine;
 pub mod pbi;
 
-use dax::{DaxModel, DaxModelSyncPayload, FilterContext};
+use dax::{build_filter_context, DaxModel, DaxModelSyncPayload, NativeFilterInput};
 use engine::{DuckDbStore, EngineInfo, ImportedTablePayload, SqlQueryResult, TableSummary};
 use pbi::pbip_writer::ExportPbipPayload;
 use pbi::PbiProjectSummary;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::State;
@@ -16,14 +16,6 @@ use tauri::State;
 pub struct AppState {
     pub db: DuckDbStore,
     pub dax_model: Mutex<DaxModel>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeFilterInput {
-    pub table_id: String,
-    pub column: String,
-    pub values: Vec<JsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,19 +144,7 @@ fn evaluate_dax_native(
     expression: String,
     filters: Option<Vec<NativeFilterInput>>,
 ) -> Result<NativeDaxEvalResult, String> {
-    let mut ctx = FilterContext::default();
-    if let Some(flist) = filters {
-        for f in flist {
-            let allowed: HashSet<String> = f
-                .values
-                .iter()
-                .map(|v| dax::DaxValue::from_json(v).canonical_key())
-                .collect();
-            if !allowed.is_empty() {
-                ctx.set_column_filter(&f.table_id, &f.column, allowed);
-            }
-        }
-    }
+    let ctx = build_filter_context(&filters.unwrap_or_default());
     let guard = state
         .dax_model
         .lock()
@@ -187,21 +167,23 @@ fn evaluate_dax_batch_native(
         .map_err(|_| "Lock DaxModel corrompido".to_string())?;
     let mut out = HashMap::with_capacity(items.len());
     for (key, expr, flist) in items {
-        let mut ctx = FilterContext::default();
-        for f in flist {
-            let allowed: HashSet<String> = f
-                .values
-                .iter()
-                .map(|v| dax::DaxValue::from_json(v).canonical_key())
-                .collect();
-            if !allowed.is_empty() {
-                ctx.set_column_filter(&f.table_id, &f.column, allowed);
-            }
-        }
+        let ctx = build_filter_context(&flist);
         let val = guard.evaluate_dax(&expr, &ctx).unwrap_or(dax::DaxValue::Blank);
         out.insert(key, val.to_json());
     }
     Ok(out)
+}
+
+#[tauri::command]
+fn query_visual_native(
+    state: State<'_, AppState>,
+    request: dax::query_planner::NativeVisualQueryRequest,
+) -> Result<dax::query_planner::NativeVisualQueryResult, String> {
+    let guard = state
+        .dax_model
+        .lock()
+        .map_err(|_| "Lock DaxModel corrompido".to_string())?;
+    dax::query_planner::execute_visual_query(&guard, &request)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -227,6 +209,7 @@ pub fn run() {
             sync_model_to_rust,
             evaluate_dax_native,
             evaluate_dax_batch_native,
+            query_visual_native,
         ])
         .run(tauri::generate_context!())
         .expect("Erro ao executar PrismBI");

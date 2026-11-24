@@ -289,6 +289,83 @@ fn eval_call(
             let factor = 10f64.powi(digits);
             Ok(DaxValue::Number((n * factor).round() / factor))
         }
+        "INT" => {
+            let n = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
+            Ok(DaxValue::Number(n.floor()))
+        }
+        "SQRT" => {
+            let n = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
+            if n < 0.0 {
+                Ok(DaxValue::Blank)
+            } else {
+                Ok(DaxValue::Number(n.sqrt()))
+            }
+        }
+        "POWER" => {
+            let base = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
+            let exp = eval_arg(args, 1, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
+            Ok(DaxValue::Number(base.powf(exp)))
+        }
+        "TOTALYTD" | "TOTALMTD" => {
+            if args.len() < 2 {
+                return Err(format!("{} requer (expressão, Tabela[Data])", fname));
+            }
+            let Some(Expr::TableColRef { table, column }) = args.get(1) else {
+                return Err(format!("{} requer coluna de data no 2º argumento", fname));
+            };
+            let mut next_ctx = if let Some(rc) = row_stack.last() {
+                apply_context_transition(ctx, rc)
+            } else {
+                ctx.clone()
+            };
+            apply_period_to_date(model, ctx, &mut next_ctx, table, column, fname == "TOTALMTD");
+            for filter_expr in &args[2..] {
+                apply_calculate_modifier(filter_expr, model, ctx, &mut next_ctx, row_stack, vars)?;
+            }
+            evaluate_ast(&args[0], model, &next_ctx, &[], vars)
+        }
+        "RANKX" => {
+            if args.len() < 2 {
+                return Err("RANKX requer (tabela, expressão)".to_string());
+            }
+            let (table_data, row_indices, rank_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+            let target_val = if args.len() >= 3 {
+                evaluate_ast(&args[2], model, ctx, row_stack, vars)?
+            } else {
+                evaluate_ast(&args[1], model, ctx, row_stack, vars)?
+            };
+            let Some(target_num) = (if target_val.is_blank() { None } else { target_val.as_f64() }) else {
+                return Ok(DaxValue::Blank);
+            };
+            let ascending = if let Some(ord_expr) = args.get(3) {
+                match ord_expr {
+                    Expr::Ident(s) => s.eq_ignore_ascii_case("ASC"),
+                    _ => evaluate_ast(ord_expr, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0) == 1.0,
+                }
+            } else {
+                false
+            };
+
+            let mut scores = Vec::new();
+            for r_idx in row_indices {
+                let mut next_stack = row_stack.to_vec();
+                next_stack.push(RowContext {
+                    table: table_data,
+                    row_idx: r_idx,
+                });
+                let v = evaluate_ast(&args[1], model, &rank_ctx, &next_stack, vars)?;
+                if !v.is_blank() {
+                    if let Some(n) = v.as_f64() {
+                        scores.push(n);
+                    }
+                }
+            }
+            let better = scores
+                .iter()
+                .filter(|&&s| if ascending { s < target_num - 1e-9 } else { s > target_num + 1e-9 })
+                .count();
+            Ok(DaxValue::Number((better + 1) as f64))
+        }
         "SUM" | "AVERAGE" | "MIN" | "MAX" | "COUNT" | "COUNTA" | "DISTINCTCOUNT" => {
             let Some(Expr::TableColRef { table, column }) = args.first() else {
                 return Err(format!("{} requer referência Tabela[Coluna]", fname));
@@ -304,7 +381,7 @@ fn eval_call(
             if args.len() < 2 {
                 return Err(format!("{} requer (tabela, expressão)", fname));
             }
-            let (table_data, row_indices) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+            let (table_data, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
             let mut vals = Vec::new();
             for r_idx in row_indices {
                 let mut next_stack = row_stack.to_vec();
@@ -312,7 +389,7 @@ fn eval_call(
                     table: table_data,
                     row_idx: r_idx,
                 });
-                let v = evaluate_ast(&args[1], model, ctx, &next_stack, vars)?;
+                let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
                 if !v.is_blank() {
                     if let Some(n) = v.as_f64() {
                         vals.push(n);
@@ -444,37 +521,45 @@ fn eval_table_expr<'a>(
     ctx: &FilterContext,
     row_stack: &[RowContext<'_>],
     vars: &HashMap<String, DaxValue>,
-) -> Result<(&'a DaxTableData, Vec<usize>), String> {
+) -> Result<(&'a DaxTableData, Vec<usize>, FilterContext), String> {
     match expr {
         Expr::Ident(tname) => {
             let tbl = model
                 .get_table(tname)
                 .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
             let indices = model.get_visible_row_indices(tname, ctx);
-            Ok((tbl, indices))
+            Ok((tbl, indices, ctx.clone()))
         }
         Expr::Call { name, args } if name.eq_ignore_ascii_case("ALL") => {
             let tname = extract_table_name(args.first())?;
             let tbl = model
                 .get_table(&tname)
                 .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
-            Ok((tbl, (0..tbl.rows.len()).collect()))
+            let mut cleared_ctx = ctx.clone();
+            cleared_ctx.clear_table(&tbl.name);
+            // Expanded-table semantics: clearing an N-side table also clears its active 1-side targets
+            for rel in &model.relationships {
+                if rel.is_active && rel.from_table.eq_ignore_ascii_case(&tbl.name) {
+                    cleared_ctx.clear_table(&rel.to_table);
+                }
+            }
+            Ok((tbl, (0..tbl.rows.len()).collect(), cleared_ctx))
         }
         Expr::Call { name, args } if name.eq_ignore_ascii_case("FILTER") => {
             if args.len() < 2 {
                 return Err("FILTER requer (tabela, condição)".to_string());
             }
-            let (tbl, indices) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+            let (tbl, indices, base_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
             let mut kept = Vec::new();
             for r_idx in indices {
                 let mut next_stack = row_stack.to_vec();
                 next_stack.push(RowContext { table: tbl, row_idx: r_idx });
-                let cond = evaluate_ast(&args[1], model, ctx, &next_stack, vars)?;
+                let cond = evaluate_ast(&args[1], model, &base_ctx, &next_stack, vars)?;
                 if cond.as_bool() {
                     kept.push(r_idx);
                 }
             }
-            Ok((tbl, kept))
+            Ok((tbl, kept, base_ctx))
         }
         _ => Err("Expressão de tabela não suportada neste iterador".to_string()),
     }
@@ -546,15 +631,45 @@ fn apply_calculate_modifier(
                     }
                     return Ok(());
                 }
+                "NEXTMONTH" => {
+                    if let Some(Expr::TableColRef { table, column }) = args.first() {
+                        apply_date_shift(model, outer_ctx, next_ctx, table, column, 1, "MONTH");
+                    }
+                    return Ok(());
+                }
+                "PREVIOUSQUARTER" => {
+                    if let Some(Expr::TableColRef { table, column }) = args.first() {
+                        apply_date_shift(model, outer_ctx, next_ctx, table, column, -1, "QUARTER");
+                    }
+                    return Ok(());
+                }
+                "PREVIOUSYEAR" => {
+                    if let Some(Expr::TableColRef { table, column }) = args.first() {
+                        apply_date_shift(model, outer_ctx, next_ctx, table, column, -1, "YEAR");
+                    }
+                    return Ok(());
+                }
+                "NEXTYEAR" => {
+                    if let Some(Expr::TableColRef { table, column }) = args.first() {
+                        apply_date_shift(model, outer_ctx, next_ctx, table, column, 1, "YEAR");
+                    }
+                    return Ok(());
+                }
                 "SAMEPERIODLASTYEAR" => {
                     if let Some(Expr::TableColRef { table, column }) = args.first() {
                         apply_date_shift(model, outer_ctx, next_ctx, table, column, -1, "YEAR");
                     }
                     return Ok(());
                 }
+                "DATESYTD" | "DATESMTD" => {
+                    if let Some(Expr::TableColRef { table, column }) = args.first() {
+                        apply_period_to_date(model, outer_ctx, next_ctx, table, column, upper == "DATESMTD");
+                    }
+                    return Ok(());
+                }
                 "FILTER" => {
                     if args.len() >= 2 {
-                        let (tbl, kept_indices) = eval_table_expr(expr, model, outer_ctx, row_stack, vars)?;
+                        let (tbl, kept_indices, _) = eval_table_expr(expr, model, outer_ctx, row_stack, vars)?;
                         if let Some(first_col) = tbl.columns.first() {
                             let allowed: HashSet<String> = kept_indices
                                 .iter()
@@ -632,6 +747,49 @@ fn apply_date_shift(
         }
     }
     next_ctx.set_column_filter(&tbl.name, col_name, shifted_keys);
+}
+
+fn apply_period_to_date(
+    model: &DaxModel,
+    outer_ctx: &FilterContext,
+    next_ctx: &mut FilterContext,
+    table_name: &str,
+    col_name: &str,
+    is_mtd: bool,
+) {
+    let Some(tbl) = model.get_table(table_name) else { return };
+    let Some(cidx) = tbl.get_col_idx(col_name) else { return };
+    let visible = model.get_visible_row_indices(table_name, outer_ctx);
+
+    let mut max_ymd: Option<(i32, u32, u32)> = None;
+    for r_idx in visible {
+        let s = tbl.rows[r_idx][cidx].as_display_string();
+        if let Some(ymd) = parse_iso_ymd(&s) {
+            if max_ymd.is_none_or(|cur| ymd > cur) {
+                max_ymd = Some(ymd);
+            }
+        }
+    }
+
+    let Some((max_y, max_m, max_d)) = max_ymd else {
+        return;
+    };
+
+    let mut allowed = HashSet::new();
+    for row in &tbl.rows {
+        let s = row[cidx].as_display_string();
+        if let Some((y, m, d)) = parse_iso_ymd(&s) {
+            let in_period = if is_mtd {
+                y == max_y && m == max_m && d <= max_d
+            } else {
+                y == max_y && (m, d) <= (max_m, max_d)
+            };
+            if in_period {
+                allowed.insert(row[cidx].canonical_key());
+            }
+        }
+    }
+    next_ctx.set_column_filter(&tbl.name, col_name, allowed);
 }
 
 fn eval_column_agg(
@@ -913,6 +1071,105 @@ mod tests {
         ctx_rec.set_column_filter("dEstrutura", "Linha", [DaxValue::Text("Receita Bruta".into()).canonical_key()].into_iter().collect());
         let dre_rec = model.evaluate_dax("[DRE]", &ctx_rec).unwrap().as_f64().unwrap();
         assert!((dre_rec - 25000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_native_rust_dax_ytd_mtd_previous_year_and_rankx() {
+        let mut model = DaxModel::new();
+        let make_cal_row = |d: &str| {
+            let mut m = serde_json::Map::new();
+            m.insert("Data".into(), serde_json::Value::String(d.into()));
+            m
+        };
+        let make_sale_row = |d: &str, v: f64| {
+            let mut m = serde_json::Map::new();
+            m.insert("Data".into(), serde_json::Value::String(d.into()));
+            m.insert("Valor".into(), serde_json::json!(v));
+            m
+        };
+
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput {
+                    name: "dCal".into(),
+                    columns: vec!["Data".into()],
+                    rows: vec![
+                        make_cal_row("2025-01-10"),
+                        make_cal_row("2025-02-15"),
+                        make_cal_row("2026-01-10"),
+                        make_cal_row("2026-02-15"),
+                        make_cal_row("2026-03-05"),
+                    ],
+                },
+                DaxTableInput {
+                    name: "fVendas".into(),
+                    columns: vec!["Data".into(), "Valor".into()],
+                    rows: vec![
+                        make_sale_row("2025-01-10", 100.0),
+                        make_sale_row("2025-02-15", 200.0),
+                        make_sale_row("2026-01-10", 300.0),
+                        make_sale_row("2026-02-15", 400.0),
+                        make_sale_row("2026-03-05", 500.0),
+                    ],
+                },
+            ],
+            relationships: vec![DaxRelationshipInput {
+                from_table: "fVendas".into(),
+                from_column: "Data".into(),
+                to_table: "dCal".into(),
+                to_column: "Data".into(),
+                cross_filter_direction: "single".into(),
+                is_active: true,
+            }],
+            measures: vec![
+                DaxMeasureInput {
+                    name: "Receita".into(),
+                    table_name: "fVendas".into(),
+                    formula: "SUM(fVendas[Valor])".into(),
+                },
+                DaxMeasureInput {
+                    name: "Receita YTD".into(),
+                    table_name: "fVendas".into(),
+                    formula: "TOTALYTD([Receita], dCal[Data])".into(),
+                },
+                DaxMeasureInput {
+                    name: "Receita MTD".into(),
+                    table_name: "fVendas".into(),
+                    formula: "TOTALMTD([Receita], dCal[Data])".into(),
+                },
+                DaxMeasureInput {
+                    name: "Receita Ano Ant".into(),
+                    table_name: "fVendas".into(),
+                    formula: "CALCULATE([Receita], PREVIOUSYEAR(dCal[Data]))".into(),
+                },
+                DaxMeasureInput {
+                    name: "Rank Data".into(),
+                    table_name: "fVendas".into(),
+                    formula: "RANKX(ALL(fVendas), [Receita])".into(),
+                },
+            ],
+        });
+
+        let mut ctx_feb_2026 = FilterContext::default();
+        ctx_feb_2026.set_column_filter(
+            "dCal",
+            "Data",
+            [DaxValue::Text("2026-02-15".into()).canonical_key()]
+                .into_iter()
+                .collect(),
+        );
+
+        let ytd = model.evaluate_dax("[Receita YTD]", &ctx_feb_2026).unwrap().as_f64().unwrap();
+        assert!((ytd - 700.0).abs() < 1e-6);
+
+        let mtd = model.evaluate_dax("[Receita MTD]", &ctx_feb_2026).unwrap().as_f64().unwrap();
+        assert!((mtd - 400.0).abs() < 1e-6);
+
+        let prev_y = model.evaluate_dax("[Receita Ano Ant]", &ctx_feb_2026).unwrap().as_f64().unwrap();
+        assert!((prev_y - 200.0).abs() < 1e-6);
+
+        let rank = model.evaluate_dax("[Rank Data]", &ctx_feb_2026).unwrap().as_f64().unwrap();
+        assert!((rank - 2.0).abs() < 1e-6);
     }
 
     #[test]

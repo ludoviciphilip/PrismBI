@@ -4,7 +4,7 @@
 
 **Business Intelligence nativo para Linux — leve, rápido e compatível com projetos Power BI (`.pbip` / `.pbix`)**
 
-[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.3.0-f59e0b?style=flat-square)](./package.json)
+[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.4.0-f59e0b?style=flat-square)](./package.json)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 [![Rust](https://img.shields.io/badge/Rust-Engine_DAX-000000?style=flat-square&logo=rust&logoColor=white)](./src-tauri)
 [![DuckDB](https://img.shields.io/badge/DuckDB-Embarcado-FFF000?style=flat-square&logo=duckdb&logoColor=black)](https://duckdb.org/)

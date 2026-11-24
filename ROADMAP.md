@@ -13,23 +13,24 @@ Este documento descreve a evolução planejada para o **PrismBI**, uma aplicaç�
 
 ---
 
-## `v0.3.0` — Fidelidade Visual & Compatibilidade de Relatórios PBIR (Atual)
+## `v0.3.0` — Fidelidade Visual & Compatibilidade de Relatórios PBIR (Concluído)
 Foco em deixar os relatórios importados do Power BI o mais fiéis possível visualmente:
-- **Cartões & Formatação Avançada:** respeitar `columnCount` / orientação do `cardVisual` (ex.: 3 colunas lado a lado), opção de unidades compactas (`Mil`, `Mi`, `Bi`) e coloração opcional por sinal positivo/negativo.
-- **Gráficos mais fiéis ao Power BI:**
+- [x] **Cartões & Formatação Avançada:** respeitar `columnCount` / orientação do `cardVisual` (ex.: 3 colunas lado a lado), opção de unidades compactas (`Mil`, `Mi`, `Bi`) e coloração opcional por sinal positivo/negativo.
+- [x] **Gráficos mais fiéis ao Power BI:**
   - **Rosca/Pizza:** rótulos com valor + `%` e total formatado exibido no centro da rosca.
   - **Funil:** escala legível para estágios finais (`minSize`), exibição de `100%` no topo e taxa de conversão no rodapé.
-- **Segmentadores & Filtros PBIR:** suporte ao modo **blocos/botões (`tiles`)** para `advancedSlicerVisual` além de lista suspensa, e importação de `filterConfig` básicos (`In`) em nível de página e visual.
-- **Elementos de Layout:** suporte a `textbox` e `actionButton` (`Back` / navegação entre páginas).
+  - **Cascata:** variações positivas/negativas cruzando zero, linhas conectoras e coluna `Total` final.
+- [x] **Segmentadores & Filtros PBIR:** suporte ao modo **blocos/botões (`tiles`)** para `advancedSlicerVisual` além de lista suspensa, e importação de `filterConfig` básicos (`In`) em nível de página e visual.
+- [x] **Elementos de Layout:** suporte a `textbox` e `actionButton` (`Back` / navegação entre páginas).
 
 ---
 
-## `v0.4.0` — Motor DAX & QueryPlanner 100% Nativo em Rust + DuckDB
-Foco em escalar para centenas de milhares e milhões de linhas sem sobrecarregar o frontend JavaScript:
-- Migrar o `QueryPlanner` para executar agregações e agrupamentos diretamente no backend Rust + DuckDB.
-- Expandir funções DAX nativas em Rust: Time Intelligence completa (`DATEADD`, `SAMEPERIODLASTYEAR`, `PREVIOUSMONTH`, `TOTALYTD`), iteradores (`SUMX`, `AVERAGEX`, `RANKX`), `ALL`/`ALLEXCEPT`/`REMOVEFILTERS` e tabelas calculadas.
-- Hierarquia expansível na **Matriz** (drill-down de linhas/colunas, ex.: Grupo → Categoria).
-- Painel **Performance Analyzer** medindo tempo real de consulta DAX (Rust) vs renderização (UI).
+## `v0.4.0` — Motor DAX & QueryPlanner Nativo em Rust + DuckDB (Atual)
+Foco em escalar consultas para o backend Rust nativo e melhorar a análise hierárquica:
+- [x] **QueryPlanner Nativo em Rust (`query_visual_native`):** execução de consultas por visual (cartões, multi-cards, segmentadores, gráficos agrupados e matrizes) diretamente sobre o `DaxModel` em Rust com fallback automático.
+- [x] **Expansão de Funções DAX em Rust:** Time Intelligence (`TOTALYTD`, `TOTALMTD`, `DATESYTD`, `DATESMTD`, `PREVIOUSYEAR`, `NEXTMONTH`, `NEXTYEAR`, `PREVIOUSQUARTER`), `RANKX` e escalares (`INT`, `SQRT`, `POWER`).
+- [x] **Hierarquia Expansível na Matriz:** expansão/recolhimento em 2 níveis de linha diretamente no visual de Matriz (com seletor de sub-linha no painel de Visualizações).
+- [x] **Performance Analyzer Real:** telemetria do tempo de execução das consultas nativas em Rust registrada automaticamente na aba de Governança.
 
 ---
 

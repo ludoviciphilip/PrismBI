@@ -265,6 +265,36 @@ export async function evaluateDaxNative(
   });
 }
 
+export interface NativeVisualQueryRequest {
+  visualId: string;
+  visualType: string;
+  tableId: string;
+  xAxisField?: string;
+  legendField?: string;
+  yAxisFields: string[];
+  aggregation?: string;
+  filters: { tableId: string; column: string; values: any[] }[];
+}
+
+export interface NativeVisualSeries {
+  name: string;
+  data: number[];
+}
+
+export interface NativeVisualQueryResult {
+  categories: string[];
+  series: NativeVisualSeries[];
+  summaryValue?: number | null;
+  queryTimeMs: number;
+  engine: string;
+}
+
+export async function queryVisualNative(
+  request: NativeVisualQueryRequest
+): Promise<NativeVisualQueryResult> {
+  return await invoke<NativeVisualQueryResult>('query_visual_native', { request });
+}
+
 export async function pickFolderDialog(title = 'Selecionar pasta de destino'): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   const selected = await openDialog({

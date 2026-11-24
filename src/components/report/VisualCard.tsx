@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useRef, useCallback } from 'react';
+import React, { useMemo, useState, useRef, useCallback, useEffect } from 'react';
 import ReactECharts from 'echarts-for-react';
 import {
   Pin,
@@ -15,10 +15,13 @@ import {
   ArrowLeft,
   ArrowRight,
   Calculator,
+  ChevronRight,
+  ChevronDown,
 } from 'lucide-react';
-import { Visual } from '../../types/bi';
+import { Visual, Filter as BiFilter } from '../../types/bi';
 import { useBiStore } from '../../store/useBiStore';
 import { globalDataEngine, formatValue, formatCurrency, formatNumber, formatPercent, getCurrencySymbol } from '../../engine/dataEngine';
+import { isTauriRuntime, queryVisualNative, NativeVisualQueryResult } from '../../bridge/tauriBridge';
 import { ErrorBoundary } from '../shared/ErrorBoundary';
 import { VisualCalculationModal } from '../modals/VisualCalculationModal';
 import { useTranslation } from '../../i18n';
@@ -30,6 +33,8 @@ interface VisualCardProps {
   onSelect: (id: string) => void;
   isMobile?: boolean;
 }
+
+const nativeQueryCache = new Map<string, NativeVisualQueryResult>();
 
 function formatCompactDisplay(val: number, isCurr: boolean, currSymbol: string): string {
   const abs = Math.abs(val);
@@ -76,6 +81,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
   const [showRawTable, setShowRawTable] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isVisualCalcModalOpen, setIsVisualCalcModalOpen] = useState(false);
+  const [expandedMatrixRows, setExpandedMatrixRows] = useState<Record<string, boolean>>({});
 
   // Currency Field Detection
   const isCurrencyField = (fieldName: string): boolean => {
@@ -224,7 +230,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
   };
 
   // Compute visual data safely (never crash the page on a single visual DAX error)
-  const { queryResult, queryError } = useMemo(() => {
+  const { queryResult: tsQueryResult, queryError } = useMemo(() => {
     if (visual.type === 'action-button' || visual.type === 'textbox') {
       return {
         queryResult: { categories: [], series: [], rawRows: [] } as ReturnType<typeof globalDataEngine.queryVisualData>,
@@ -243,6 +249,88 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       };
     }
   }, [visual.id, visual.type, visual.dataConfig, visual.visualCalculations, filters, tables, measures]);
+
+  const supportsNativeRustQuery =
+    isTauriRuntime() &&
+    visual.type !== 'action-button' &&
+    visual.type !== 'textbox' &&
+    visual.type !== 'table' &&
+    visual.type !== 'scatter' &&
+    !(visual.dataConfig.visualCalculations?.length || visual.visualCalculations?.length);
+
+  const nativeCacheKey = useMemo(() => {
+    if (!supportsNativeRustQuery) return '';
+    return `${tables.length}:${measures.length}|${visual.id}|${visual.type}|${JSON.stringify(visual.dataConfig)}|${JSON.stringify(filters)}`;
+  }, [supportsNativeRustQuery, tables.length, measures.length, visual.id, visual.type, visual.dataConfig, filters]);
+
+  const [asyncNativeResult, setAsyncNativeResult] = useState<NativeVisualQueryResult | null>(() =>
+    nativeCacheKey ? nativeQueryCache.get(nativeCacheKey) ?? null : null
+  );
+
+  useEffect(() => {
+    if (!supportsNativeRustQuery || !nativeCacheKey) return;
+    const cached = nativeQueryCache.get(nativeCacheKey);
+    if (cached) {
+      setAsyncNativeResult(cached);
+      return;
+    }
+
+    let cancelled = false;
+    const nativeFilters = filters
+      .map(f => ({
+        tableId: f.tableId,
+        column: f.column,
+        values: Array.isArray(f.value) ? f.value : f.value !== undefined && f.value !== '' ? [f.value] : [],
+      }))
+      .filter(f => f.values.length > 0);
+
+    queryVisualNative({
+      visualId: visual.id,
+      visualType: visual.type,
+      tableId: visual.dataConfig.tableId,
+      xAxisField: visual.dataConfig.xAxisField,
+      legendField: visual.dataConfig.legendField,
+      yAxisFields: visual.dataConfig.yAxisFields || [],
+      aggregation: visual.dataConfig.aggregation,
+      filters: nativeFilters,
+    })
+      .then(res => {
+        if (cancelled) return;
+        if (nativeQueryCache.size >= 250) nativeQueryCache.clear();
+        nativeQueryCache.set(nativeCacheKey, res);
+        setAsyncNativeResult(res);
+        useBiStore.getState().recordPerformanceMetric({
+          visualId: visual.id,
+          visualTitle: visual.title,
+          queryTimeMs: res.queryTimeMs,
+          renderTimeMs: tsQueryResult.queryTimeMs ?? 0,
+          rowCount: res.categories.length,
+        });
+      })
+      .catch(() => {
+        // Fallback seamlessly to local TS QueryPlanner result
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [supportsNativeRustQuery, nativeCacheKey]);
+
+  const queryResult = useMemo(() => {
+    if (supportsNativeRustQuery && asyncNativeResult) {
+      return {
+        ...tsQueryResult,
+        categories: asyncNativeResult.categories,
+        series: asyncNativeResult.series,
+        summaryValue:
+          asyncNativeResult.summaryValue !== null && asyncNativeResult.summaryValue !== undefined
+            ? asyncNativeResult.summaryValue
+            : tsQueryResult.summaryValue,
+        queryTimeMs: asyncNativeResult.queryTimeMs,
+      };
+    }
+    return tsQueryResult;
+  }, [supportsNativeRustQuery, asyncNativeResult, tsQueryResult]);
 
   // State for interactive Drill-Through popover
   const [drillPop, setDrillPop] = useState<{
@@ -1388,6 +1476,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             const grandTotal = rowTotals.reduce((a, b) => a + b, 0);
             const primaryY = visual.dataConfig.yAxisFields?.[0] || '';
             const useCurr = isCurrencyField(primaryY);
+            const childHierarchyField = visual.dataConfig.drillFields?.[0];
             const fmtCell = (val: number, colName?: string) => {
               if (colName) {
                 const m = measures.find(ms => ms.name.toLowerCase() === colName.toLowerCase());
@@ -1396,6 +1485,34 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                 if (m?.format === 'currency' || isCurrencyField(colName)) return formatCurrency(val);
               }
               return useCurr ? formatCurrency(val) : formatNumber(val);
+            };
+
+            const getChildRows = (parentCat: string) => {
+              if (!childHierarchyField) return null;
+              const rawParent = visual.dataConfig.xAxisField || '';
+              const [pTbl, pCol] = rawParent.includes('.')
+                ? rawParent.split('.', 2)
+                : [visual.dataConfig.tableId, rawParent];
+              const parentFilter: BiFilter = {
+                id: `__matrix_expand_${visual.id}`,
+                level: 'visual',
+                tableId: pTbl,
+                column: pCol,
+                operator: 'equals',
+                value: parentCat,
+              };
+              try {
+                return globalDataEngine.queryVisualData(
+                  {
+                    ...visual,
+                    id: `${visual.id}__child_${parentCat}`,
+                    dataConfig: { ...visual.dataConfig, xAxisField: childHierarchyField },
+                  },
+                  [...filters, parentFilter]
+                );
+              } catch {
+                return null;
+              }
             };
 
             return (
@@ -1427,33 +1544,80 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-900">
-                    {categories.map((cat, rIdx) => (
-                      <tr key={cat} className="hover:bg-amber-50/50 dark:hover:bg-slate-800/60">
-                        <td
-                          onClick={() => {
-                            if (visual.dataConfig.xAxisField) {
-                              setCrossFilter(visual.dataConfig.tableId, visual.dataConfig.xAxisField, cat);
-                            }
-                          }}
-                          className="px-2.5 py-1 font-semibold text-slate-700 dark:text-slate-200 border-r border-slate-200 dark:border-slate-800 cursor-pointer hover:text-amber-600 whitespace-nowrap"
-                        >
-                          {cat}
-                        </td>
-                        {series.map(s => (
-                          <td
-                            key={s.name}
-                            className="px-2.5 py-1 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap"
-                          >
-                            {fmtCell(Number(s.data[rIdx]) || 0, s.name)}
-                          </td>
-                        ))}
-                        {series.length > 1 && (
-                          <td className="px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap">
-                            {fmtCell(rowTotals[rIdx])}
-                          </td>
-                        )}
-                      </tr>
-                    ))}
+                    {categories.map((cat, rIdx) => {
+                      const isExpanded = Boolean(childHierarchyField && expandedMatrixRows[cat]);
+                      const childData = isExpanded ? getChildRows(cat) : null;
+                      return (
+                        <React.Fragment key={cat}>
+                          <tr className="hover:bg-amber-50/50 dark:hover:bg-slate-800/60">
+                            <td
+                              onClick={() => {
+                                if (visual.dataConfig.xAxisField) {
+                                  setCrossFilter(visual.dataConfig.tableId, visual.dataConfig.xAxisField, cat);
+                                }
+                              }}
+                              className="px-2.5 py-1 font-semibold text-slate-700 dark:text-slate-200 border-r border-slate-200 dark:border-slate-800 cursor-pointer hover:text-amber-600 whitespace-nowrap"
+                            >
+                              <div className="flex items-center gap-1">
+                                {childHierarchyField && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setExpandedMatrixRows(prev => ({ ...prev, [cat]: !prev[cat] }));
+                                    }}
+                                    className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 cursor-pointer"
+                                    title={isExpanded ? 'Recolher nível' : 'Expandir sub-nível'}
+                                  >
+                                    {isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                                  </button>
+                                )}
+                                <span>{cat}</span>
+                              </div>
+                            </td>
+                            {series.map(s => (
+                              <td
+                                key={s.name}
+                                className="px-2.5 py-1 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap"
+                              >
+                                {fmtCell(Number(s.data[rIdx]) || 0, s.name)}
+                              </td>
+                            ))}
+                            {series.length > 1 && (
+                              <td className="px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap">
+                                {fmtCell(rowTotals[rIdx])}
+                              </td>
+                            )}
+                          </tr>
+                          {isExpanded && childData && childData.categories.map((childCat, cIdx) => {
+                            const childRowTotal = childData.series.reduce((sum, cs) => sum + (Number(cs.data[cIdx]) || 0), 0);
+                            return (
+                              <tr key={`${cat}::${childCat}`} className="bg-slate-50/70 dark:bg-slate-800/30">
+                                <td className="pl-7 pr-2.5 py-1 text-[11px] text-slate-600 dark:text-slate-300 border-r border-slate-200 dark:border-slate-800 whitespace-nowrap">
+                                  {childCat}
+                                </td>
+                                {series.map((s, sIdx) => {
+                                  const cs = childData.series.find(x => x.name === s.name) || childData.series[sIdx];
+                                  return (
+                                    <td
+                                      key={s.name}
+                                      className="px-2.5 py-1 text-right font-mono text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap"
+                                    >
+                                      {fmtCell(Number(cs?.data[cIdx]) || 0, s.name)}
+                                    </td>
+                                  );
+                                })}
+                                {series.length > 1 && (
+                                  <td className="px-2.5 py-1 text-right font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 border-l border-slate-200 dark:border-slate-800 whitespace-nowrap">
+                                    {fmtCell(childRowTotal)}
+                                  </td>
+                                )}
+                              </tr>
+                            );
+                          })}
+                        </React.Fragment>
+                      );
+                    })}
                   </tbody>
                   <tfoot className="bg-slate-100 dark:bg-slate-800/90 sticky bottom-0 font-bold border-t-2 border-slate-300 dark:border-slate-700">
                     <tr>

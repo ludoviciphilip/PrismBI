@@ -1525,7 +1525,7 @@ export const useBiStore = create<BiState>((set, get) => {
       {
         id: 'query_1',
         title: 'Consulta 1',
-        query: `DEFINE\n  MEASURE f_Vendas[Margem] = [Faturamento Total] - [Custo Total]\n\nEVALUATE\n  SUMMARIZECOLUMNS(\n    'd_Calendario'[Ano],\n    "Faturamento", [Faturamento Total],\n    "Margem", [Margem]\n  )\nORDER BY\n  'd_Calendario'[Ano] ASC`,
+        query: `DEFINE\n  MEASURE f_Vendas[Margem] = [Faturamento Total] - [Custo Total Mercadorias]\n\nEVALUATE\n  SUMMARIZECOLUMNS(\n    'd_Calendario'[Ano],\n    "Faturamento", [Faturamento Total],\n    "Margem", [Margem]\n  )\nORDER BY\n  'd_Calendario'[Ano] ASC`,
       },
     ],
     activeDaxQueryTabId: 'query_1',
