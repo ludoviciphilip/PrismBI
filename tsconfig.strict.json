@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": [
+    "src/engine/shared/**/*",
+    "src/engine/model/**/*"
+  ],
+  "exclude": [
+    "src/engine/shared/**/__tests__/**/*",
+    "src/engine/model/**/__tests__/**/*",
+    "dist"
+  ]
+}

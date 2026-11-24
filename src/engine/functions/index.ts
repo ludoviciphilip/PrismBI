@@ -1,0 +1,61 @@
+import { MATH_TRIG_FUNCTIONS } from './mathTrig';
+import { TEXT_FUNCTIONS } from './text';
+import { DATE_TIME_FUNCTIONS } from './dateTime';
+import { CONVERSION_FUNCTIONS } from './conversion';
+import { AGGREGATION_FUNCTIONS } from './aggregation';
+import { FILTER_FUNCTIONS } from './filter';
+import { RELATIONSHIP_FUNCTIONS } from './relationships';
+import { TABLE_FUNCTIONS } from './table';
+import { TIME_INTELLIGENCE_FUNCTIONS } from './timeIntelligence';
+import { WINDOW_AND_RANKING_FUNCTIONS } from './windowAndRanking';
+import { VISUAL_CALCULATION_FUNCTIONS } from './visualCalculations';
+import { STATISTICAL_FUNCTIONS } from './statistical';
+import { FINANCIAL_FUNCTIONS } from './financial';
+import { SECURITY_FUNCTIONS } from './security';
+import { PARENT_CHILD_FUNCTIONS } from './parentChild';
+import { CALCULATION_GROUP_FUNCTIONS } from './calculationGroups';
+import { UTILITY_FUNCTIONS } from './utility';
+import { INFO_FUNCTIONS } from './info';
+import { FunctionDefinition } from '../expr/registry';
+
+export const ALL_SCALAR_FUNCTIONS: Record<string, FunctionDefinition> = {
+  ...MATH_TRIG_FUNCTIONS,
+  ...TEXT_FUNCTIONS,
+  ...DATE_TIME_FUNCTIONS,
+  ...CONVERSION_FUNCTIONS,
+  ...AGGREGATION_FUNCTIONS,
+  ...FILTER_FUNCTIONS,
+  ...RELATIONSHIP_FUNCTIONS,
+  ...TABLE_FUNCTIONS,
+  ...TIME_INTELLIGENCE_FUNCTIONS,
+  ...WINDOW_AND_RANKING_FUNCTIONS,
+  ...VISUAL_CALCULATION_FUNCTIONS,
+  ...STATISTICAL_FUNCTIONS,
+  ...FINANCIAL_FUNCTIONS,
+  ...SECURITY_FUNCTIONS,
+  ...PARENT_CHILD_FUNCTIONS,
+  ...CALCULATION_GROUP_FUNCTIONS,
+  ...UTILITY_FUNCTIONS,
+  ...INFO_FUNCTIONS,
+};
+
+export {
+  MATH_TRIG_FUNCTIONS,
+  TEXT_FUNCTIONS,
+  DATE_TIME_FUNCTIONS,
+  CONVERSION_FUNCTIONS,
+  AGGREGATION_FUNCTIONS,
+  FILTER_FUNCTIONS,
+  RELATIONSHIP_FUNCTIONS,
+  TABLE_FUNCTIONS,
+  TIME_INTELLIGENCE_FUNCTIONS,
+  WINDOW_AND_RANKING_FUNCTIONS,
+  VISUAL_CALCULATION_FUNCTIONS,
+  STATISTICAL_FUNCTIONS,
+  FINANCIAL_FUNCTIONS,
+  SECURITY_FUNCTIONS,
+  PARENT_CHILD_FUNCTIONS,
+  CALCULATION_GROUP_FUNCTIONS,
+  UTILITY_FUNCTIONS,
+  INFO_FUNCTIONS,
+};
