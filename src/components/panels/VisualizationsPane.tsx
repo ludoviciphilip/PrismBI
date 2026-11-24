@@ -578,6 +578,72 @@ export const VisualizationsPane: React.FC = React.memo(() => {
             />
           </div>
 
+          {/* Unidades Compactas & Sinal */}
+          <div className="space-y-2 border-t border-slate-100 dark:border-slate-800 pt-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-[11px] font-medium text-slate-700 dark:text-slate-200 block">Unidades de Exibição</span>
+                <span className="text-[9px] text-slate-400 block">Exibir valores exatos ou abreviados (Mil/Mi)</span>
+              </div>
+              <select
+                value={selectedVisual.formatConfig.displayUnits || 'none'}
+                onChange={(e) =>
+                  updateVisual(selectedVisual.id, {
+                    formatConfig: {
+                      ...selectedVisual.formatConfig,
+                      displayUnits: e.target.value as 'none' | 'auto',
+                    },
+                  })
+                }
+                className="bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-slate-700 dark:text-slate-200"
+              >
+                <option value="none">Exato</option>
+                <option value="auto">Compacto (Mil / Mi)</option>
+              </select>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-[11px] font-medium text-slate-700 dark:text-slate-200 block">Colorir Positivo/Negativo</span>
+                <span className="text-[9px] text-slate-400 block">Destaca verde/vermelho em cartões KPI</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={selectedVisual.formatConfig.colorBySign ?? false}
+                onChange={(e) =>
+                  updateVisual(selectedVisual.id, {
+                    formatConfig: { ...selectedVisual.formatConfig, colorBySign: e.target.checked },
+                  })
+                }
+                className="rounded border-slate-300 text-amber-500 focus:ring-amber-400"
+              />
+            </div>
+
+            {selectedVisual.type === 'slicer' && (
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-medium text-slate-700 dark:text-slate-200">Estilo do Segmentador</span>
+                <select
+                  value={selectedVisual.dataConfig.slicerConfig?.mode || 'dropdown'}
+                  onChange={(e) =>
+                    updateVisual(selectedVisual.id, {
+                      dataConfig: {
+                        ...selectedVisual.dataConfig,
+                        slicerConfig: {
+                          ...selectedVisual.dataConfig.slicerConfig,
+                          mode: e.target.value as 'dropdown' | 'tiles',
+                        },
+                      },
+                    })
+                  }
+                  className="bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-slate-700 dark:text-slate-200"
+                >
+                  <option value="dropdown">Suspenso (Dropdown)</option>
+                  <option value="tiles">Blocos / Botões (Tiles)</option>
+                </select>
+              </div>
+            )}
+          </div>
+
           {/* Paleta de Cores */}
           <div className="space-y-1.5 border-t border-slate-100 pt-2">
             <label className="text-[11px] font-semibold text-slate-700 block">Paleta de Cores</label>

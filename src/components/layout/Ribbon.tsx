@@ -845,19 +845,26 @@ export const Ribbon: React.FC<{
             </div>
 
             {/* Zoom */}
-            <div className="flex items-center gap-1.5 px-2">
+            <div className="flex items-center gap-1.5 px-2" title="Zoom (Ctrl+= / Ctrl+- / Ctrl+Scroll / Ctrl+0)">
               <button
                 onClick={() => setCanvasZoom(canvasZoom - 10)}
-                className="p-1 rounded hover:bg-slate-100 text-slate-600"
+                title="Diminuir Zoom (Ctrl + -)"
+                className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
               >
                 <ZoomOut className="w-4 h-4" />
               </button>
-              <span className="text-[11px] font-semibold text-slate-700 w-10 text-center">
+              <button
+                type="button"
+                onClick={() => setCanvasZoom(100)}
+                title="Redefinir Zoom para 100% (Ctrl + 0)"
+                className="text-[11px] font-semibold text-slate-700 dark:text-slate-200 w-10 text-center hover:text-amber-600 dark:hover:text-amber-400 cursor-pointer"
+              >
                 {canvasZoom}%
-              </span>
+              </button>
               <button
                 onClick={() => setCanvasZoom(canvasZoom + 10)}
-                className="p-1 rounded hover:bg-slate-100 text-slate-600"
+                title="Aumentar Zoom (Ctrl + =)"
+                className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
               >
                 <ZoomIn className="w-4 h-4" />
               </button>

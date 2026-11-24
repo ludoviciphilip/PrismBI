@@ -1087,7 +1087,7 @@ export const useBiStore = create<BiState>((set, get) => {
     },
 
     setSelectedVisualId: (id) => set({ selectedVisualId: id }),
-    setCanvasZoom: (zoom) => set({ canvasZoom: Math.max(50, Math.min(150, zoom)) }),
+    setCanvasZoom: (zoom) => set({ canvasZoom: Math.max(30, Math.min(200, zoom)) }),
     setIsPresentationMode: (val) => set({ isPresentationMode: val }),
     setLayoutMode: (mode) => set({ layoutMode: mode }),
 

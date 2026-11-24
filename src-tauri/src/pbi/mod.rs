@@ -66,6 +66,14 @@ pub struct PbiRelationshipMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PbiFilterMeta {
+    pub table: String,
+    pub column: String,
+    pub values: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PbiVisualMeta {
     pub id: String,
     pub visual_type: String,
@@ -79,6 +87,18 @@ pub struct PbiVisualMeta {
     pub category_field: Option<String>,
     pub legend_field: Option<String>,
     pub value_fields: Vec<String>,
+    #[serde(default)]
+    pub column_count: Option<u32>,
+    #[serde(default)]
+    pub slicer_mode: Option<String>,
+    #[serde(default)]
+    pub action_type: Option<String>,
+    #[serde(default)]
+    pub action_target: Option<String>,
+    #[serde(default)]
+    pub text_content: Option<String>,
+    #[serde(default)]
+    pub filters: Vec<PbiFilterMeta>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +109,8 @@ pub struct PbiPageMeta {
     pub width: f64,
     pub height: f64,
     pub visuals: Vec<PbiVisualMeta>,
+    #[serde(default)]
+    pub filters: Vec<PbiFilterMeta>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +186,8 @@ pub fn map_pbi_visual_type(raw: &str) -> &'static str {
         "pivottable" | "matrix" => "matrix",
         "tableex" | "table" => "table",
         "slicer" | "advancedslicervisual" => "slicer",
+        "actionbutton" => "action-button",
+        "textbox" => "textbox",
         _ => "column",
     }
 }
@@ -462,6 +486,12 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
                     category_field,
                     legend_field,
                     value_fields,
+                    column_count: None,
+                    slicer_mode: None,
+                    action_type: None,
+                    action_target: None,
+                    text_content: None,
+                    filters: Vec::new(),
                 });
             }
         }
@@ -472,6 +502,7 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
             width,
             height,
             visuals,
+            filters: Vec::new(),
         });
     }
 

@@ -74,6 +74,12 @@ export interface PbiRelationshipMeta {
   isActive: boolean;
 }
 
+export interface PbiFilterMeta {
+  table: string;
+  column: string;
+  values: string[];
+}
+
 export interface PbiVisualMeta {
   id: string;
   visualType: string;
@@ -87,6 +93,12 @@ export interface PbiVisualMeta {
   categoryField?: string | null;
   legendField?: string | null;
   valueFields: string[];
+  columnCount?: number | null;
+  slicerMode?: string | null;
+  actionType?: string | null;
+  actionTarget?: string | null;
+  textContent?: string | null;
+  filters?: PbiFilterMeta[];
 }
 
 export interface PbiPageMeta {
@@ -95,6 +107,7 @@ export interface PbiPageMeta {
   width: number;
   height: number;
   visuals: PbiVisualMeta[];
+  filters?: PbiFilterMeta[];
 }
 
 export interface PbiPowerQueryScript {

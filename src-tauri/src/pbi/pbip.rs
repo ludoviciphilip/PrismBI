@@ -1,7 +1,7 @@
 use crate::engine::DuckDbStore;
 use crate::pbi::{
     m_loader, map_pbi_visual_type, parse_legacy_report_json, parse_tmsl_model_json, split_query_ref,
-    tmdl, PbiPageMeta, PbiPowerQueryScript, PbiProjectSummary, PbiVisualMeta,
+    tmdl, PbiFilterMeta, PbiPageMeta, PbiPowerQueryScript, PbiProjectSummary, PbiVisualMeta,
 };
 use serde_json::Value as JsonValue;
 use std::fs;
@@ -261,6 +261,7 @@ fn parse_pbir_pages(pages_dir: &Path) -> Vec<PbiPageMeta> {
             .to_string();
         let width = pj.get("width").and_then(|v| v.as_f64()).unwrap_or(1280.0);
         let height = pj.get("height").and_then(|v| v.as_f64()).unwrap_or(720.0);
+        let page_filters = extract_pbir_filters(&pj);
 
         let mut visuals = Vec::new();
         let visuals_dir = pdir.join("visuals");
@@ -292,6 +293,7 @@ fn parse_pbir_pages(pages_dir: &Path) -> Vec<PbiPageMeta> {
             width,
             height,
             visuals,
+            filters: page_filters,
         });
     }
 
@@ -309,7 +311,7 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
     let orig_lower = orig_type.to_lowercase();
     if matches!(
         orig_lower.as_str(),
-        "actionbutton" | "textbox" | "shape" | "image" | "basicshape"
+        "shape" | "image" | "basicshape"
     ) {
         return None;
     }
@@ -396,16 +398,49 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
         mapped_type = "multi-card".to_string();
     }
 
+    let column_count = extract_pbir_column_count(visual_obj);
+    let slicer_mode = match orig_lower.as_str() {
+        "advancedslicervisual" => Some("tiles".to_string()),
+        "slicer" => Some("dropdown".to_string()),
+        _ => None,
+    };
+    let (action_type, action_target) = if mapped_type == "action-button" {
+        extract_pbir_action_link(visual_obj)
+    } else {
+        (None, None)
+    };
+    let text_content = if mapped_type == "textbox" {
+        extract_pbir_textbox_text(visual_obj)
+    } else {
+        None
+    };
+    let filters = extract_pbir_filters(vj);
+
     let id = vj
         .get("name")
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .unwrap_or_else(|| format!("{}_v{}", page_id, v_idx + 1));
-    let title = value_fields
+    let mut title = value_fields
         .first()
         .cloned()
         .or_else(|| category_field.clone())
         .unwrap_or_else(|| format!("Visual {}", v_idx + 1));
+
+    if mapped_type == "action-button" {
+        title = match action_type.as_deref() {
+            Some("back") => "Voltar".to_string(),
+            Some("page-navigation") => "Navegar".to_string(),
+            _ => "Botão".to_string(),
+        };
+    } else if mapped_type == "textbox" {
+        if let Some(ref txt) = text_content {
+            let first_line = txt.lines().next().unwrap_or("Texto").trim();
+            if !first_line.is_empty() {
+                title = first_line.chars().take(48).collect();
+            }
+        }
+    }
 
     Some(PbiVisualMeta {
         id,
@@ -420,7 +455,202 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
         category_field,
         legend_field,
         value_fields,
+        column_count,
+        slicer_mode,
+        action_type,
+        action_target,
+        text_content,
+        filters,
     })
+}
+
+fn strip_pbir_literal(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2 {
+        return trimmed[1..trimmed.len() - 1].replace("''", "'");
+    }
+    if let Some(stripped) = trimmed.strip_suffix('L').or_else(|| trimmed.strip_suffix('D')) {
+        if stripped.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '.') {
+            return stripped.to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn extract_pbir_column_count(visual_obj: &JsonValue) -> Option<u32> {
+    let layouts = visual_obj
+        .get("objects")
+        .and_then(|o| o.get("layout"))
+        .and_then(|v| v.as_array())?;
+    for lay in layouts {
+        if let Some(raw) = lay
+            .get("properties")
+            .and_then(|p| p.get("columnCount"))
+            .and_then(|c| c.get("expr"))
+            .and_then(|e| e.get("Literal"))
+            .and_then(|l| l.get("Value"))
+            .and_then(|v| v.as_str())
+        {
+            if let Ok(parsed) = strip_pbir_literal(raw).parse::<u32>() {
+                if parsed > 0 {
+                    return Some(parsed);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_pbir_action_link(visual_obj: &JsonValue) -> (Option<String>, Option<String>) {
+    let Some(links) = visual_obj
+        .get("visualContainerObjects")
+        .and_then(|o| o.get("visualLink"))
+        .and_then(|v| v.as_array())
+    else {
+        return (None, None);
+    };
+
+    let mut action_type = None;
+    let mut action_target = None;
+
+    for link in links {
+        let Some(props) = link.get("properties") else {
+            continue;
+        };
+        if let Some(raw_type) = props
+            .get("type")
+            .and_then(|t| t.get("expr"))
+            .and_then(|e| e.get("Literal"))
+            .and_then(|l| l.get("Value"))
+            .and_then(|v| v.as_str())
+        {
+            let clean = strip_pbir_literal(raw_type).to_lowercase();
+            action_type = Some(match clean.as_str() {
+                "back" => "back".to_string(),
+                "pagenavigation" | "page-navigation" => "page-navigation".to_string(),
+                other => other.to_string(),
+            });
+        }
+        if let Some(raw_target) = props
+            .get("navigationSection")
+            .and_then(|t| t.get("expr"))
+            .and_then(|e| e.get("Literal"))
+            .and_then(|l| l.get("Value"))
+            .and_then(|v| v.as_str())
+        {
+            let clean = strip_pbir_literal(raw_target);
+            if !clean.is_empty() {
+                action_target = Some(clean);
+            }
+        }
+    }
+
+    (action_type, action_target)
+}
+
+fn extract_pbir_textbox_text(visual_obj: &JsonValue) -> Option<String> {
+    let general = visual_obj
+        .get("objects")
+        .and_then(|o| o.get("general"))
+        .and_then(|v| v.as_array())?;
+    let mut lines = Vec::new();
+    for item in general {
+        let Some(paragraphs) = item
+            .get("properties")
+            .and_then(|p| p.get("paragraphs"))
+            .and_then(|p| p.as_array())
+        else {
+            continue;
+        };
+        for para in paragraphs {
+            let mut para_text = String::new();
+            if let Some(runs) = para.get("textRuns").and_then(|r| r.as_array()) {
+                for run in runs {
+                    if let Some(val) = run.get("value").and_then(|v| v.as_str()) {
+                        para_text.push_str(val);
+                    }
+                }
+            }
+            if !para_text.is_empty() {
+                lines.push(para_text);
+            }
+        }
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
+fn extract_pbir_filters(container: &JsonValue) -> Vec<PbiFilterMeta> {
+    let mut out = Vec::new();
+    let Some(filters) = container
+        .get("filterConfig")
+        .and_then(|fc| fc.get("filters"))
+        .and_then(|f| f.as_array())
+    else {
+        return out;
+    };
+
+    for f in filters {
+        let Some((Some(table), column)) = f.get("field").and_then(extract_pbir_field_entity_prop)
+        else {
+            continue;
+        };
+        let Some(where_arr) = f
+            .get("filter")
+            .and_then(|flt| flt.get("Where"))
+            .and_then(|w| w.as_array())
+        else {
+            continue;
+        };
+        let mut values = Vec::new();
+        for clause in where_arr {
+            let Some(cond) = clause.get("Condition") else {
+                continue;
+            };
+            if let Some(in_vals) = cond
+                .get("In")
+                .and_then(|i| i.get("Values"))
+                .and_then(|v| v.as_array())
+            {
+                for row in in_vals {
+                    let Some(tuple) = row.as_array() else {
+                        continue;
+                    };
+                    if let Some(lit) = tuple
+                        .first()
+                        .and_then(|cell| cell.get("Literal"))
+                        .and_then(|l| l.get("Value"))
+                        .and_then(|v| v.as_str())
+                    {
+                        values.push(strip_pbir_literal(lit));
+                    }
+                }
+            } else if let Some(cmp) = cond.get("Comparison") {
+                if cmp.get("ComparisonKind").and_then(|k| k.as_i64()) == Some(0) {
+                    if let Some(lit) = cmp
+                        .get("Right")
+                        .and_then(|r| r.get("Literal"))
+                        .and_then(|l| l.get("Value"))
+                        .and_then(|v| v.as_str())
+                    {
+                        values.push(strip_pbir_literal(lit));
+                    }
+                }
+            }
+        }
+        if !values.is_empty() {
+            out.push(PbiFilterMeta {
+                table,
+                column,
+                values,
+            });
+        }
+    }
+
+    out
 }
 
 fn normalize_pbir_query_ref(qref: &str) -> (Option<String>, String) {
@@ -551,5 +781,91 @@ mod tests {
         let meta = parse_pbir_visual_json(&vj, "page1", 0).expect("parsed visual");
         assert_eq!(meta.category_field.as_deref(), Some("dCalendario.Ano"));
         assert_eq!(meta.value_fields, vec!["Salários"]);
+    }
+
+    #[test]
+    fn test_pbir_v03_column_count_tiles_slicer_action_button_and_filters() {
+        let card_vj: JsonValue = serde_json::json!({
+            "name": "vis_card3",
+            "position": { "x": 0, "y": 0, "width": 600, "height": 180 },
+            "visual": {
+                "visualType": "cardVisual",
+                "query": {
+                    "queryState": {
+                        "Data": {
+                            "projections": [
+                                { "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "Medidas" } }, "Property": "A" } } },
+                                { "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "Medidas" } }, "Property": "B" } } },
+                                { "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "Medidas" } }, "Property": "C" } } }
+                            ]
+                        }
+                    }
+                },
+                "objects": {
+                    "layout": [
+                        { "properties": { "columnCount": { "expr": { "Literal": { "Value": "3L" } } } } }
+                    ]
+                }
+            },
+            "filterConfig": {
+                "filters": [
+                    {
+                        "field": { "Column": { "Expression": { "SourceRef": { "Entity": "dCalendario" } }, "Property": "Ano" } },
+                        "filter": {
+                            "Where": [
+                                { "Condition": { "In": { "Values": [[{ "Literal": { "Value": "2026L" } }]] } } }
+                            ]
+                        }
+                    }
+                ]
+            }
+        });
+        let card_meta = parse_pbir_visual_json(&card_vj, "p1", 0).expect("cardVisual");
+        assert_eq!(card_meta.visual_type, "multi-card");
+        assert_eq!(card_meta.column_count, Some(3));
+        assert_eq!(card_meta.filters.len(), 1);
+        assert_eq!(card_meta.filters[0].table, "dCalendario");
+        assert_eq!(card_meta.filters[0].column, "Ano");
+        assert_eq!(card_meta.filters[0].values, vec!["2026"]);
+
+        let slicer_vj: JsonValue = serde_json::json!({
+            "name": "vis_tiles",
+            "position": { "x": 0, "y": 0, "width": 300, "height": 80 },
+            "visual": {
+                "visualType": "advancedSlicerVisual",
+                "query": {
+                    "queryState": {
+                        "Values": {
+                            "projections": [
+                                { "field": { "Column": { "Expression": { "SourceRef": { "Entity": "dCalendario" } }, "Property": "Mês" } } }
+                            ]
+                        }
+                    }
+                }
+            }
+        });
+        let slicer_meta = parse_pbir_visual_json(&slicer_vj, "p1", 1).expect("advancedSlicer");
+        assert_eq!(slicer_meta.visual_type, "slicer");
+        assert_eq!(slicer_meta.slicer_mode.as_deref(), Some("tiles"));
+
+        let btn_vj: JsonValue = serde_json::json!({
+            "name": "vis_btn",
+            "position": { "x": 0, "y": 0, "width": 100, "height": 40 },
+            "visual": {
+                "visualType": "actionButton",
+                "visualContainerObjects": {
+                    "visualLink": [
+                        {
+                            "properties": {
+                                "type": { "expr": { "Literal": { "Value": "'Back'" } } }
+                            }
+                        }
+                    ]
+                }
+            }
+        });
+        let btn_meta = parse_pbir_visual_json(&btn_vj, "p1", 2).expect("actionButton");
+        assert_eq!(btn_meta.visual_type, "action-button");
+        assert_eq!(btn_meta.action_type.as_deref(), Some("back"));
     }
 }

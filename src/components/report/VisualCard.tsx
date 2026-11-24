@@ -12,6 +12,7 @@ import {
   Layers,
   GripVertical,
   Target,
+  ArrowLeft,
   ArrowRight,
   Calculator,
 } from 'lucide-react';
@@ -28,6 +29,27 @@ interface VisualCardProps {
   isSelected: boolean;
   onSelect: (id: string) => void;
   isMobile?: boolean;
+}
+
+function formatCompactDisplay(val: number, isCurr: boolean, currSymbol: string): string {
+  const abs = Math.abs(val);
+  const sign = val < 0 ? '-' : '';
+  let scaled = abs;
+  let suffix = '';
+  if (abs >= 1_000_000_000) {
+    scaled = abs / 1_000_000_000;
+    suffix = ' Bi';
+  } else if (abs >= 1_000_000) {
+    scaled = abs / 1_000_000;
+    suffix = ' Mi';
+  } else if (abs >= 1_000) {
+    scaled = abs / 1_000;
+    suffix = ' Mil';
+  } else {
+    return isCurr ? formatCurrency(val) : formatNumber(val);
+  }
+  const numStr = scaled.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return isCurr ? `${sign}${currSymbol} ${numStr}${suffix}` : `${sign}${numStr}${suffix}`;
 }
 
 export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSelected, onSelect, isMobile }) => {
@@ -203,6 +225,12 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
   // Compute visual data safely (never crash the page on a single visual DAX error)
   const { queryResult, queryError } = useMemo(() => {
+    if (visual.type === 'action-button' || visual.type === 'textbox') {
+      return {
+        queryResult: { categories: [], series: [], rawRows: [] } as ReturnType<typeof globalDataEngine.queryVisualData>,
+        queryError: null as string | null,
+      };
+    }
     try {
       return {
         queryResult: globalDataEngine.queryVisualData(visual, filters),
@@ -467,6 +495,10 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
         );
 
         const formatVal = (val: number): string => {
+          if (visual.formatConfig.displayUnits === 'auto') {
+            const isCurr = activeMeasure?.format === 'currency' || isYCurrency || isCurrencyField(yFieldName);
+            return formatCompactDisplay(val, isCurr, currSymbol);
+          }
           if (activeMeasure) {
             if (activeMeasure.formatString) {
               return formatValue(val, activeMeasure.formatString);
@@ -482,12 +514,30 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           return formatNumber(val);
         };
 
+        const donutTotal = hasNonZero
+          ? nonZeroSlices.reduce((acc, item) => acc + item.rawValue, 0)
+          : 0;
+
         return {
           animation: true,
           animationDuration: 0,
           animationDurationUpdate: 0,
           stateAnimation: { duration: 0 },
           color: colors,
+          ...(visual.type === 'donut' && hasNonZero
+            ? {
+                title: {
+                  text: formatVal(donutTotal),
+                  left: 'center',
+                  top: (visual.formatConfig.showLegend ?? true) ? '40%' : '46%',
+                  textStyle: {
+                    fontSize: 15,
+                    fontWeight: 'bold',
+                    color: tooltipTitleColor,
+                  },
+                },
+              }
+            : {}),
           tooltip: {
             ...baseTooltip,
             trigger: 'item',
@@ -528,9 +578,11 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               label: {
                 show: visual.formatConfig.showDataLabels ?? true,
                 formatter: (p: any) => {
-                  if (p.name === 'Sem dados') return '';
+                  if (p.name === t.common.noData || p.name === 'Sem dados') return '';
+                  const actualVal = p.data?.rawValue !== undefined ? p.data.rawValue : p.value;
                   const percentStr = typeof p.percent === 'number' ? `${p.percent.toFixed(1)}%` : '';
-                  return percentStr ? `${p.name}: ${percentStr}` : `${p.name}`;
+                  const compactVal = formatCompactDisplay(actualVal, isYCurrency || isCurrencyField(yFieldName) || activeMeasure?.format === 'currency', currSymbol);
+                  return percentStr ? `${p.name}: ${compactVal} (${percentStr})` : `${p.name}: ${compactVal}`;
                 },
                 fontSize: 10,
                 color: axisColor,
@@ -581,53 +633,144 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
       case 'waterfall': {
         const rawVals = series[0]?.data || [];
-        const baseVals: number[] = [];
+        const wfCategories = rawVals.length > 0 ? [...categories, 'Total'] : [...categories];
+        const steps: [number, number, number, number, number][] = [];
         let acc = 0;
-        rawVals.forEach((val) => {
-          if (val >= 0) {
-            baseVals.push(acc);
-            acc += val;
-          } else {
-            acc += val;
-            baseVals.push(acc);
-          }
+        rawVals.forEach((rawVal, idx) => {
+          const delta = Number(rawVal) || 0;
+          const start = acc;
+          const end = acc + delta;
+          steps.push([idx, start, end, delta, 0]);
+          acc = end;
         });
+        if (rawVals.length > 0) {
+          steps.push([rawVals.length, 0, acc, acc, 1]);
+        }
+
+        const fmtWfVal = (v: number) =>
+          visual.formatConfig.displayUnits === 'auto'
+            ? formatCompactDisplay(v, isYCurrency, currSymbol)
+            : isYCurrency
+            ? formatCurrency(v)
+            : formatNumber(v);
 
         return {
           animation: false,
-          grid: baseGrid,
-          tooltip: { ...baseTooltip, trigger: 'axis', axisPointer: { type: 'shadow' } },
+          grid: {
+            top: 32,
+            left: 58,
+            right: 24,
+            bottom: 42,
+            containLabel: true,
+          },
+          tooltip: {
+            ...baseTooltip,
+            trigger: 'axis',
+            axisPointer: { type: 'shadow' },
+            formatter: (params: any[]) => {
+              const p = params?.[0];
+              const row = p?.data as [number, number, number, number, number] | undefined;
+              if (!row) return '';
+              const [idx, , end, delta, isTotal] = row;
+              const label = wfCategories[idx] || '';
+              const deltaColor = isTotal === 1 ? '#3b82f6' : delta >= 0 ? '#10b981' : '#ef4444';
+              const signPrefix = isTotal === 1 ? '' : delta > 0 ? '+' : '';
+              return `<div style="font-weight:600;color:${tooltipTitleColor};margin-bottom:4px;">${label}</div>
+                <div style="font-size:12px;color:${tooltipValueColor};">${isTotal === 1 ? 'Total' : 'Variação'}: <b style="color:${deltaColor};">${signPrefix}${fmtWfVal(delta)}</b></div>
+                ${isTotal === 0 ? `<div style="font-size:11px;color:${tooltipValueColor};margin-top:2px;">Acumulado: <b style="color:${tooltipTitleColor};">${fmtWfVal(end)}</b></div>` : ''}`;
+            },
+          },
           xAxis: {
             type: 'category',
-            data: categories,
-            axisLabel: { rotate: 20, fontSize: 10, color: axisColor },
+            data: wfCategories,
+            axisLabel: { rotate: wfCategories.length > 6 ? 25 : 0, fontSize: 10, color: axisColor },
             axisLine: { lineStyle: { color: axisBorderColor } },
           },
           yAxis: {
             type: 'value',
-            axisLabel: { color: axisColor },
+            axisLabel: {
+              fontSize: 10,
+              color: axisColor,
+              formatter: (v: number) => formatCompactDisplay(v, isYCurrency, currSymbol),
+            },
             splitLine: { lineStyle: { type: 'dashed', color: splitLineBorderColor } },
           },
           series: [
             {
-              name: 'Base Oculta',
-              type: 'bar',
-              stack: 'all',
-              itemStyle: { borderColor: 'transparent', color: 'transparent' },
-              emphasis: { itemStyle: { borderColor: 'transparent', color: 'transparent' } },
-              data: baseVals,
-            },
-            {
-              name: 'Variação',
-              type: 'bar',
-              stack: 'all',
-              data: rawVals.map(v => ({
-                value: Math.abs(v),
-                itemStyle: {
-                  color: v >= 0 ? '#10b981' : '#ef4444',
-                  borderRadius: 3,
-                },
-              })),
+              name: visual.title || 'Cascata',
+              type: 'custom',
+              encode: { x: 0, y: [1, 2] },
+              data: steps,
+              renderItem: (_params: any, api: any) => {
+                const idx = api.value(0) as number;
+                const startVal = api.value(1) as number;
+                const endVal = api.value(2) as number;
+                const deltaVal = api.value(3) as number;
+                const isTotal = api.value(4) === 1;
+
+                const topPt = api.coord([idx, Math.max(startVal, endVal)]);
+                const botPt = api.coord([idx, Math.min(startVal, endVal)]);
+                const bandWidth = api.size([1, 0])[0] * 0.56;
+                const barWidth = Math.max(8, Math.min(64, bandWidth));
+                const rectHeight = Math.max(2, Math.abs(botPt[1] - topPt[1]));
+                const xLeft = topPt[0] - barWidth / 2;
+                const fill = isTotal ? '#3b82f6' : deltaVal >= 0 ? '#10b981' : '#ef4444';
+
+                const children: any[] = [
+                  {
+                    type: 'rect',
+                    shape: {
+                      x: xLeft,
+                      y: topPt[1],
+                      width: barWidth,
+                      height: rectHeight,
+                      r: 3,
+                    },
+                    style: { fill },
+                  },
+                ];
+
+                if (!isTotal && idx + 1 < wfCategories.length) {
+                  const nextPt = api.coord([idx + 1, endVal]);
+                  children.push({
+                    type: 'line',
+                    shape: {
+                      x1: topPt[0] + barWidth / 2,
+                      y1: nextPt[1],
+                      x2: nextPt[0] - barWidth / 2,
+                      y2: nextPt[1],
+                    },
+                    style: {
+                      stroke: axisBorderColor,
+                      lineWidth: 1,
+                      lineDash: [3, 3],
+                    },
+                    silent: true,
+                  });
+                }
+
+                if (visual.formatConfig.showDataLabels ?? true) {
+                  const isDown = !isTotal && deltaVal < 0;
+                  children.push({
+                    type: 'text',
+                    style: {
+                      text: fmtWfVal(deltaVal),
+                      x: topPt[0],
+                      y: isDown ? botPt[1] + 5 : topPt[1] - 5,
+                      fill: axisColor,
+                      textAlign: 'center',
+                      textVerticalAlign: isDown ? 'top' : 'bottom',
+                      font: '600 10px sans-serif',
+                    },
+                    silent: true,
+                  });
+                }
+
+                return {
+                  type: 'group',
+                  children,
+                };
+              },
             },
           ],
         };
@@ -708,9 +851,39 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           rawValue: Number(series[0]?.data[i]) || 0,
         }));
         const maxVal = Math.max(1, ...funnelData.map(d => d.value));
+        const firstVal = funnelData[0]?.value ?? 0;
+        const lastVal = funnelData[funnelData.length - 1]?.value ?? 0;
+        const showConversion = funnelData.length >= 2 && firstVal > 0;
+        const conversionPct = showConversion ? ((lastVal / firstVal) * 100).toFixed(1) : null;
         return {
           animation: false,
           color: colors,
+          ...(showConversion
+            ? {
+                graphic: [
+                  {
+                    type: 'text',
+                    left: 'center',
+                    top: 6,
+                    style: {
+                      text: '100%',
+                      fill: axisColor,
+                      font: '600 10px sans-serif',
+                    },
+                  },
+                  {
+                    type: 'text',
+                    left: 'center',
+                    bottom: 4,
+                    style: {
+                      text: `${conversionPct}%`,
+                      fill: axisColor,
+                      font: '600 10px sans-serif',
+                    },
+                  },
+                ],
+              }
+            : {}),
           tooltip: {
             ...baseTooltip,
             trigger: 'item',
@@ -725,21 +898,26 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             {
               name: visual.title,
               type: 'funnel',
-              left: '10%',
-              top: 20,
-              bottom: 20,
-              width: '80%',
+              left: '8%',
+              top: 26,
+              bottom: 26,
+              width: '84%',
+              minSize: '22%',
+              maxSize: '95%',
               min: 0,
               max: maxVal,
               sort: 'none',
-              gap: 2,
+              gap: 3,
               label: {
                 show: true,
                 position: 'inside',
                 fontSize: 11,
                 formatter: (p: any) => {
                   const raw = p.data?.rawValue ?? p.value;
-                  return `${p.name}: ${isYCurrency ? formatCurrency(raw) : formatNumber(raw)}`;
+                  const formatted = visual.formatConfig.displayUnits === 'auto'
+                    ? formatCompactDisplay(raw, isYCurrency, currSymbol)
+                    : (isYCurrency ? formatCurrency(raw) : formatNumber(raw));
+                  return `${p.name}: ${formatted}`;
                 },
               },
               data: funnelData,
@@ -972,77 +1150,147 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               </tbody>
             </table>
           </div>
+        ) : visual.type === 'action-button' ? (
+          <div className="w-full h-full flex items-center justify-center p-1">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                const store = useBiStore.getState();
+                if (visual.formatConfig.actionType === 'page-navigation' && visual.formatConfig.actionTargetPageId) {
+                  store.setActivePageId(visual.formatConfig.actionTargetPageId);
+                } else if (store.activeDrillthrough) {
+                  store.clearDrillthrough(true);
+                } else {
+                  const curIdx = store.pages.findIndex(p => p.id === activePageId);
+                  if (curIdx > 0) {
+                    store.setActivePageId(store.pages[curIdx - 1].id);
+                  }
+                }
+              }}
+              className="w-full h-full flex items-center justify-center gap-1.5 rounded-lg bg-slate-100 hover:bg-amber-500 hover:text-slate-950 dark:bg-slate-800 dark:hover:bg-amber-500 text-slate-700 dark:text-slate-200 font-semibold text-xs border border-slate-300 dark:border-slate-700 transition-colors cursor-pointer"
+              title={visual.title}
+            >
+              {visual.formatConfig.actionType === 'page-navigation' ? (
+                <ArrowRight className="w-4 h-4 shrink-0" />
+              ) : (
+                <ArrowLeft className="w-4 h-4 shrink-0" />
+              )}
+              <span className="truncate">{visual.title || 'Voltar'}</span>
+            </button>
+          </div>
+        ) : visual.type === 'textbox' ? (
+          <div className="w-full h-full overflow-auto p-2 flex items-center text-xs text-slate-700 dark:text-slate-200 whitespace-pre-wrap leading-relaxed">
+            {visual.formatConfig.textContent || visual.title}
+          </div>
         ) : visual.type === 'card' || visual.type === 'kpi' ? (
-          <div className="flex flex-col items-center justify-center h-full text-center p-2">
-            <span className="text-3xl font-extrabold text-slate-800 dark:text-slate-100 tracking-tight">
-              {(() => {
-                const isValBlank = queryResult.summaryValue === null || queryResult.summaryValue === undefined || isNaN(queryResult.summaryValue);
-                const showZero = Boolean(visual.formatConfig?.showBlankAsZero);
-                if (isValBlank && !showZero) return '';
-                const val = isValBlank ? 0 : queryResult.summaryValue;
-                const yField = visual.dataConfig.yAxisFields?.[0] || '';
-                const targetMeasure = measures.find(m => m.name.toLowerCase() === yField.toLowerCase());
-                if (targetMeasure?.formatString) {
-                  return formatValue(val, targetMeasure.formatString, { showBlankAsZero: showZero, isLegacyColumn: false });
-                }
-                if (visual.title.includes('%') || yField.toLowerCase().includes('pct') || yField.toLowerCase().includes('percent')) {
-                  return formatPercent(val);
-                }
-                if (
-                  isCurrencyField(yField) ||
-                  visual.title.toLowerCase().includes('r$') ||
-                  visual.title.toLowerCase().includes('$') ||
-                  visual.title.toLowerCase().includes('€') ||
-                  visual.title.toLowerCase().includes('faturamento') ||
-                  visual.title.toLowerCase().includes('lucro') ||
-                  visual.title.toLowerCase().includes('custo') ||
-                  visual.title.toLowerCase().includes('revenue') ||
-                  visual.title.toLowerCase().includes('profit') ||
-                  visual.title.toLowerCase().includes('cost') ||
-                  visual.title.toLowerCase().includes('precio')
-                ) {
-                  return formatCurrency(val);
-                }
-                return formatNumber(val);
-              })()}
-            </span>
-            <span className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-1">
-              {visual.dataConfig.tableId} • {visual.dataConfig.yAxisFields?.[0] || t.common.total} ({visual.dataConfig.aggregation || 'SUM'})
-            </span>
-          </div>
-        ) : visual.type === 'multi-card' ? (
-          <div className="w-full h-full overflow-auto grid grid-cols-1 sm:grid-cols-2 gap-2 p-2 items-center">
-            {queryResult.categories.map((label, idx) => {
-              const rawVal = Number(queryResult.series[0]?.data[idx] ?? 0) || 0;
-              const targetMeasure = measures.find(m => m.name.toLowerCase() === label.toLowerCase());
-              let formatted: string;
-              if (targetMeasure?.formatString) {
-                formatted = formatValue(rawVal, targetMeasure.formatString, {
-                  showBlankAsZero: Boolean(visual.formatConfig?.showBlankAsZero),
-                  isLegacyColumn: false,
-                });
-              } else if (targetMeasure?.format === 'percentage' || label.includes('%')) {
-                formatted = formatPercent(rawVal);
-              } else if (targetMeasure?.format === 'currency' || isCurrencyField(label)) {
-                formatted = formatCurrency(rawVal);
+          (() => {
+            const isValBlank = queryResult.summaryValue === null || queryResult.summaryValue === undefined || isNaN(queryResult.summaryValue);
+            const showZero = Boolean(visual.formatConfig?.showBlankAsZero);
+            const val = isValBlank ? 0 : (queryResult.summaryValue ?? 0);
+            const yField = visual.dataConfig.yAxisFields?.[0] || '';
+            const targetMeasure = measures.find(m => m.name.toLowerCase() === yField.toLowerCase());
+            const isPct = visual.title.includes('%') || yField.toLowerCase().includes('pct') || yField.toLowerCase().includes('percent') || targetMeasure?.format === 'percentage';
+            const isCurr = isCurrencyField(yField) || targetMeasure?.format === 'currency' ||
+              visual.title.toLowerCase().includes('r$') ||
+              visual.title.toLowerCase().includes('$') ||
+              visual.title.toLowerCase().includes('€') ||
+              visual.title.toLowerCase().includes('faturamento') ||
+              visual.title.toLowerCase().includes('lucro') ||
+              visual.title.toLowerCase().includes('custo') ||
+              visual.title.toLowerCase().includes('revenue') ||
+              visual.title.toLowerCase().includes('profit') ||
+              visual.title.toLowerCase().includes('cost') ||
+              visual.title.toLowerCase().includes('precio');
+
+            let displayText = '';
+            if (!isValBlank || showZero) {
+              if (visual.formatConfig.displayUnits === 'auto' && !isPct) {
+                displayText = formatCompactDisplay(val, isCurr, currSymbol);
+              } else if (targetMeasure?.formatString) {
+                displayText = formatValue(val, targetMeasure.formatString, { showBlankAsZero: showZero, isLegacyColumn: false });
+              } else if (isPct) {
+                displayText = formatPercent(val);
+              } else if (isCurr) {
+                displayText = formatCurrency(val);
               } else {
-                formatted = formatNumber(rawVal);
+                displayText = formatNumber(val);
               }
-              return (
-                <div
-                  key={label}
-                  className="p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/50 flex flex-col justify-center"
-                >
-                  <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 truncate" title={label}>
-                    {label}
-                  </span>
-                  <span className="text-lg font-extrabold text-slate-900 dark:text-slate-100 mt-0.5 truncate">
-                    {formatted}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
+            }
+
+            const signColorClass = visual.formatConfig.colorBySign && !isValBlank
+              ? val > 0
+                ? 'text-emerald-600 dark:text-emerald-400'
+                : val < 0
+                ? 'text-rose-600 dark:text-rose-400'
+                : 'text-slate-800 dark:text-slate-100'
+              : 'text-slate-800 dark:text-slate-100';
+
+            return (
+              <div className="flex flex-col items-center justify-center h-full text-center p-2">
+                <span className={`text-3xl font-extrabold tracking-tight ${signColorClass}`}>
+                  {displayText}
+                </span>
+                <span className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-1">
+                  {visual.dataConfig.tableId} • {visual.dataConfig.yAxisFields?.[0] || t.common.total} ({visual.dataConfig.aggregation || 'SUM'})
+                </span>
+              </div>
+            );
+          })()
+        ) : visual.type === 'multi-card' ? (
+          (() => {
+            const cols = visual.formatConfig.cardColumns && visual.formatConfig.cardColumns > 0
+              ? visual.formatConfig.cardColumns
+              : Math.min(Math.max(1, queryResult.categories.length), 3);
+            return (
+              <div
+                className="w-full h-full overflow-auto grid gap-2 p-2 items-center"
+                style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+              >
+                {queryResult.categories.map((label, idx) => {
+                  const rawVal = Number(queryResult.series[0]?.data[idx] ?? 0) || 0;
+                  const targetMeasure = measures.find(m => m.name.toLowerCase() === label.toLowerCase());
+                  const isPct = targetMeasure?.format === 'percentage' || label.includes('%');
+                  const isCurr = targetMeasure?.format === 'currency' || isCurrencyField(label);
+                  let formatted: string;
+                  if (visual.formatConfig.displayUnits === 'auto' && !isPct) {
+                    formatted = formatCompactDisplay(rawVal, isCurr, currSymbol);
+                  } else if (targetMeasure?.formatString) {
+                    formatted = formatValue(rawVal, targetMeasure.formatString, {
+                      showBlankAsZero: Boolean(visual.formatConfig?.showBlankAsZero),
+                      isLegacyColumn: false,
+                    });
+                  } else if (isPct) {
+                    formatted = formatPercent(rawVal);
+                  } else if (isCurr) {
+                    formatted = formatCurrency(rawVal);
+                  } else {
+                    formatted = formatNumber(rawVal);
+                  }
+                  const signColorClass = visual.formatConfig.colorBySign
+                    ? rawVal > 0
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : rawVal < 0
+                      ? 'text-rose-600 dark:text-rose-400'
+                      : 'text-slate-900 dark:text-slate-100'
+                    : 'text-slate-900 dark:text-slate-100';
+                  return (
+                    <div
+                      key={label}
+                      className="p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/50 flex flex-col justify-center min-w-0"
+                    >
+                      <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 truncate" title={label}>
+                        {label}
+                      </span>
+                      <span className={`text-lg font-extrabold mt-0.5 truncate ${signColorClass}`}>
+                        {formatted}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()
         ) : visual.type === 'slicer' ? (
           (() => {
             const rawSlicerCol = visual.dataConfig.xAxisField || 'Canal';
@@ -1062,9 +1310,10 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                 (f.column.toLowerCase() === slicerCol.toLowerCase() || f.column.toLowerCase() === rawSlicerCol.toLowerCase())
             );
             const activeVal = activeSlicerFilter ? String(activeSlicerFilter.value) : 'TODOS';
+            const isTiles = visual.dataConfig.slicerConfig?.mode === 'tiles';
 
             return (
-              <div className="flex flex-col h-full justify-center p-2 space-y-2">
+              <div className="flex flex-col h-full justify-center p-2 space-y-2 overflow-auto">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1">
                     <Filter className="w-3 h-3 text-amber-500" /> {t.visualCard.selectField} {slicerCol}:
@@ -1078,21 +1327,54 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                     </button>
                   )}
                 </div>
-                <select
-                  value={activeVal}
-                  className="w-full text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded px-2 py-1.5 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500 font-medium"
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setCrossFilter(slicerTableId, slicerCol, val === 'TODOS' ? '' : val);
-                  }}
-                >
-                  <option value="TODOS">{t.visualCard.allRecords}</option>
-                  {queryResult.categories.map(c => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
+                {isTiles ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setCrossFilter(slicerTableId, slicerCol, '')}
+                      className={`px-2 py-1 rounded text-[11px] font-semibold border transition-colors cursor-pointer ${
+                        activeVal === 'TODOS'
+                          ? 'bg-amber-500 text-slate-950 border-amber-500'
+                          : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-amber-400'
+                      }`}
+                    >
+                      {t.visualCard.allRecords}
+                    </button>
+                    {queryResult.categories.map(c => {
+                      const selected = activeVal === c;
+                      return (
+                        <button
+                          key={c}
+                          type="button"
+                          onClick={() => setCrossFilter(slicerTableId, slicerCol, selected ? '' : c)}
+                          className={`px-2 py-1 rounded text-[11px] font-medium border transition-colors cursor-pointer ${
+                            selected
+                              ? 'bg-amber-500 text-slate-950 border-amber-500 font-bold'
+                              : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-amber-400'
+                          }`}
+                        >
+                          {c}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <select
+                    value={activeVal}
+                    className="w-full text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded px-2 py-1.5 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500 font-medium"
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setCrossFilter(slicerTableId, slicerCol, val === 'TODOS' ? '' : val);
+                    }}
+                  >
+                    <option value="TODOS">{t.visualCard.allRecords}</option>
+                    {queryResult.categories.map(c => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
             );
           })()

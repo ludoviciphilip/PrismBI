@@ -102,7 +102,9 @@ export type VisualType =
   | 'kpi'
   | 'table'
   | 'matrix'
-  | 'slicer';
+  | 'slicer'
+  | 'action-button'
+  | 'textbox';
 
 export interface ConditionalFormatRule {
   operator: '>' | '<' | '>=' | '<=' | '==' | 'between';
@@ -124,6 +126,12 @@ export interface VisualFormatConfig {
   colorPalette?: string[];
   isTransparent?: boolean;
   showBlankAsZero?: boolean;
+  cardColumns?: number;
+  displayUnits?: 'none' | 'auto';
+  colorBySign?: boolean;
+  textContent?: string;
+  actionType?: 'back' | 'page-navigation';
+  actionTargetPageId?: string;
   conditionalFormatting?: {
     field: string;
     rules: ConditionalFormatRule[];
@@ -155,7 +163,7 @@ export interface VisualDataConfig {
   kpiComparisonField?: string;
   visualCalculations?: VisualCalculation[];
   slicerConfig?: {
-    mode: 'list' | 'dropdown' | 'slider' | 'relative-date';
+    mode: 'list' | 'dropdown' | 'slider' | 'relative-date' | 'tiles';
     selectedValues?: any[];
     dateRange?: {
       start?: string;

@@ -20,7 +20,7 @@ import {
 } from '../../bridge/tauriBridge';
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
-import { Measure, Page, Relationship, Table, Visual, VisualType } from '../../types/bi';
+import { Filter, Measure, Page, Relationship, Table, Visual, VisualType } from '../../types/bi';
 import { CURRENT_ENGINE_VERSION } from '../../engine/migrations';
 
 interface PowerBiImportModalProps {
@@ -171,31 +171,53 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({ isOpen, 
               width: Math.round(p.width || 1280),
               height: Math.round(p.height || 720),
             },
-            visuals: p.visuals.map((v, vIdx): Visual => ({
-              id: v.id || `pbi_vis_${pIdx}_${vIdx}`,
-              type: (v.visualType as VisualType) || 'column',
-              title: v.title || `Visual ${vIdx + 1}`,
-              x: Math.round(v.x),
-              y: Math.round(v.y),
-              w: Math.max(180, Math.round(v.w)),
-              h: Math.max(120, Math.round(v.h)),
-              dataConfig: {
-                tableId: v.tableHint || mappedTables[0]?.name || '',
-                xAxisField: v.categoryField || undefined,
-                legendField: v.legendField || undefined,
-                yAxisFields: v.valueFields.length > 0 ? v.valueFields : undefined,
-                aggregation: 'SUM',
-              },
-              formatConfig: {
-                showTitle: true,
-                title: v.title,
-                showDataLabels: false,
-                showLegend: true,
-                backgroundColor: '#ffffff',
-                borderColor: '#e2e8f0',
-                borderRadius: 8,
-              },
-            })),
+            visuals: p.visuals.map((v, vIdx): Visual => {
+              const vType = (v.visualType as VisualType) || 'column';
+              const minW = vType === 'action-button' ? 40 : 120;
+              const minH = vType === 'action-button' ? 32 : 70;
+              return {
+                id: v.id || `pbi_vis_${pIdx}_${vIdx}`,
+                type: vType,
+                title: v.title || `Visual ${vIdx + 1}`,
+                x: Math.round(v.x),
+                y: Math.round(v.y),
+                w: Math.max(minW, Math.round(v.w)),
+                h: Math.max(minH, Math.round(v.h)),
+                dataConfig: {
+                  tableId: v.tableHint || mappedTables[0]?.name || '',
+                  xAxisField: v.categoryField || undefined,
+                  legendField: v.legendField || undefined,
+                  yAxisFields: v.valueFields.length > 0 ? v.valueFields : undefined,
+                  aggregation: 'SUM',
+                  ...(vType === 'slicer'
+                    ? {
+                        slicerConfig: {
+                          mode: v.slicerMode === 'tiles' ? 'tiles' : 'dropdown',
+                          selectedValues: [],
+                        },
+                      }
+                    : {}),
+                },
+                formatConfig: {
+                  showTitle: vType !== 'action-button' && vType !== 'textbox',
+                  title: v.title,
+                  showDataLabels: vType === 'pie' || vType === 'donut' || vType === 'funnel',
+                  showLegend: true,
+                  backgroundColor: '#ffffff',
+                  borderColor: '#e2e8f0',
+                  borderRadius: 8,
+                  cardColumns: v.columnCount || undefined,
+                  displayUnits: 'none',
+                  colorBySign: true,
+                  textContent: v.textContent || undefined,
+                  actionType:
+                    v.actionType === 'page-navigation' || v.actionType === 'back'
+                      ? v.actionType
+                      : undefined,
+                  actionTargetPageId: v.actionTarget || undefined,
+                },
+              };
+            }),
           }))
         : [
             {
@@ -206,6 +228,17 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({ isOpen, 
             },
           ];
 
+    const importedFilters: Filter[] = summary.pages.flatMap((p, pIdx) =>
+      (p.filters || []).map((f, fIdx): Filter => ({
+        id: `pbi_flt_${pIdx}_${fIdx}`,
+        level: 'page',
+        tableId: f.table,
+        column: f.column,
+        operator: f.values.length > 1 ? 'in' : 'equals',
+        value: f.values.length > 1 ? f.values : f.values[0],
+      }))
+    );
+
     loadStateFromProject({
       version: String(CURRENT_ENGINE_VERSION),
       projectName: summary.projectName || projectName,
@@ -214,7 +247,7 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({ isOpen, 
       measures: mappedMeasures,
       pages: mappedPages,
       activePageId: mappedPages[0]?.id || 'page_1',
-      filters: [],
+      filters: importedFilters,
       bookmarks: [],
       dashboardTiles: [],
       goals: [],

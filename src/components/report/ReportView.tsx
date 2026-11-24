@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { Plus, Copy, Trash2, Edit2, Smartphone, ArrowLeft, Target, X, LayoutGrid, Maximize2 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
@@ -20,6 +20,7 @@ export const ReportView: React.FC = () => {
     selectedVisualId,
     setSelectedVisualId,
     canvasZoom,
+    setCanvasZoom,
     layoutMode,
     gridSize,
     showGrid,
@@ -38,6 +39,7 @@ export const ReportView: React.FC = () => {
     selectedVisualId: s.selectedVisualId,
     setSelectedVisualId: s.setSelectedVisualId,
     canvasZoom: s.canvasZoom,
+    setCanvasZoom: s.setCanvasZoom,
     layoutMode: s.layoutMode,
     gridSize: s.gridSize,
     showGrid: s.showGrid,
@@ -50,6 +52,38 @@ export const ReportView: React.FC = () => {
   const activePage = pages.find(p => p.id === activePageId) || pages[0];
   const { width: canvasWidth, height: canvasHeight, label: canvasSizeLabel } = getEffectiveCanvasSize(activePage);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key === '=' || e.key === '+') {
+        e.preventDefault();
+        setCanvasZoom(useBiStore.getState().canvasZoom + 10);
+      } else if (e.key === '-' || e.key === '_') {
+        e.preventDefault();
+        setCanvasZoom(useBiStore.getState().canvasZoom - 10);
+      } else if (e.key === '0') {
+        e.preventDefault();
+        setCanvasZoom(100);
+      }
+    };
+
+    const handleWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      const step = e.deltaY < 0 ? 10 : -10;
+      setCanvasZoom(useBiStore.getState().canvasZoom + step);
+    };
+
+    const el = scrollContainerRef.current;
+    window.addEventListener('keydown', handleKeyDown);
+    el?.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      el?.removeEventListener('wheel', handleWheel);
+    };
+  }, [setCanvasZoom]);
 
   const handleCanvasClick = (e: React.MouseEvent) => {
     if (e.target === canvasRef.current) {
@@ -110,6 +144,7 @@ export const ReportView: React.FC = () => {
 
       {/* Central Canvas Area */}
       <div
+        ref={scrollContainerRef}
         className="flex-1 overflow-auto p-6"
         onClick={handleCanvasClick}
       >
