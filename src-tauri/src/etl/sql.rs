@@ -583,9 +583,7 @@ pub fn compile(conn: &Connection, q: &EtlQuery, upto: Option<usize>) -> Result<C
             let res = compile_step(&mut ctx, &chain, &step.kind).and_then(|body| {
                 let mut next = chain.clone();
                 next.ctes.push(body);
-                let probe_sql = next.select("*", "");
-                let schema = describe(conn, &probe_sql)
-                    .map_err(|e| format!("{} [[SQL: {}]]", e, probe_sql))?;
+                let schema = describe(conn, &next.select("*", ""))?;
                 next.schema = schema;
                 Ok(next)
             });
