@@ -69,6 +69,7 @@
     "filter.context.sumx_over_fact_rows_is_identity",
     "filter.distinct.countrows_column",
     "filter.distinct.countrows_column_with_real_blank",
+    "filter.earlier.rank_sum_via_filter",
     "filter.filter.measure_predicate_gt300",
     "filter.filter.measure_predicate_gt400",
     "filter.filter.related_predicate_on_fact",

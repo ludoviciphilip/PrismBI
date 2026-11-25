@@ -43,11 +43,7 @@ pub fn evaluate_ast(
             }
             // 2. Check measure
             if let Some(measure) = model.get_measure(name) {
-                let effective_ctx = if let Some(rc) = row_stack.last() {
-                    apply_context_transition(ctx, rc)
-                } else {
-                    ctx.clone()
-                };
+                let effective_ctx = apply_context_transition(model, ctx, row_stack);
                 let parsed = parse_dax(&measure.formula)?;
                 return evaluate_ast(&parsed, model, &effective_ctx, &[], &HashMap::new());
             }
@@ -210,55 +206,13 @@ fn compare_dax_values(l: &DaxValue, r: &DaxValue) -> i8 {
     }
 }
 
-fn apply_context_transition(ctx: &FilterContext, rc: &RowContext<'_>) -> FilterContext {
-    apply_context_transition_cols(ctx, rc, None)
-}
-
-/// Like `apply_context_transition`, but when `only_cols` is given (e.g. the iterator source
-/// was `VALUES`/`DISTINCT`/`ALL` over a *single* column), only that column's value is used to
-/// narrow the context — not every column of the underlying physical table. Without this,
-/// transitioning on a representative row of `VALUES(d_Produto[Categoria])` would also pin
-/// `d_Produto[ProdutoID]` to that one representative product, collapsing the whole category
-/// down to a single row instead of letting the relationship propagate the category filter.
-fn apply_context_transition_cols(
-    ctx: &FilterContext,
-    rc: &RowContext<'_>,
-    only_cols: Option<&[String]>,
-) -> FilterContext {
-    let mut next = ctx.clone();
-    match only_cols {
-        Some(cols) => {
-            for cname in cols {
-                if let Some(idx) = rc.table.get_col_idx(cname) {
-                    let mut set = HashSet::new();
-                    set.insert(rc.table.rows[rc.row_idx][idx].canonical_key());
-                    next.set_column_filter(&rc.table.name, cname, set);
-                }
-            }
-        }
-        None => {
-            for (idx, cname) in rc.table.columns.iter().enumerate() {
-                let mut set = HashSet::new();
-                set.insert(rc.table.rows[rc.row_idx][idx].canonical_key());
-                next.set_column_filter(&rc.table.name, cname, set);
-            }
-        }
-    }
-    next
-}
-
-/// If `expr` is `VALUES`/`DISTINCT`/`ALL` applied to a single `Table[Column]`, returns that
-/// column name so context transition over the resulting rows narrows only that column.
-fn single_column_transition_scope(expr: &Expr) -> Option<Vec<String>> {
-    if let Expr::Call { name, args } = expr {
-        let upper = name.to_uppercase();
-        if matches!(upper.as_str(), "VALUES" | "DISTINCT" | "ALL" | "ALLSELECTED") {
-            if let Some(Expr::TableColRef { column, .. }) = args.first() {
-                return Some(vec![column.clone()]);
-            }
-        }
-    }
-    None
+/// Context transition (CALCULATE, measure references): every active row context on the
+/// stack becomes a filter, outermost first so inner rows win on shared columns. Only
+/// columns with model lineage are turned into filters (extension columns are skipped).
+fn apply_context_transition(model: &DaxModel, ctx: &FilterContext, row_stack: &[RowContext<'_>]) -> FilterContext {
+    row_stack
+        .iter()
+        .fold(ctx.clone(), |acc, rc| apply_lineage_transition(model, &acc, rc))
 }
 
 fn eval_call(
@@ -388,11 +342,7 @@ fn eval_call(
             let Some(Expr::TableColRef { table, column }) = args.get(1) else {
                 return Err(format!("{} requer coluna de data no 2º argumento", fname));
             };
-            let mut next_ctx = if let Some(rc) = row_stack.last() {
-                apply_context_transition(ctx, rc)
-            } else {
-                ctx.clone()
-            };
+            let mut next_ctx = apply_context_transition(model, ctx, row_stack);
             let mode = match fname.as_str() {
                 "TOTALMTD" => "MTD",
                 "TOTALQTD" => "QTD",
@@ -422,11 +372,7 @@ fn eval_call(
             let Some(Expr::TableColRef { table, column }) = args.get(1) else {
                 return Err(format!("{} requer coluna de data no 2º argumento", fname));
             };
-            let mut next_ctx = if let Some(rc) = row_stack.last() {
-                apply_context_transition(ctx, rc)
-            } else {
-                ctx.clone()
-            };
+            let mut next_ctx = apply_context_transition(model, ctx, row_stack);
             let is_opening = fname.starts_with("OPENING");
             let scope = if fname.ends_with("MONTH") {
                 "MONTH"
@@ -481,12 +427,14 @@ fn eval_call(
                 Some(Expr::Text(s)) => s.eq_ignore_ascii_case("DENSE"),
                 _ => false,
             };
-            let transition_scope = single_column_transition_scope(&args[0]);
-
+            // Unlike the X-aggregators, RANKX evaluates its expression with a per-row context
+            // transition even for non-measure expressions (e.g. RANKX(ALL(T), SUM(T[v]))),
+            // which is what the corpus oracle (stats.rankx.*) encodes. Only columns with model
+            // lineage become filters.
             let mut scores = Vec::new();
             for r_idx in row_indices {
                 let row_ctx = RowContext { table: table_data, row_idx: r_idx };
-                let eff_ctx = apply_context_transition_cols(&rank_ctx, &row_ctx, transition_scope.as_deref());
+                let eff_ctx = apply_lineage_transition(model, &rank_ctx, &row_ctx);
                 let mut next_stack = row_stack.to_vec();
                 next_stack.push(row_ctx);
                 let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
@@ -588,15 +536,15 @@ fn eval_call(
             }
             let (table_eval, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
             let table_data = table_eval.as_ref();
-            let transition_scope = single_column_transition_scope(&args[0]);
+            // Row context only, no implicit context transition: a nested FILTER(T, ...) must
+            // still see every row of T (EARLIER pattern); measure references / CALCULATE
+            // transition explicitly.
             if fname == "COUNTAX" {
                 let mut cnt = 0usize;
                 for r_idx in row_indices {
-                    let row_ctx = RowContext { table: table_data, row_idx: r_idx };
-                    let eff_ctx = apply_context_transition_cols(&iter_ctx, &row_ctx, transition_scope.as_deref());
                     let mut next_stack = row_stack.to_vec();
-                    next_stack.push(row_ctx);
-                    let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
+                    next_stack.push(RowContext { table: table_data, row_idx: r_idx });
+                    let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
                     if !v.is_blank() {
                         cnt += 1;
                     }
@@ -605,11 +553,9 @@ fn eval_call(
             }
             let mut vals = Vec::new();
             for r_idx in row_indices {
-                let row_ctx = RowContext { table: table_data, row_idx: r_idx };
-                let eff_ctx = apply_context_transition_cols(&iter_ctx, &row_ctx, transition_scope.as_deref());
                 let mut next_stack = row_stack.to_vec();
-                next_stack.push(row_ctx);
-                let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
+                next_stack.push(RowContext { table: table_data, row_idx: r_idx });
+                let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
                 if !v.is_blank() {
                     if let Some(n) = v.as_f64() {
                         vals.push(n);
@@ -708,11 +654,7 @@ fn eval_call(
             if args.is_empty() {
                 return Err("CALCULATE requer ao menos 1 argumento".to_string());
             }
-            let mut next_ctx = if let Some(rc) = row_stack.last() {
-                apply_context_transition(ctx, rc)
-            } else {
-                ctx.clone()
-            };
+            let mut next_ctx = apply_context_transition(model, ctx, row_stack);
             for filter_expr in &args[1..] {
                 apply_calculate_modifier(filter_expr, model, ctx, &mut next_ctx, row_stack, vars)?;
             }
@@ -826,6 +768,21 @@ fn eval_call(
             }
             Ok(DaxValue::Blank)
         }
+        "EARLIER" | "EARLIEST" => {
+            let depth = if fname == "EARLIEST" {
+                None
+            } else {
+                let n = match args.get(1) {
+                    Some(e) => evaluate_ast(e, model, ctx, row_stack, vars)?.as_f64().unwrap_or(1.0),
+                    None => 1.0,
+                };
+                if n < 1.0 || n.fract() != 0.0 {
+                    return Err(format!("EARLIER: o número de níveis deve ser um inteiro >= 1 (recebido {})", n));
+                }
+                Some(n as usize)
+            };
+            eval_earlier(args.first(), row_stack, depth)
+        }
         "RELATED" => {
             let Some(Expr::TableColRef { table, column }) = args.first() else {
                 return Err("RELATED requer Tabela[Coluna]".to_string());
@@ -886,6 +843,37 @@ fn eval_call(
                 Err(format!("Função DAX '{}' ainda não implementada no motor nativo.", fname))
             }
         }
+    }
+}
+
+/// EARLIER(col, n) / EARLIEST(col): value of `col` in an *outer* row context.
+///
+/// `row_stack` is ordered outermost -> innermost; every iterator (SUMX, FILTER, ADDCOLUMNS,
+/// RANKX, ...) pushes its current row before evaluating its per-row expression. Only row
+/// contexts that actually contain `col` count as levels: the innermost such context is
+/// level 0 (what a plain `T[col]` reads), EARLIER(col, n) reads level `n` and EARLIEST
+/// (`depth = None`) the outermost level. Both require at least one outer level, as in DAX.
+fn eval_earlier(arg: Option<&Expr>, row_stack: &[RowContext<'_>], depth: Option<usize>) -> Result<DaxValue, String> {
+    let levels: Vec<(&RowContext<'_>, usize)> = match arg {
+        Some(Expr::TableColRef { table, column }) => row_stack
+            .iter()
+            .rev()
+            .filter_map(|rc| row_col_idx(rc.table, table, column).map(|c| (rc, c)))
+            .collect(),
+        Some(Expr::BracketRef(column)) => row_stack
+            .iter()
+            .rev()
+            .filter_map(|rc| bare_col_idx(rc.table, column).map(|c| (rc, c)))
+            .collect(),
+        _ => return Err("EARLIER/EARLIEST requer uma referência de coluna".to_string()),
+    };
+    let level = match depth {
+        Some(n) => n,
+        None => levels.len().saturating_sub(1).max(1),
+    };
+    match levels.get(level) {
+        Some((rc, cidx)) => Ok(rc.table.rows[rc.row_idx][*cidx].clone()),
+        None => Err("EARLIER/EARLIEST refere-se a um contexto de linha anterior que não existe".to_string()),
     }
 }
 
@@ -1344,11 +1332,7 @@ fn eval_base_table_expr<'a>(
             if args.is_empty() {
                 return Err("CALCULATETABLE requer ao menos 1 argumento".to_string());
             }
-            let mut next_ctx = if let Some(rc) = row_stack.last() {
-                apply_context_transition(ctx, rc)
-            } else {
-                ctx.clone()
-            };
+            let mut next_ctx = apply_context_transition(model, ctx, row_stack);
             for filter_expr in &args[1..] {
                 apply_calculate_modifier(filter_expr, model, ctx, &mut next_ctx, row_stack, vars)?;
             }
@@ -3259,6 +3243,65 @@ mod tests {
             eval_num(&model, "COUNTROWS(CALCULATETABLE(SUMMARIZE(f, p[Cat]), p[Cat] = \"A\"))"),
             1.0
         );
+    }
+
+    #[test]
+    fn test_earlier_earliest_row_context_stack() {
+        let model = table_fns_model();
+        let is_err = |e: &str| model.evaluate_dax(e, &FilterContext::default()).is_err();
+        // p[Preco] = 3, 1, 2. Classic rank-by-count: 3 + 1 + 2.
+        assert_eq!(eval_num(&model, "SUMX(p, COUNTROWS(FILTER(p, p[Preco] <= EARLIER(p[Preco]))))"), 6.0);
+
+        // Three nested row contexts on p: outer {3,2}, middle {1}, inner {3,1,2}.
+        let nested = |inner: &str| {
+            format!(
+                "SUMX(FILTER(p, p[Preco] >= 2), SUMX(FILTER(p, p[Preco] <= 1), SUMX(p, {})))",
+                inner
+            )
+        };
+        assert_eq!(eval_num(&model, &nested("p[Preco]")), 12.0); // innermost: 2 * (3+1+2)
+        assert_eq!(eval_num(&model, &nested("EARLIER(p[Preco])")), 6.0); // middle: 2 * 3 * 1
+        assert_eq!(eval_num(&model, &nested("EARLIER(p[Preco], 1)")), 6.0);
+        assert_eq!(eval_num(&model, &nested("EARLIER(p[Preco], 2)")), 15.0); // outer: (3+2) * 3
+        assert_eq!(eval_num(&model, &nested("EARLIEST(p[Preco])")), 15.0);
+        assert!(is_err(&nested("EARLIER(p[Preco], 3)")));
+        assert!(is_err(&nested("EARLIER(p[Preco], 0)")));
+
+        // With two levels EARLIEST == EARLIER: 3 * (3+1+2).
+        assert_eq!(eval_num(&model, "SUMX(p, SUMX(p, EARLIEST(p[Preco])))"), 18.0);
+        // Only row contexts containing the column count as levels.
+        assert!(is_err("SUMX(p, SUMX(g, EARLIER(p[Preco])))"));
+        assert_eq!(eval_num(&model, "SUMX(p, SUMX(g, SUMX(p, EARLIER(p[Preco]))))"), 36.0);
+        // No outer row context at all.
+        assert!(is_err("SUMX(p, EARLIER(p[Preco]))"));
+        assert!(is_err("EARLIEST(p[Preco])"));
+
+        // ADDCOLUMNS pushes a row context too, and EARLIER works on extension columns.
+        assert_eq!(
+            eval_num(&model, "MAXX(ADDCOLUMNS(p, \"R\", COUNTROWS(FILTER(p, p[Preco] >= EARLIER(p[Preco])))), [R])"),
+            3.0
+        );
+        assert_eq!(
+            eval_num(
+                &model,
+                "SUMX(ADDCOLUMNS(p, \"D\", p[Preco] * 10), \
+                 COUNTROWS(FILTER(ADDCOLUMNS(p, \"D\", p[Preco] * 10), [D] < EARLIER([D]))))"
+            ),
+            3.0
+        );
+    }
+
+    #[test]
+    fn test_iterators_row_context_vs_context_transition() {
+        let model = table_fns_model();
+        // Iterators add a row context only; the filter context is unchanged...
+        assert_eq!(eval_num(&model, "SUMX(p, COUNTROWS(p))"), 9.0);
+        // ...until CALCULATE / a measure reference transitions it.
+        assert_eq!(eval_num(&model, "SUMX(p, CALCULATE(COUNTROWS(p)))"), 3.0);
+        // Context transition applies *every* row context on the stack, not only the innermost:
+        // (A,1)=15, (A,2)=20, (B,3)=40, the other (Cat, ProdID) pairs are blank. Innermost-only
+        // transition would give 150.
+        assert_eq!(eval_num(&model, "SUMX(VALUES(p[Cat]), SUMX(VALUES(p[ProdID]), [Total]))"), 75.0);
     }
 
     #[test]
