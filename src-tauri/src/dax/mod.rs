@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod duckdb_load;
 pub mod evaluator;
 pub mod functions;
 pub mod lexer;
@@ -664,6 +665,13 @@ pub struct DaxTableInput {
     /// `"text" | "number" | "date" | "boolean" | "currency" | "percentage"`.
     #[serde(default)]
     pub column_types: Vec<Option<String>>,
+    /// When set, this table's data comes from the DuckDB table of this name
+    /// (ALL rows, not the frontend's `PREVIEW_ROW_LIMIT`-capped preview).
+    /// `rows` is then ignored (the frontend sends `[]`). Tables without a
+    /// backing DuckDB table (sample data, manual entry, inline REST, etc.)
+    /// keep using `rows`. See `docs/RUST_ENGINE_2.md` §3 step 2.
+    #[serde(default)]
+    pub duckdb_table: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -726,6 +734,10 @@ pub struct DaxModel {
     /// A propagação de filtros compara milhões de células por consulta; sem
     /// isso cada comparação de texto alocava um `to_lowercase()`.
     key_cache: HashMap<String, Vec<Vec<ValueKey>>>,
+    /// DuckDB version each DAX table key was last loaded at (only for
+    /// `duckdb_table`-backed tables), so a repeated sync with the same
+    /// version can reuse `tables`/`key_cache` instead of reloading.
+    duckdb_table_versions: HashMap<String, u64>,
 }
 
 impl Default for DaxModel {
@@ -741,6 +753,7 @@ impl DaxModel {
             relationships: Vec::new(),
             measures: HashMap::new(),
             key_cache: HashMap::new(),
+            duckdb_table_versions: HashMap::new(),
         }
     }
 
@@ -760,14 +773,65 @@ impl DaxModel {
     }
 
     pub fn sync_from_payload(&mut self, payload: DaxModelSyncPayload) {
-        self.tables.clear();
-        self.key_cache.clear();
+        self.sync_from_payload_with_duckdb(payload, HashMap::new());
+    }
+
+    /// Like `sync_from_payload`, but tables whose `duckdb_table` was
+    /// (re)loaded by the caller are passed in `freshly_loaded`
+    /// (duckdb-table-name.lowercase() -> (version, data)). Tables with a
+    /// `duckdb_table` NOT present in `freshly_loaded` are assumed unchanged
+    /// since the last sync and reuse the previously cached `DaxTableData`
+    /// when one exists; if none exists yet (first sync, or the DuckDB table
+    /// was missing), they fall back to the JSON `rows` sent in the payload,
+    /// with a warning on stderr — this is the project-reopen path, since
+    /// DuckDB is in-memory and does not yet have the table right after a
+    /// project loads (see `open_pbip_project`/`sync_model_to_rust` callers).
+    pub fn sync_from_payload_with_duckdb(
+        &mut self,
+        payload: DaxModelSyncPayload,
+        mut freshly_loaded: HashMap<String, (u64, DaxTableData)>,
+    ) {
+        let mut new_tables = HashMap::new();
+        let mut new_key_cache = HashMap::new();
+        let mut new_versions = HashMap::new();
         for t in payload.tables {
             let key = t.name.to_lowercase();
-            let data = DaxTableData::from_json_rows_typed(&t.name, t.columns, &t.rows, &t.column_types);
-            self.key_cache.insert(key.clone(), Self::build_key_cache(&data));
-            self.tables.insert(key, data);
+            if let Some(duckdb_name) = &t.duckdb_table {
+                let dkey = duckdb_name.to_lowercase();
+                if let Some((version, data)) = freshly_loaded.remove(&dkey) {
+                    new_key_cache.insert(key.clone(), Self::build_key_cache(&data));
+                    new_versions.insert(key.clone(), version);
+                    new_tables.insert(key, data);
+                    continue;
+                }
+                if let (Some(old_data), Some(&old_version)) =
+                    (self.tables.remove(&key), self.duckdb_table_versions.get(&key))
+                {
+                    // old_data is byte-for-byte the same as last sync (version
+                    // unchanged), so its previously computed key cache is
+                    // still valid; only rebuild if it somehow wasn't cached.
+                    let cache = self
+                        .key_cache
+                        .remove(&key)
+                        .unwrap_or_else(|| Self::build_key_cache(&old_data));
+                    new_key_cache.insert(key.clone(), cache);
+                    new_versions.insert(key.clone(), old_version);
+                    new_tables.insert(key, old_data);
+                    continue;
+                }
+                eprintln!(
+                    "aviso: tabela DuckDB '{}' (para a tabela do modelo '{}') não pôde ser carregada; \
+                     usando as linhas de amostra enviadas pelo frontend como fallback temporário",
+                    duckdb_name, t.name
+                );
+            }
+            let data = DaxTableData::from_json_rows_typed(&t.name, t.columns.clone(), &t.rows, &t.column_types);
+            new_key_cache.insert(key.clone(), Self::build_key_cache(&data));
+            new_tables.insert(key, data);
         }
+        self.tables = new_tables;
+        self.key_cache = new_key_cache;
+        self.duckdb_table_versions = new_versions;
         self.relationships = payload.relationships;
         self.measures.clear();
         for m in payload.measures {
@@ -1098,13 +1162,13 @@ mod propagation_tests {
         let mut m = DaxModel::new();
         m.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { duckdb_table: None,
                     name: "d_Categoria".into(),
                     columns: vec!["CatID".into(), "Nome".into()],
                     rows: rows(&["CatID", "Nome"], &[&[json!(1), json!("A")], &[json!(2), json!("B")]]),
                     column_types: vec![],
                 },
-                DaxTableInput {
+                DaxTableInput { duckdb_table: None,
                     name: "d_Produto".into(),
                     columns: vec!["ProdID".into(), "CatID".into(), "Cor".into()],
                     rows: rows(
@@ -1117,7 +1181,7 @@ mod propagation_tests {
                     ),
                     column_types: vec![],
                 },
-                DaxTableInput {
+                DaxTableInput { duckdb_table: None,
                     name: "f_Vendas".into(),
                     columns: vec!["ProdID".into(), "Valor".into()],
                     rows: rows(
@@ -1211,10 +1275,10 @@ mod bench_tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { name: "Dim1".into(), columns: vec!["Id".into(), "Grupo1".into()], rows: dim_rows("Grupo1"), column_types: vec![] },
-                DaxTableInput { name: "Dim2".into(), columns: vec!["Id".into(), "Grupo2".into()], rows: dim_rows("Grupo2"), column_types: vec![] },
-                DaxTableInput { name: "Dim3".into(), columns: vec!["Id".into(), "Grupo3".into()], rows: dim_rows("Grupo3"), column_types: vec![] },
-                DaxTableInput {
+                DaxTableInput { duckdb_table: None, name: "Dim1".into(), columns: vec!["Id".into(), "Grupo1".into()], rows: dim_rows("Grupo1"), column_types: vec![] },
+                DaxTableInput { duckdb_table: None, name: "Dim2".into(), columns: vec!["Id".into(), "Grupo2".into()], rows: dim_rows("Grupo2"), column_types: vec![] },
+                DaxTableInput { duckdb_table: None, name: "Dim3".into(), columns: vec!["Id".into(), "Grupo3".into()], rows: dim_rows("Grupo3"), column_types: vec![] },
+                DaxTableInput { duckdb_table: None,
                     name: "Fato".into(),
                     columns: vec!["Dim1Id".into(), "Dim2Id".into(), "Dim3Id".into(), "Valor".into()],
                     rows: fact_rows,

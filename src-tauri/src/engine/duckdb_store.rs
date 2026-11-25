@@ -3,9 +3,40 @@ use duckdb::types::ValueRef;
 use duckdb::{params_from_iter, Connection, ToSql};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+
+/// Per-table write counter, bumped every time a `CREATE OR REPLACE TABLE`
+/// lands (importers, ETL `apply`, refresh, connectors). Lives outside the
+/// `DuckDbStore` connection lock on purpose: `sync_model_to_rust` reads it
+/// without taking the DB connection lock, so it can decide whether a
+/// DuckDB-backed DAX table needs reloading before it even locks the
+/// connection (see `docs/RUST_ENGINE_2.md` §3 step 2).
+static TABLE_VERSIONS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+
+fn table_versions() -> &'static Mutex<HashMap<String, u64>> {
+    TABLE_VERSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Bumps and returns the new version for `table_name` (case-insensitive).
+pub fn bump_table_version(table_name: &str) -> u64 {
+    let mut m = table_versions().lock().unwrap_or_else(|e| e.into_inner());
+    let entry = m.entry(table_name.to_lowercase()).or_insert(0);
+    *entry += 1;
+    *entry
+}
+
+/// Current version of `table_name`, or `0` if it was never written through
+/// `build_table_payload`/`build_table_payload_pub`.
+pub fn get_table_version(table_name: &str) -> u64 {
+    table_versions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&table_name.to_lowercase())
+        .copied()
+        .unwrap_or(0)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -731,6 +762,7 @@ fn build_table_payload(
     );
     let preview = execute_select_query(conn, &preview_sql)?;
     let total = total_rows.max(0) as usize;
+    bump_table_version(safe_name);
 
     Ok(ImportedTablePayload {
         table_name: safe_name.to_string(),
