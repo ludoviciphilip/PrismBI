@@ -129,6 +129,31 @@ pub fn evaluate_ast(
 }
 
 fn eval_binary(op: &BinaryOp, l: &DaxValue, r: &DaxValue) -> Result<DaxValue, String> {
+    // Date ± number arithmetic yields a date (DAX stores dates as a serial day count
+    // internally; here dates are ISO text, so shift the civil date directly).
+    if matches!(op, BinaryOp::Add | BinaryOp::Sub) {
+        let l_date = match l {
+            DaxValue::Text(s) => parse_iso_ymd(s),
+            _ => None,
+        };
+        let r_date = match r {
+            DaxValue::Text(s) => parse_iso_ymd(s),
+            _ => None,
+        };
+        if let (Some((y, m, d)), None) = (l_date, r_date) {
+            let delta = r.as_f64().unwrap_or(0.0).round() as i32;
+            let signed = if matches!(op, BinaryOp::Sub) { -delta } else { delta };
+            let (ny, nm, nd) = add_days(y, m, d, signed);
+            return Ok(DaxValue::Text(format!("{:04}-{:02}-{:02}", ny, nm, nd)));
+        }
+        if let (None, Some((y, m, d))) = (l_date, r_date) {
+            if matches!(op, BinaryOp::Add) {
+                let delta = l.as_f64().unwrap_or(0.0).round() as i32;
+                let (ny, nm, nd) = add_days(y, m, d, delta);
+                return Ok(DaxValue::Text(format!("{:04}-{:02}-{:02}", ny, nm, nd)));
+            }
+        }
+    }
     match op {
         BinaryOp::Add => Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) + r.as_f64().unwrap_or(0.0))),
         BinaryOp::Sub => Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) - r.as_f64().unwrap_or(0.0))),
@@ -140,12 +165,11 @@ fn eval_binary(op: &BinaryOp, l: &DaxValue, r: &DaxValue) -> Result<DaxValue, St
             }
         }
         BinaryOp::Div => {
+            // DAX: raw division by zero yields Infinity/-Infinity/NaN, same as IEEE754 (it is
+            // DIVIDE(...) that safely returns BLANK/alternate). ISERROR/IFERROR treat the
+            // resulting non-finite number as an error.
             let den = r.as_f64().unwrap_or(0.0);
-            if den == 0.0 {
-                Ok(DaxValue::Blank)
-            } else {
-                Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) / den))
-            }
+            Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) / den))
         }
         BinaryOp::Concat => Ok(DaxValue::Text(format!(
             "{}{}",
@@ -189,13 +213,54 @@ fn compare_dax_values(l: &DaxValue, r: &DaxValue) -> i8 {
 }
 
 fn apply_context_transition(ctx: &FilterContext, rc: &RowContext<'_>) -> FilterContext {
+    apply_context_transition_cols(ctx, rc, None)
+}
+
+/// Like `apply_context_transition`, but when `only_cols` is given (e.g. the iterator source
+/// was `VALUES`/`DISTINCT`/`ALL` over a *single* column), only that column's value is used to
+/// narrow the context — not every column of the underlying physical table. Without this,
+/// transitioning on a representative row of `VALUES(d_Produto[Categoria])` would also pin
+/// `d_Produto[ProdutoID]` to that one representative product, collapsing the whole category
+/// down to a single row instead of letting the relationship propagate the category filter.
+fn apply_context_transition_cols(
+    ctx: &FilterContext,
+    rc: &RowContext<'_>,
+    only_cols: Option<&[String]>,
+) -> FilterContext {
     let mut next = ctx.clone();
-    for (idx, cname) in rc.table.columns.iter().enumerate() {
-        let mut set = HashSet::new();
-        set.insert(rc.table.rows[rc.row_idx][idx].canonical_key());
-        next.set_column_filter(&rc.table.name, cname, set);
+    match only_cols {
+        Some(cols) => {
+            for cname in cols {
+                if let Some(idx) = rc.table.get_col_idx(cname) {
+                    let mut set = HashSet::new();
+                    set.insert(rc.table.rows[rc.row_idx][idx].canonical_key());
+                    next.set_column_filter(&rc.table.name, cname, set);
+                }
+            }
+        }
+        None => {
+            for (idx, cname) in rc.table.columns.iter().enumerate() {
+                let mut set = HashSet::new();
+                set.insert(rc.table.rows[rc.row_idx][idx].canonical_key());
+                next.set_column_filter(&rc.table.name, cname, set);
+            }
+        }
     }
     next
+}
+
+/// If `expr` is `VALUES`/`DISTINCT`/`ALL` applied to a single `Table[Column]`, returns that
+/// column name so context transition over the resulting rows narrows only that column.
+fn single_column_transition_scope(expr: &Expr) -> Option<Vec<String>> {
+    if let Expr::Call { name, args } = expr {
+        let upper = name.to_uppercase();
+        if matches!(upper.as_str(), "VALUES" | "DISTINCT" | "ALL" | "ALLSELECTED") {
+            if let Some(Expr::TableColRef { column, .. }) = args.first() {
+                return Some(vec![column.clone()]);
+            }
+        }
+    }
+    None
 }
 
 fn eval_call(
@@ -229,7 +294,7 @@ fn eval_call(
             let b = eval_arg(args, 1, model, ctx, row_stack, vars)?;
             Ok(DaxValue::Boolean(a.as_bool() || b.as_bool()))
         }
-        "IF" => {
+        "IF" | "IF.EAGER" => {
             let cond = eval_arg(args, 0, model, ctx, row_stack, vars)?;
             if cond.as_bool() {
                 eval_arg(args, 1, model, ctx, row_stack, vars)
@@ -281,8 +346,16 @@ fn eval_call(
             Ok(DaxValue::Blank)
         }
         "IFERROR" => match eval_arg(args, 0, model, ctx, row_stack, vars) {
+            Ok(v) if matches!(&v, DaxValue::Number(n) if !n.is_finite()) => {
+                eval_arg(args, 1, model, ctx, row_stack, vars)
+            }
             Ok(v) => Ok(v),
             Err(_) => eval_arg(args, 1, model, ctx, row_stack, vars),
+        },
+        "ISERROR" => match evaluate_ast(&args[0], model, ctx, row_stack, vars) {
+            Ok(DaxValue::Number(n)) if !n.is_finite() => Ok(DaxValue::Boolean(true)),
+            Ok(_) => Ok(DaxValue::Boolean(false)),
+            Err(_) => Ok(DaxValue::Boolean(true)),
         },
         "ABS" => Ok(DaxValue::Number(
             eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0).abs(),
@@ -300,7 +373,7 @@ fn eval_call(
         "SQRT" => {
             let n = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
             if n < 0.0 {
-                Ok(DaxValue::Blank)
+                Err("SQRT: número negativo".to_string())
             } else {
                 Ok(DaxValue::Number(n.sqrt()))
             }
@@ -327,7 +400,16 @@ fn eval_call(
                 "TOTALQTD" => "QTD",
                 _ => "YTD",
             };
-            apply_period_to_date(model, ctx, &mut next_ctx, table, column, mode);
+            let year_end = if fname == "TOTALYTD" {
+                args.get(2)
+                    .map(|e| evaluate_ast(e, model, ctx, row_stack, vars))
+                    .transpose()?
+                    .map(|v| parse_fiscal_year_end(&v.as_display_string()))
+                    .unwrap_or((12, 31))
+            } else {
+                (12, 31)
+            };
+            apply_period_to_date(model, ctx, &mut next_ctx, table, column, mode, year_end);
             for filter_expr in &args[2..] {
                 apply_calculate_modifier(filter_expr, model, ctx, &mut next_ctx, row_stack, vars)?;
             }
@@ -381,42 +463,55 @@ fn eval_call(
             }
             let (table_eval, row_indices, rank_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
             let table_data = table_eval.as_ref();
-            let target_val = if args.len() >= 3 {
-                evaluate_ast(&args[2], model, ctx, row_stack, vars)?
-            } else {
-                evaluate_ast(&args[1], model, ctx, row_stack, vars)?
+            // 3rd arg (value) is optional / can be an omitted placeholder (Expr::Blank);
+            // when absent, the expression itself (2nd arg) supplies the value to rank.
+            let value_expr = match args.get(2) {
+                Some(Expr::Blank) | None => &args[1],
+                Some(e) => e,
             };
+            let target_val = evaluate_ast(value_expr, model, ctx, row_stack, vars)?;
             let Some(target_num) = (if target_val.is_blank() { None } else { target_val.as_f64() }) else {
                 return Ok(DaxValue::Blank);
             };
-            let ascending = if let Some(ord_expr) = args.get(3) {
-                match ord_expr {
-                    Expr::Ident(s) => s.eq_ignore_ascii_case("ASC"),
-                    _ => evaluate_ast(ord_expr, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0) == 1.0,
-                }
-            } else {
-                false
+            let ascending = match args.get(3) {
+                Some(Expr::Ident(s)) => s.eq_ignore_ascii_case("ASC"),
+                Some(Expr::Blank) | None => false,
+                Some(ord_expr) => evaluate_ast(ord_expr, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0) == 1.0,
             };
+            let dense = match args.get(4) {
+                Some(Expr::Ident(s)) => s.eq_ignore_ascii_case("DENSE"),
+                Some(Expr::Text(s)) => s.eq_ignore_ascii_case("DENSE"),
+                _ => false,
+            };
+            let transition_scope = single_column_transition_scope(&args[0]);
 
             let mut scores = Vec::new();
             for r_idx in row_indices {
+                let row_ctx = RowContext { table: table_data, row_idx: r_idx };
+                let eff_ctx = apply_context_transition_cols(&rank_ctx, &row_ctx, transition_scope.as_deref());
                 let mut next_stack = row_stack.to_vec();
-                next_stack.push(RowContext {
-                    table: table_data,
-                    row_idx: r_idx,
-                });
-                let v = evaluate_ast(&args[1], model, &rank_ctx, &next_stack, vars)?;
-                if !v.is_blank() {
-                    if let Some(n) = v.as_f64() {
-                        scores.push(n);
-                    }
-                }
+                next_stack.push(row_ctx);
+                let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
+                // BLANK is treated as 0 in RANKX comparisons (per dax.guide), not skipped.
+                scores.push(if v.is_blank() { 0.0 } else { v.as_f64().unwrap_or(0.0) });
             }
-            let better = scores
-                .iter()
-                .filter(|&&s| if ascending { s < target_num - 1e-9 } else { s > target_num + 1e-9 })
-                .count();
-            Ok(DaxValue::Number((better + 1) as f64))
+
+            if dense {
+                let mut better: Vec<f64> = scores
+                    .iter()
+                    .copied()
+                    .filter(|&s| if ascending { s < target_num - 1e-9 } else { s > target_num + 1e-9 })
+                    .collect();
+                better.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                better.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+                Ok(DaxValue::Number((better.len() + 1) as f64))
+            } else {
+                let better = scores
+                    .iter()
+                    .filter(|&&s| if ascending { s < target_num - 1e-9 } else { s > target_num + 1e-9 })
+                    .count();
+                Ok(DaxValue::Number((better + 1) as f64))
+            }
         }
         "SUM" | "AVERAGE" | "AVERAGEA" | "MIN" | "MINA" | "MAX" | "MAXA"
         | "COUNT" | "COUNTA" | "COUNTBLANK" | "DISTINCTCOUNT" | "DISTINCTCOUNTNOBLANK"
@@ -495,12 +590,15 @@ fn eval_call(
             }
             let (table_eval, row_indices, iter_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
             let table_data = table_eval.as_ref();
+            let transition_scope = single_column_transition_scope(&args[0]);
             if fname == "COUNTAX" {
                 let mut cnt = 0usize;
                 for r_idx in row_indices {
+                    let row_ctx = RowContext { table: table_data, row_idx: r_idx };
+                    let eff_ctx = apply_context_transition_cols(&iter_ctx, &row_ctx, transition_scope.as_deref());
                     let mut next_stack = row_stack.to_vec();
-                    next_stack.push(RowContext { table: table_data, row_idx: r_idx });
-                    let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
+                    next_stack.push(row_ctx);
+                    let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
                     if !v.is_blank() {
                         cnt += 1;
                     }
@@ -509,12 +607,11 @@ fn eval_call(
             }
             let mut vals = Vec::new();
             for r_idx in row_indices {
+                let row_ctx = RowContext { table: table_data, row_idx: r_idx };
+                let eff_ctx = apply_context_transition_cols(&iter_ctx, &row_ctx, transition_scope.as_deref());
                 let mut next_stack = row_stack.to_vec();
-                next_stack.push(RowContext {
-                    table: table_data,
-                    row_idx: r_idx,
-                });
-                let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
+                next_stack.push(row_ctx);
+                let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
                 if !v.is_blank() {
                     if let Some(n) = v.as_f64() {
                         vals.push(n);
@@ -663,14 +760,18 @@ fn eval_call(
             Ok(DaxValue::Boolean(is_direct))
         }
         "ISCROSSFILTERED" => {
-            let Some(Expr::TableColRef { table, column }) = args.first() else {
+            let table_name = match args.first() {
+                Some(Expr::TableColRef { table, .. }) => Some(table.clone()),
+                Some(Expr::Ident(t)) => Some(t.clone()),
+                _ => None,
+            };
+            let Some(table) = table_name else {
                 return Ok(DaxValue::Boolean(false));
             };
-            if let Some(tbl) = model.get_table(table) {
-                let vis_count = model.get_visible_row_indices(table, ctx).len();
-                let direct = ctx.filters.get(&tbl.name.to_lowercase()).is_some_and(|c| !c.is_empty());
+            if let Some(tbl) = model.get_table(&table) {
+                let vis_count = model.get_visible_row_indices(&table, ctx).len();
+                let direct = ctx.filters.get(&tbl.name.to_lowercase()).is_some_and(|c| c.values().any(|s| !s.is_empty()));
                 let is_filtered = direct || vis_count < tbl.rows.len();
-                let _ = column;
                 Ok(DaxValue::Boolean(is_filtered))
             } else {
                 Ok(DaxValue::Boolean(false))
@@ -833,6 +934,117 @@ fn eval_table_expr_owned<'a>(
     vars: &HashMap<String, DaxValue>,
 ) -> Result<(TableEval<'a>, Vec<usize>, FilterContext), String> {
     if let Expr::Call { name, args } = expr {
+        let upper = name.to_uppercase();
+        if matches!(upper.as_str(), "VALUES" | "DISTINCT" | "ALL" | "ALLSELECTED") {
+            if let Some(Expr::TableColRef { table, column }) = args.first() {
+                // VALUES/DISTINCT/ALL over a *single* column conceptually returns a
+                // one-column table. Materialize it as such (instead of returning the
+                // underlying physical table + representative row indices) so that any
+                // later context transition over its rows only narrows that one column,
+                // letting relationships propagate the rest instead of pinning every
+                // other column of an arbitrary representative row.
+                let tbl = model
+                    .get_table(table)
+                    .ok_or_else(|| format!("Tabela '{}' não encontrada", table))?;
+                let cidx = tbl
+                    .get_col_idx(column)
+                    .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", table, column))?;
+                let (source_indices, base_ctx): (Vec<usize>, FilterContext) =
+                    if upper == "VALUES" || upper == "DISTINCT" {
+                        (model.get_visible_row_indices(table, ctx), ctx.clone())
+                    } else {
+                        let mut cleared = ctx.clone();
+                        cleared.clear_column(&tbl.name, column);
+                        ((0..tbl.rows.len()).collect(), cleared)
+                    };
+                let mut seen = HashSet::new();
+                let mut values = Vec::new();
+                for r_idx in source_indices {
+                    let v = tbl.rows[r_idx][cidx].clone();
+                    if seen.insert(v.canonical_key()) {
+                        values.push(v);
+                    }
+                }
+                let mut col_index = HashMap::new();
+                col_index.insert(column.to_lowercase(), 0);
+                let rows: Vec<Vec<DaxValue>> = values.into_iter().map(|v| vec![v]).collect();
+                let n = rows.len();
+                let synth = DaxTableData {
+                    name: tbl.name.clone(),
+                    columns: vec![column.clone()],
+                    col_index,
+                    rows,
+                };
+                return Ok((TableEval::Owned(synth), (0..n).collect(), base_ctx));
+            }
+        }
+        if matches!(upper.as_str(), "UNION" | "INTERSECT" | "EXCEPT") && args.len() >= 2 {
+            let (t1, i1, c1) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let (t2, i2, _) = eval_table_expr_owned(&args[1], model, ctx, row_stack, vars)?;
+            let t1 = t1.as_ref();
+            let t2 = t2.as_ref();
+            let row_key = |t: &DaxTableData, idx: usize| -> String {
+                t.rows[idx].iter().map(|v| v.canonical_key()).collect::<Vec<_>>().join("\u{1}")
+            };
+            let rows: Vec<Vec<DaxValue>> = match upper.as_str() {
+                "UNION" => i1
+                    .iter()
+                    .map(|&i| t1.rows[i].clone())
+                    .chain(i2.iter().map(|&i| t2.rows[i].clone()))
+                    .collect(),
+                "INTERSECT" => {
+                    let keys2: HashSet<String> = i2.iter().map(|&i| row_key(t2, i)).collect();
+                    i1.iter()
+                        .filter(|&&i| keys2.contains(&row_key(t1, i)))
+                        .map(|&i| t1.rows[i].clone())
+                        .collect()
+                }
+                _ => {
+                    // EXCEPT
+                    let keys2: HashSet<String> = i2.iter().map(|&i| row_key(t2, i)).collect();
+                    i1.iter()
+                        .filter(|&&i| !keys2.contains(&row_key(t1, i)))
+                        .map(|&i| t1.rows[i].clone())
+                        .collect()
+                }
+            };
+            let n = rows.len();
+            let synth = DaxTableData {
+                name: format!("{}_{}", upper, t1.name),
+                columns: t1.columns.clone(),
+                col_index: t1.col_index.clone(),
+                rows,
+            };
+            return Ok((TableEval::Owned(synth), (0..n).collect(), c1));
+        }
+        if upper == "CROSSJOIN" && args.len() >= 2 {
+            let (t1, i1, c1) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let (t2, i2, _) = eval_table_expr_owned(&args[1], model, ctx, row_stack, vars)?;
+            let t1 = t1.as_ref();
+            let t2 = t2.as_ref();
+            let mut columns: Vec<String> = t1.columns.iter().map(|c| format!("{}.{}", t1.name, c)).collect();
+            columns.extend(t2.columns.iter().map(|c| format!("{}.{}", t2.name, c)));
+            let mut col_index = HashMap::new();
+            for (idx, c) in columns.iter().enumerate() {
+                col_index.insert(c.to_lowercase(), idx);
+            }
+            let mut rows = Vec::with_capacity(i1.len() * i2.len());
+            for &a in &i1 {
+                for &b in &i2 {
+                    let mut row = t1.rows[a].clone();
+                    row.extend(t2.rows[b].clone());
+                    rows.push(row);
+                }
+            }
+            let n = rows.len();
+            let synth = DaxTableData {
+                name: format!("CROSSJOIN_{}_{}", t1.name, t2.name),
+                columns,
+                col_index,
+                rows,
+            };
+            return Ok((TableEval::Owned(synth), (0..n).collect(), c1));
+        }
         if name.eq_ignore_ascii_case("GENERATESERIES") {
             let start = args
                 .first()
@@ -895,6 +1107,53 @@ fn eval_table_expr<'a>(
                 .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
             let indices = model.get_visible_row_indices(tname, ctx);
             Ok((tbl, indices, ctx.clone()))
+        }
+        Expr::Call { name, args } if name.eq_ignore_ascii_case("RELATEDTABLE") => {
+            let tname = extract_table_name(args.first())?;
+            let tbl = model
+                .get_table(&tname)
+                .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
+            let Some(rc) = row_stack.last() else {
+                let indices = model.get_visible_row_indices(&tname, ctx);
+                return Ok((tbl, indices, ctx.clone()));
+            };
+            // Find the active relationship where the current row's table is the "one"
+            // side (rel.to_table) and the target is the "many" side (rel.from_table).
+            let rel = model.relationships.iter().find(|r| {
+                r.is_active
+                    && r.to_table.eq_ignore_ascii_case(&rc.table.name)
+                    && r.from_table.eq_ignore_ascii_case(&tname)
+            });
+            let indices = if let Some(rel) = rel {
+                match (rc.table.get_col_idx(&rel.to_column), tbl.get_col_idx(&rel.from_column)) {
+                    (Some(to_cidx), Some(from_cidx)) => {
+                        let key = rc.table.rows[rc.row_idx][to_cidx].canonical_key();
+                        model
+                            .get_visible_row_indices(&tname, ctx)
+                            .into_iter()
+                            .filter(|&i| tbl.rows[i][from_cidx].canonical_key() == key)
+                            .collect()
+                    }
+                    _ => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            };
+            Ok((tbl, indices, ctx.clone()))
+        }
+        Expr::Call { name, args } if name.eq_ignore_ascii_case("CALCULATETABLE") => {
+            if args.is_empty() {
+                return Err("CALCULATETABLE requer ao menos 1 argumento".to_string());
+            }
+            let mut next_ctx = if let Some(rc) = row_stack.last() {
+                apply_context_transition(ctx, rc)
+            } else {
+                ctx.clone()
+            };
+            for filter_expr in &args[1..] {
+                apply_calculate_modifier(filter_expr, model, ctx, &mut next_ctx, row_stack, vars)?;
+            }
+            eval_table_expr(&args[0], model, &next_ctx, &[], vars)
         }
         Expr::Call { name, args } if name.eq_ignore_ascii_case("ALL") || name.eq_ignore_ascii_case("ALLSELECTED") => {
             match args.first() {
@@ -977,20 +1236,35 @@ fn eval_table_expr<'a>(
             }
             let ascending = args.get(3).is_some_and(|e| matches!(e, Expr::Ident(s) if s.eq_ignore_ascii_case("ASC")));
             if let Some(ord_expr) = args.get(2) {
-                let mut scored: Vec<(usize, f64)> = Vec::with_capacity(indices.len());
+                let mut scored: Vec<(usize, DaxValue)> = Vec::with_capacity(indices.len());
                 for r_idx in indices {
                     let mut next_stack = row_stack.to_vec();
                     next_stack.push(RowContext { table: tbl, row_idx: r_idx });
-                    let val = evaluate_ast(ord_expr, model, &base_ctx, &next_stack, vars)?
-                        .as_f64()
-                        .unwrap_or(f64::NEG_INFINITY);
+                    let val = evaluate_ast(ord_expr, model, &base_ctx, &next_stack, vars)?;
                     scored.push((r_idx, val));
                 }
                 scored.sort_by(|a, b| {
-                    let ord = a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal);
+                    let ord = compare_dax_values(&a.1, &b.1);
+                    let ord = match ord {
+                        o if o < 0 => std::cmp::Ordering::Less,
+                        o if o > 0 => std::cmp::Ordering::Greater,
+                        _ => std::cmp::Ordering::Equal,
+                    };
                     if ascending { ord } else { ord.reverse() }
                 });
-                let kept = scored.into_iter().take(top_n).map(|(i, _)| i).collect();
+                // TOPN includes ties at the N-th boundary value, so the result can have
+                // more than N rows (per the official TOPN semantics).
+                let kept: Vec<usize> = if scored.len() > top_n {
+                    let boundary = scored[top_n - 1].1.clone();
+                    scored
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(i, (_, v))| *i < top_n || v.dax_equals(&boundary))
+                        .map(|(_, (idx, _))| idx)
+                        .collect()
+                } else {
+                    scored.into_iter().map(|(i, _)| i).collect()
+                };
                 Ok((tbl, kept, base_ctx))
             } else {
                 Ok((tbl, indices.into_iter().take(top_n).collect(), base_ctx))
@@ -1101,6 +1375,31 @@ fn apply_calculate_modifier(
                 }
                 "KEEPFILTERS" => {
                     if let Some(inner) = args.first() {
+                        if let Some((tbl_name, col_name)) = find_primary_table_col(inner) {
+                            if let Some(tbl) = model.get_table(&tbl_name) {
+                                if let Some(cidx) = tbl.get_col_idx(&col_name) {
+                                    let mut allowed = HashSet::new();
+                                    for r_idx in 0..tbl.rows.len() {
+                                        let rc = RowContext { table: tbl, row_idx: r_idx };
+                                        let v = evaluate_ast(inner, model, outer_ctx, std::slice::from_ref(&rc), vars)?;
+                                        if v.as_bool() {
+                                            allowed.insert(tbl.rows[r_idx][cidx].canonical_key());
+                                        }
+                                    }
+                                    // KEEPFILTERS intersects with any existing filter on the same
+                                    // column instead of replacing it (unlike a bare CALCULATE filter).
+                                    if let Some(existing) = outer_ctx
+                                        .filters
+                                        .get(&tbl.name.to_lowercase())
+                                        .and_then(|m| m.get(&col_name.to_lowercase()))
+                                    {
+                                        allowed = allowed.intersection(existing).cloned().collect();
+                                    }
+                                    next_ctx.set_column_filter(&tbl.name, &col_name, allowed);
+                                    return Ok(());
+                                }
+                            }
+                        }
                         return apply_calculate_modifier(inner, model, outer_ctx, next_ctx, row_stack, vars);
                     }
                     return Ok(());
@@ -1196,7 +1495,16 @@ fn apply_calculate_modifier(
                             "DATESQTD" => "QTD",
                             _ => "YTD",
                         };
-                        apply_period_to_date(model, outer_ctx, next_ctx, table, column, mode);
+                        let year_end = if upper == "DATESYTD" {
+                            args.get(1)
+                                .map(|e| evaluate_ast(e, model, outer_ctx, row_stack, vars))
+                                .transpose()?
+                                .map(|v| parse_fiscal_year_end(&v.as_display_string()))
+                                .unwrap_or((12, 31))
+                        } else {
+                            (12, 31)
+                        };
+                        apply_period_to_date(model, outer_ctx, next_ctx, table, column, mode, year_end);
                     }
                     return Ok(());
                 }
@@ -1265,6 +1573,20 @@ fn apply_calculate_modifier(
                                 .map(|&i| tbl.rows[i][0].canonical_key())
                                 .collect();
                             next_ctx.set_column_filter(&tbl.name, first_col, allowed);
+                        }
+                    }
+                    return Ok(());
+                }
+                "FIRSTNONBLANK" | "LASTNONBLANK" => {
+                    if let Some(Expr::TableColRef { table, column }) = args.first() {
+                        let picked = eval_call(&upper, args, model, outer_ctx, row_stack, vars)?;
+                        if let Some(tbl) = model.get_table(table) {
+                            let mut allowed = HashSet::new();
+                            if !picked.is_blank() {
+                                allowed.insert(picked.canonical_key());
+                            }
+                            next_ctx.clear_table(&tbl.name);
+                            next_ctx.set_column_filter(&tbl.name, column, allowed);
                         }
                     }
                     return Ok(());
@@ -1452,6 +1774,29 @@ fn apply_complete_period_shift(
     next_ctx.set_column_filter(&tbl.name, col_name, allowed);
 }
 
+fn parse_fiscal_year_end(s: &str) -> (u32, u32) {
+    let parts: Vec<&str> = s.trim().splitn(2, '-').collect();
+    if parts.len() == 2 {
+        if let (Ok(m), Ok(d)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+            if (1..=12).contains(&m) && (1..=31).contains(&d) {
+                return (m, d);
+            }
+        }
+    }
+    (12, 31)
+}
+
+/// Fiscal year "label" (the calendar year in which the fiscal year ends) for a date,
+/// given a fiscal year_end (month, day). Dates after the fiscal year end belong to the
+/// fiscal year ending the following calendar year.
+fn fiscal_end_year(y: i32, m: u32, d: u32, year_end: (u32, u32)) -> i32 {
+    if (m, d) <= year_end {
+        y
+    } else {
+        y + 1
+    }
+}
+
 fn apply_period_to_date(
     model: &DaxModel,
     outer_ctx: &FilterContext,
@@ -1459,6 +1804,7 @@ fn apply_period_to_date(
     table_name: &str,
     col_name: &str,
     mode: &str, // "MTD" | "QTD" | "YTD"
+    year_end: (u32, u32),
 ) {
     let Some(tbl) = model.get_table(table_name) else { return };
     let Some(cidx) = tbl.get_col_idx(col_name) else { return };
@@ -1478,6 +1824,7 @@ fn apply_period_to_date(
         return;
     };
     let max_q = (max_m - 1) / 3;
+    let max_fy = fiscal_end_year(max_y, max_m, max_d, year_end);
 
     let mut allowed = HashSet::new();
     for row in &tbl.rows {
@@ -1486,7 +1833,9 @@ fn apply_period_to_date(
             let in_period = match mode {
                 "MTD" => y == max_y && m == max_m && d <= max_d,
                 "QTD" => y == max_y && ((m - 1) / 3) == max_q && (m, d) <= (max_m, max_d),
-                _ => y == max_y && (m, d) <= (max_m, max_d),
+                _ => {
+                    fiscal_end_year(y, m, d, year_end) == max_fy && (y, m, d) <= (max_y, max_m, max_d)
+                }
             };
             if in_period {
                 allowed.insert(row[cidx].canonical_key());
@@ -1737,7 +2086,10 @@ fn eval_lookupvalue(
             let candidate = row[res_cidx].clone();
             if let Some(ref prev) = found {
                 if !prev.dax_equals(&candidate) {
-                    return Ok(alternate);
+                    if has_alternate {
+                        return Ok(alternate);
+                    }
+                    return Err("LOOKUPVALUE: múltiplas linhas correspondentes com valores diferentes".to_string());
                 }
             } else {
                 found = Some(candidate);
@@ -1787,6 +2139,28 @@ fn eval_column_agg(
         return Ok(DaxValue::Number(distinct.len() as f64));
     }
 
+    // MIN/MAX compare chronologically for date-typed (ISO text) columns and return the
+    // original value (not coerced to Number). MINA/MAXA keep numeric boolean coercion below.
+    if matches!(func, "MIN" | "MAX") {
+        let values: Vec<&DaxValue> = visible
+            .iter()
+            .map(|&i| &tbl.rows[i][cidx])
+            .filter(|v| !v.is_blank())
+            .collect();
+        if values.is_empty() {
+            return Ok(DaxValue::Blank);
+        }
+        let want_min = func == "MIN";
+        let mut best = values[0];
+        for v in &values[1..] {
+            let ord = compare_dax_values(v, best);
+            if (want_min && ord < 0) || (!want_min && ord > 0) {
+                best = v;
+            }
+        }
+        return Ok(best.clone());
+    }
+
     let nums: Vec<f64> = visible
         .iter()
         .filter_map(|&i| {
@@ -1812,8 +2186,8 @@ fn eval_column_agg(
     let out = match func {
         "SUM" => Some(nums.iter().sum()),
         "AVERAGE" | "AVERAGEA" => Some(nums.iter().sum::<f64>() / nums.len() as f64),
-        "MIN" | "MINA" => Some(nums.iter().copied().fold(f64::INFINITY, f64::min)),
-        "MAX" | "MAXA" => Some(nums.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
+        "MINA" => Some(nums.iter().copied().fold(f64::INFINITY, f64::min)),
+        "MAXA" => Some(nums.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
         "MEDIAN" => calc_median(&nums),
         "STDEV.S" => calc_stdev(&nums, true),
         "STDEV.P" => calc_stdev(&nums, false),

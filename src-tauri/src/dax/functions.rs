@@ -266,6 +266,7 @@ fn format_dax_value(val: &DaxValue, pattern: &str) -> String {
             out = out.replace("MMM", MONTHS_SHORT_PT[m_idx]);
             out = out.replace("mmm", MONTHS_SHORT_PT[m_idx]);
             out = out.replace("MM", &format!("{:02}", m));
+            out = out.replace("mm", &format!("{:02}", m));
             out = out.replace("dd", &format!("{:02}", d));
             out = out.replace("DD", &format!("{:02}", d));
             return out;
@@ -284,11 +285,17 @@ fn format_dax_value(val: &DaxValue, pattern: &str) -> String {
         return format!("$ {}", format_number_grouped(num, 2));
     }
     if lower == "percent" || p_trimmed.contains('%') {
-        let decimals = p_trimmed
-            .split('.')
-            .nth(1)
-            .map(|s| s.chars().filter(|&c| c == '0' || c == '#').count())
-            .unwrap_or(2);
+        let decimals = if p_trimmed.contains('.') {
+            p_trimmed
+                .split('.')
+                .nth(1)
+                .map(|s| s.chars().filter(|&c| c == '0' || c == '#').count())
+                .unwrap_or(0)
+        } else if lower == "percent" {
+            2
+        } else {
+            0
+        };
         return format!("{:.prec$}%", num * 100.0, prec = decimals);
     }
     if lower == "standard" || lower == "fixed" || p_trimmed.contains('#') || p_trimmed.contains('0') {
@@ -301,6 +308,64 @@ fn format_dax_value(val: &DaxValue, pattern: &str) -> String {
     }
 
     val.as_display_string()
+}
+
+/// Tokens for a simplified wildcard pattern as used by DAX SEARCH/LIKE:
+/// `*` matches any run of characters (incl. empty), `?` matches exactly
+/// one character, and `~` escapes the following character as a literal.
+enum WildcardToken {
+    Star,
+    Any,
+    Lit(char),
+}
+
+fn tokenize_wildcard(pattern: &str) -> Vec<WildcardToken> {
+    let mut out = Vec::new();
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '~' => {
+                if let Some(n) = chars.next() {
+                    out.push(WildcardToken::Lit(n));
+                } else {
+                    out.push(WildcardToken::Lit('~'));
+                }
+            }
+            '*' => out.push(WildcardToken::Star),
+            '?' => out.push(WildcardToken::Any),
+            other => out.push(WildcardToken::Lit(other)),
+        }
+    }
+    out
+}
+
+fn wildcard_match_from(hay: &[char], hi: usize, tok: &[WildcardToken], ti: usize) -> bool {
+    if ti == tok.len() {
+        return true;
+    }
+    match &tok[ti] {
+        WildcardToken::Lit(c) => hi < hay.len() && hay[hi] == *c && wildcard_match_from(hay, hi + 1, tok, ti + 1),
+        WildcardToken::Any => hi < hay.len() && wildcard_match_from(hay, hi + 1, tok, ti + 1),
+        WildcardToken::Star => {
+            for k in hi..=hay.len() {
+                if wildcard_match_from(hay, k, tok, ti + 1) {
+                    return true;
+                }
+            }
+            false
+        }
+    }
+}
+
+/// Finds the first char offset in `hay` where `tok` matches (DAX SEARCH semantics:
+/// the pattern need not consume the rest of the haystack).
+fn wildcard_find(hay: &[char], tok: &[WildcardToken]) -> Option<usize> {
+    for start in 0..=hay.len() {
+        if wildcard_match_from(hay, start, tok, 0) {
+            return Some(start);
+        }
+    }
+    None
 }
 
 /// Evaluates pure scalar DAX functions (Math/Trig, Text, Date/Time, Info, Financial).
@@ -373,8 +438,8 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
         }
         "CEILING" | "ISO.CEILING" => {
             let n = arg_f64(0, 0.0);
-            let sig = arg_f64(1, 1.0).abs();
-            if sig < 1e-12 {
+            let sig = arg_f64(1, 1.0);
+            if sig.abs() < 1e-12 {
                 DaxValue::Number(0.0)
             } else {
                 DaxValue::Number((n / sig).ceil() * sig)
@@ -382,8 +447,8 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
         }
         "FLOOR" => {
             let n = arg_f64(0, 0.0);
-            let sig = arg_f64(1, 1.0).abs();
-            if sig < 1e-12 {
+            let sig = arg_f64(1, 1.0);
+            if sig.abs() < 1e-12 {
                 DaxValue::Number(0.0)
             } else {
                 DaxValue::Number((n / sig).floor() * sig)
@@ -638,17 +703,23 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             } else if args.len() >= 4 {
                 args[3].clone()
             } else {
-                DaxValue::Blank
+                return Err("FIND: texto não encontrado".to_string());
             }
         }
         "SEARCH" => {
             let needle = arg_str(0).to_lowercase();
             let haystack = arg_str(1).to_lowercase();
             let start = (arg_f64(2, 1.0).max(1.0) as usize).saturating_sub(1);
-            let tail: String = haystack.chars().skip(start).collect();
-            if let Some(byte_idx) = tail.find(&needle) {
-                let char_pos = tail[..byte_idx].chars().count() + start + 1;
-                DaxValue::Number(char_pos as f64)
+            let tail_chars: Vec<char> = haystack.chars().skip(start).collect();
+            let found = if needle.contains(['*', '?', '~']) {
+                let tokens = tokenize_wildcard(&needle);
+                wildcard_find(&tail_chars, &tokens)
+            } else {
+                let tail: String = tail_chars.iter().collect();
+                tail.find(&needle).map(|byte_idx| tail[..byte_idx].chars().count())
+            };
+            if let Some(char_offset) = found {
+                DaxValue::Number((char_offset + start + 1) as f64)
             } else if args.len() >= 4 {
                 args[3].clone()
             } else {
