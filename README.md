@@ -1,103 +1,113 @@
 <div align="center">
 
+<img src="./src-tauri/icons/128x128.png" width="96" height="96" alt="PrismBI" />
+
 # PrismBI
 
-**Business Intelligence nativo para Linux — leve, rápido e compatível com projetos Power BI (`.pbip` / `.pbix`)**
+**Native Business Intelligence for Linux — lightweight, fast, and compatible with Power BI (`.pbip` / `.pbix`) projects**
 
-[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.7.0-f59e0b?style=flat-square)](./package.json)
+🇺🇸 **English** • 🇧🇷 [Ler em Português](./README.pt-BR.md)
+
+[![Version](https://img.shields.io/badge/version-0.7.0-f59e0b?style=flat-square)](./package.json)
 [![CI](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml)
+[![Release](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
-[![Rust](https://img.shields.io/badge/Rust-Engine_DAX-000000?style=flat-square&logo=rust&logoColor=white)](./src-tauri)
-[![DuckDB](https://img.shields.io/badge/DuckDB-Embarcado-FFF000?style=flat-square&logo=duckdb&logoColor=black)](https://duckdb.org/)
-[![Licença](https://img.shields.io/badge/Licen%C3%A7a-Mutualist_v1.3-10b981?style=flat-square)](./LICENSE.md)
+[![Rust](https://img.shields.io/badge/Rust-DAX_Engine-000000?style=flat-square&logo=rust&logoColor=white)](./src-tauri)
+[![DuckDB](https://img.shields.io/badge/DuckDB-Embedded-FFF000?style=flat-square&logo=duckdb&logoColor=black)](https://duckdb.org/)
+[![License](https://img.shields.io/badge/License-Mutualist_v1.3-10b981?style=flat-square)](./LICENSE.md)
 
-[Funcionalidades](#-principais-funcionalidades) • [Prévia Visual](#-prévia-visual) • [Compatibilidade](./docs/COMPATIBILITY.md) • [Arquitetura](#-arquitetura) • [Como Executar](#-como-executar) • [Contribuindo](./CONTRIBUTING.md) • [Roadmap](./ROADMAP.md)
+[Key Features](#-key-features) • [Visual Preview](#-visual-preview) • [Compatibility](./docs/COMPATIBILITY.md) • [Architecture](#-architecture) • [Installation & Running](#-installation--running) • [Contributing](./CONTRIBUTING.md) • [Roadmap](./ROADMAP.md)
 
 </div>
 
 ---
 
-O **PrismBI** nasceu para resolver um dos maiores gargalos de quem usa Linux no dia a dia: analisar modelos semânticos, relatórios e dashboards com a mesma fluidez e familiaridade do **Power BI Desktop**, sem depender de máquinas virtuais Windows pesadas.
+**PrismBI** was built to solve one of the biggest daily bottlenecks for Linux users: analyzing semantic models, reports, and dashboards with the same fluidity and familiarity as **Power BI Desktop**, without relying on heavy Windows virtual machines.
 
-Construído com **Tauri v2 + Rust + DuckDB** no backend e **React + TypeScript + Apache ECharts** na interface, ele entrega inicialização rápida, baixo consumo de RAM e execução nativa em GTK/WebKitGTK.
+Powered by **Tauri v2 + Rust + DuckDB** on the backend and **React + TypeScript + Apache ECharts** on the frontend, it delivers fast startup, low memory usage, and native GTK/WebKitGTK performance.
 
 ---
 
-## 📸 Prévia Visual
+## 📸 Visual Preview
 
-### Visão de Relatório (Modo Escuro & Modo Claro)
+### Report View (Dark Mode & Light Mode)
 
-| Modo Escuro | Modo Claro |
+| Dark Mode | Light Mode |
 | :---: | :---: |
 | ![PrismBI Report View Dark Mode](./docs/images/report-dark.png) | ![PrismBI Report View Light Mode](./docs/images/report-light.png) |
 
-### Modelo Semântico (Esquema Estrela) & Consultas DAX
+### Semantic Model (Star Schema) & DAX Queries
 
-| Modelo Semântico & Relacionamentos | Estúdio de Consultas DAX |
+| Semantic Model & Relationships | DAX Query Studio |
 | :---: | :---: |
 | ![PrismBI Semantic Model View](./docs/images/model-view.png) | ![PrismBI DAX Query View](./docs/images/dax-query.png) |
 
 ---
 
-## ✨ Principais Funcionalidades
+## ✨ Key Features
 
-### 📂 Compatibilidade com Power BI (`.pbip` / `.pbix`)
-- **Importação nativa em Rust:** leitura direta de pastas `.pbip` (`*.SemanticModel` em formato **TMDL** + `*.Report` em formato **PBIR**) e arquivos `.pbix` (`DataModelSchema`, `Report/Layout` UTF-16LE e extração multi-query do `DataMashup`).
-- **Round-Trip `.pbip` (`v0.6.0`):** exportação preservando scripts Power Query (M), `columnCount` em cartões múltiplos, `advancedSlicerVisual` (`tiles`), `textbox`, `actionButton`, títulos, `filterConfig` em páginas/visuais e temas (`PrismTheme.json`), além de snapshots `.insight` e PDF.
-- **Fidelidade PBIR:** resolução correta de medidas renomeadas (`field.*.Property`), `columnCount` em cartões múltiplos, `filterConfig` em páginas/visuais, hierarquias de data, botões de ação (`actionButton`) e caixas de texto (`textbox`).
+### 📂 Power BI Compatibility (`.pbip` / `.pbix`)
+- **Native Rust Import:** direct reading of `.pbip` folders (`*.SemanticModel` in **TMDL** format + `*.Report` in **PBIR** format) and `.pbix` files (`DataModelSchema`, UTF-16LE `Report/Layout`, and multi-query `DataMashup` extraction).
+- **`.pbip` Round-Trip (`v0.6.0`):** export preserving Power Query (`M`) scripts, `columnCount` in multi-row cards, `advancedSlicerVisual` (`tiles`), `textbox`, `actionButton`, titles, page/visual `filterConfig`, and themes (`PrismTheme.json`), alongside `.insight` snapshots and PDF export.
+- **PBIR Fidelity:** accurate resolution of renamed measures (`field.*.Property`), multi-row card grids, page/visual filters, date hierarchies, action buttons, and rich textboxes.
 
-### 📊 Catálogo de Visuais Interativos
-- **Cartões & KPIs:** Cartão KPI simples e Cartão Múltiplo (`cardVisual`) com grade dinâmica (`columnCount`), unidades compactas (`Mil`, `Mi`, `Bi`) e coloração condicional por sinal positivo/negativo.
-- **Gráficos Analíticos (Apache ECharts):** Colunas, Colunas Empilhadas, Barras, Barras Empilhadas, Linhas, Área, Combinado (Coluna + Linha), Treemap, Dispersão e Medidor (Gauge).
-- **Pizza & Rosca:** total formatado exibido no centro da rosca, rótulos externos com valor e percentual e tooltips instantâneos.
-- **Funil & Cascata estilo Power BI:** Funil com `minSize` legível, topo `100%` e taxa de conversão no rodapé; Cascata real com variações positivas/negativas cruzando zero, linhas tracejadas conectoras e coluna `Total` final.
-- **Tabelas, Matrizes & Segmentadores:** Matriz Pivot com totais por linha/coluna, Tabela interativa com Drill-Through e Segmentadores no modo lista suspensa (`dropdown`) ou blocos clicáveis (`tiles`).
+### 📊 Interactive Visuals Catalog
+- **Cards & KPIs:** single KPI Card and Multi-Row Card (`cardVisual`) with dynamic grid (`columnCount`), compact number formatting (`K`, `M`, `B` / `Mil`, `Mi`, `Bi`), and positive/negative conditional coloring.
+- **Analytical Charts (Apache ECharts):** Column, Stacked Column, Bar, Stacked Bar, Line, Area, Combo (Column + Line), Treemap, Scatter, and Gauge.
+- **Pie & Donut:** formatted total displayed at the donut center, external labels with values and percentages, and instant tooltips.
+- **Power BI-Style Funnel & Waterfall:** Funnel with readable `minSize`, `100%` top stage, and footer conversion rate; true Waterfall with positive/negative variations crossing zero, dashed connector lines, and final `Total` column.
+- **Tables, Matrices & Slicers:** Pivot Matrix with row/column subtotals, interactive Table with Drill-Through, and Slicers supporting dropdown lists and clickable `tiles` mode.
 
-### ⚡ Motor Analítico em Rust + DuckDB (`v0.7.0`)
-- **DuckDB embarcado:** ingestão nativa rápida de **Excel (`.xlsx`/`.xls`)**, **CSV**, **Parquet**, **JSON** e endpoints **API REST (JSON)**, além de console SQL nativo.
-- **Atualização Real & Gestão de Tabelas:** botão **Atualizar Dados** que recarrega arquivos/fontes vinculados sem perder visuais, medidas ou relacionamentos — incluindo mapeamento de abas com nomes diferentes (ex.: aba `Fato` → `fLançamentos`), substituição de dados por outra planilha e renomeação completa de tabelas.
-- **Power Query (M) & Remapeamento Linux:** resolução automática de caminhos Windows → Linux em `.pbip` e suporte a `Table.RenameColumns`, `Table.RemoveColumns`, `Table.SelectColumns` e `Table.SelectRows`.
-- **98% de Conformidade DAX (474/484) & Motor Nativo em Rust (+165 funções):** avaliação nativa de `CALCULATE`, `SWITCH`, `RANKX`, `TREATAS`, `CONTAINSROW`, `GENERATESERIES`, `COALESCE`, `CONVERT`, família `IS*`, bit-shifts, matemática/trigonometria, texto (`FORMAT`, `MID`, `FIND`, `SEARCH`, `SUBSTITUTE`, `CONTAINSSTRING`), estatísticas/iteradores (`MEDIAN`, `PERCENTILE.*`, `STDEV.*`, `VAR.*`, `CONCATENATEX`), relacionamentos (`VALUES`, `DISTINCT`, `TOPN`, `LOOKUPVALUE`, `USERELATIONSHIP`, `CROSSFILTER`), financeiro (`PMT`, `PV`, `FV`, `NPER`, `NPV`, `IPMT`, `PPMT`, `SLN`, `SYD`, `DB`, `DDB`, `EFFECT`, `NOMINAL`, `RATE`), `PATH*` e Time Intelligence completo (`TOTALYTD`, `TOTALQTD`, `TOTALMTD`, `PARALLELPERIOD`, `DATESBETWEEN`, `DATESINPERIOD`, `FIRSTNONBLANK`/`LASTNONBLANK`, `OPENINGBALANCE*`/`CLOSINGBALANCE*`), além de 60+ DMVs `INFO.*` no motor TS. Veja a [Matriz de Compatibilidade](./docs/COMPATIBILITY.md).
-- **Análise Interativa:** Cross-filtering bidirecional ao clicar em qualquer visual, Matriz com hierarquia expansível em 2 níveis, Drill-Through entre páginas, Cálculos Visuais e telemetria real no Performance Analyzer.
+### ⚡ Rust + DuckDB Analytical Engine (`v0.7.0`)
+- **Embedded DuckDB:** fast native ingestion of **Excel (`.xlsx`/`.xls`)**, **CSV**, **Parquet**, **JSON**, and **REST API (JSON)** endpoints, plus a built-in native SQL console.
+- **Real Data Refresh & Table Management:** **Refresh Data** reloads linked files/sources without losing visuals, measures, or relationships — including mapping differently named Excel sheets (e.g., sheet `Fato` → table `fLançamentos`), replacing table data from another workbook, and full table renaming.
+- **Power Query (`M`) & Linux Path Remapping:** automatic Windows → Linux file path resolution inside `.pbip` projects and support for `Table.RenameColumns`, `Table.RemoveColumns`, `Table.SelectColumns`, and `Table.SelectRows`.
+- **98% DAX Compliance (474/484) & Native Rust Engine (165+ functions):** native evaluation of `CALCULATE`, `SWITCH`, `RANKX`, `TREATAS`, `CONTAINSROW`, `GENERATESERIES`, `COALESCE`, `CONVERT`, `IS*` family, bit-shifts, math/trigonometry, text (`FORMAT`, `MID`, `FIND`, `SEARCH`, `SUBSTITUTE`, `CONTAINSSTRING`), statistics & iterators (`MEDIAN`, `PERCENTILE.*`, `STDEV.*`, `VAR.*`, `CONCATENATEX`), relationships (`VALUES`, `DISTINCT`, `TOPN`, `LOOKUPVALUE`, `USERELATIONSHIP`, `CROSSFILTER`), financial functions (`PMT`, `PV`, `FV`, `NPER`, `NPV`, `IPMT`, `PPMT`, `SLN`, `SYD`, `DB`, `DDB`, `EFFECT`, `NOMINAL`, `RATE`), `PATH*`, and full Time Intelligence (`TOTALYTD`, `TOTALQTD`, `TOTALMTD`, `PARALLELPERIOD`, `DATESBETWEEN`, `DATESINPERIOD`, `FIRSTNONBLANK`/`LASTNONBLANK`, `OPENINGBALANCE*`/`CLOSINGBALANCE*`), plus 60+ `INFO.*` DMVs in the TS engine. See the full [Compatibility Matrix](./docs/COMPATIBILITY.md).
+- **Interactive Analysis:** bidirectional cross-filtering on click, 2-level expandable Matrix hierarchies, cross-page Drill-Through, Visual Calculations, and live telemetry in the Performance Analyzer.
 
-### 🛠️ Produtividade, Tela Inicial & Distribuição Linux
-- **Tela Inicial (`WelcomeScreen`) & Auto-Updater:** escolha começar um projeto em branco ou abrir `.pbip`, `.pbix`, `.insight` e sessões recentes ao iniciar, com **atualizador integrado no app** via GitHub Releases e validação SHA-256 (in-place para **AppImage** e download direto para `.deb`/`.rpm`).
-- **GitHub Actions CI/CD:** builds automáticas para Linux (**AppImage**, **`.deb`**, **`.rpm`**) além de manifestos em `packaging/` para **AUR (`prismbi-bin`)** e **Flatpak**.
-- **Edição Profissional no Canvas:** **Undo / Redo** (`Ctrl+Z`, `Ctrl+Y` e botões na Ribbon), **seleção múltipla** (`Shift`/`Ctrl` + clique, arraste em grupo, nudge com setas, `Delete` e barra flutuante de alinhamento/distribuição) e **Smart Snap Guides** a 60fps.
-- **Visualização de Dados & Modelo:** inspeção tabular, gerenciador de relacionamentos com autodetecção e suporte a Tabelas Calendário.
-- **Power Query / ETL, Medidas Rápidas & Biblioteca UDF:** transformações de dados, assistente de medidas rápidas e editor DAX com IntelliSense.
-- **Governança & Temas:** simulação de RLS/OLS, parâmetros What-If, gerenciador de temas claros/escuros e suporte a i18n (`PT`, `EN`, `ES`) e moedas (`BRL`, `USD`, `EUR`).
-- **Atalhos de Canvas:** zoom fluido com `Ctrl + =`, `Ctrl + -`, `Ctrl + 0` e `Ctrl + Scroll`, além de movimentação livre no canvas e modelo mantendo o botão do scroll pressionado e `Esc` para sair do Modo Apresentação.
+### 🛠️ Productivity, Welcome Screen & Linux Distribution
+- **Welcome Screen & In-App Auto-Updater:** start a blank model or open `.pbip`, `.pbix`, `.insight`, and recent sessions at launch, with a built-in **GitHub Releases auto-updater** and SHA-256 verification (in-place replacement for **AppImage**, direct download for `.deb`/`.rpm`).
+- **GitHub Actions CI/CD:** automated Linux release builds (**AppImage**, **`.deb`**, **`.rpm`**) plus packaging manifests in `packaging/` for **AUR (`prismbi-bin`)** and **Flatpak**.
+- **Pro Canvas Editing:** **Undo / Redo** (`Ctrl+Z`, `Ctrl+Y`, and Ribbon controls), **multi-select** (`Shift`/`Ctrl` + click, group drag, arrow-key nudge, `Delete`, and floating alignment/distribution toolbar), and **60fps Smart Snap Guides**.
+- **Data & Model Views:** tabular data inspector, relationship manager with auto-detection, and Calendar Table generator.
+- **Power Query / ETL, Quick Measures & UDF Library:** no-code data transformations, quick measure wizard, and DAX editor with IntelliSense.
+- **Governance & Theming:** RLS/OLS simulation, What-If parameters, light/dark theme manager, multi-language UI (`EN`, `PT`, `ES`), and currency formatting (`USD`, `BRL`, `EUR`).
+- **Canvas Shortcuts:** smooth zooming via `Ctrl + =`, `Ctrl + -`, `Ctrl + 0`, and `Ctrl + Scroll`, middle-mouse hold-and-drag panning across both Report Canvas and Semantic Model view, and `Esc` to exit Presentation Mode.
 
 ---
 
-## 🏗️ Arquitetura
+## 🏗️ Architecture
 
-| Camada | Tecnologia | Responsabilidade |
+| Layer | Technology | Responsibility |
 | :--- | :--- | :--- |
-| **Desktop Shell** | Tauri v2 (GTK / WebKitGTK) | Janela nativa leve para Linux e diálogos de arquivos do sistema |
-| **Core Backend** | Rust (`src-tauri/`) | Parsers `.pbip`/`.pbix`/TMDL/PBIR, carregador M e motor DAX nativo |
-| **Motor Colunar / SQL** | DuckDB (`bundled` + `parquet` + `json`) | Leitura nativa de `.xlsx`/`.csv`/`.parquet`/`.json`, armazenamento e SQL |
-| **Frontend & Canvas** | React 19 + TypeScript + Tailwind v4 + Zustand | Ribbon estilo Power BI, painéis de campos/filtros, canvas multi-página |
-| **Visualização** | Apache ECharts 6 + Lucide | Gráficos interativos responsivos em tema claro e escuro |
+| **Desktop Shell** | Tauri v2 (GTK / WebKitGTK) | Lightweight native Linux window and system file dialogs |
+| **Core Backend** | Rust (`src-tauri/`) | `.pbip`/`.pbix`/TMDL/PBIR parsers, M loader, and native DAX engine |
+| **Columnar / SQL Engine** | DuckDB (`bundled` + `parquet` + `json`) | Native ingestion of `.xlsx`/`.csv`/`.parquet`/`.json`, storage, and SQL |
+| **Frontend & Canvas** | React 19 + TypeScript + Tailwind v4 + Zustand | Power BI-style Ribbon, fields/filters panes, multi-page report canvas |
+| **Visualization** | Apache ECharts 6 + Lucide | Responsive interactive charts across light and dark modes |
 
 ---
 
-## 🚀 Como Executar
+## 🚀 Installation & Running
 
-### Pré-requisitos (Linux)
+### Pre-built Linux Packages
+Download the latest **AppImage**, **`.deb`**, or **`.rpm`** directly from [GitHub Releases](https://github.com/ludoviciphilip/PrismBI/releases).
+
+### Building from Source (Linux)
+
+#### Prerequisites
 - **Node.js** + **pnpm**
 - **Rust** (`rustup` / `cargo`)
-- Dependências de sistema do Tauri v2 (`webkit2gtk-4.1`, `libgtk-3-dev`, `librsvg2-dev`, etc. — consulte o [guia oficial do Tauri](https://v2.tauri.app/start/prerequisites/#linux)).
+- Tauri v2 Linux system dependencies (`webkit2gtk-4.1`, `libgtk-3-dev`, `librsvg2-dev`, etc. — see the [official Tauri guide](https://v2.tauri.app/start/prerequisites/#linux)).
 
-### Desenvolvimento
+#### Development
 
 ```bash
 pnpm install
 pnpm tauri dev
 ```
 
-### Build de Produção (AppImage / `.deb` / `.rpm` / binário)
+#### Production Build (AppImage / `.deb` / `.rpm` / binary)
 
 ```bash
 pnpm tauri build
@@ -105,25 +115,25 @@ pnpm tauri build
 
 ---
 
-## 🐧 Dicas para GPU NVIDIA + Wayland no Linux
+## 🐧 Linux NVIDIA + Wayland Tips
 
-Por padrão, o PrismBI utiliza aceleração por hardware (DMA-BUF) do WebKitGTK para manter o canvas fluido. Caso seu ambiente utilize drivers proprietários NVIDIA no Wayland e apresente tela branca ou falha de sincronização ao abrir a janela nativa, tente iniciar com:
+By default, PrismBI uses WebKitGTK hardware acceleration (DMA-BUF) for smooth canvas rendering. If you run proprietary NVIDIA drivers on Wayland and see a blank window or explicit sync errors on launch, start PrismBI with:
 
 ```bash
 __NV_DISABLE_EXPLICIT_SYNC=1 pnpm tauri dev
 ```
 
-Ou, em último caso, via XWayland ou renderização por software:
+Or fall back to XWayland or software DMA-BUF rendering:
 
 ```bash
 GDK_BACKEND=x11 pnpm tauri dev
-# ou:
+# or:
 WEBKIT_DISABLE_DMABUF_RENDERER=1 pnpm tauri dev
 ```
 
 ---
 
-## 🗺️ Roadmap & Licença
+## 🗺️ Roadmap & License
 
-- Veja as próximas entregas (`v0.5.0` a `v1.0.0`) em [ROADMAP.md](./ROADMAP.md).
-- Distribuído sob [The Mutualist License v1.3](./LICENSE.md) — originalmente inspirado na UI e engine DAX do [InsightHub](https://github.com/ludoviciphilip/Insight-Hub).
+- Check upcoming milestones (`v0.8.0` to `v1.0.0`) in [ROADMAP.md](./ROADMAP.md).
+- Distributed under [The Mutualist License v1.3](./LICENSE.md) — originally inspired by the UI and DAX engine of [InsightHub](https://github.com/ludoviciphilip/Insight-Hub).

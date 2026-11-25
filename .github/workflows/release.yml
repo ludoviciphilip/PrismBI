@@ -47,6 +47,8 @@ jobs:
         run: cargo test --lib
 
       - name: Build Tauri bundles (AppImage, deb, rpm)
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
         run: pnpm tauri build --bundles appimage,deb,rpm
 
       - name: Collect release artifacts & generate SHA256SUMS.txt
