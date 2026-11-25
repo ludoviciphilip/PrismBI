@@ -64,4 +64,10 @@ lines.push('');
 
 const out = path.join(root, 'docs/DAX_CONFORMANCE.md');
 fs.writeFileSync(out, lines.join('\n'));
+
+// Número exibido no app (tela inicial). Um teste garante que acompanha a baseline.
+fs.writeFileSync(
+  path.join(root, 'src/data/daxConformance.json'),
+  JSON.stringify({ engine: 'rust', passing: rust.passing, total: rust.total }, null, 2) + '\n'
+);
 console.log(`Escrito ${path.relative(root, out)} — Rust ${rust.passing}/${rust.total}, TS ${ts.passing}/${ts.total}`);
