@@ -17,6 +17,9 @@ import {
   Calculator,
   ChevronRight,
   ChevronDown,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
 } from 'lucide-react';
 import { Visual, Filter as BiFilter } from '../../types/bi';
 import { useBiStore } from '../../store/useBiStore';
@@ -26,6 +29,16 @@ import { ErrorBoundary } from '../shared/ErrorBoundary';
 import { VisualCalculationModal } from '../modals/VisualCalculationModal';
 import { useTranslation } from '../../i18n';
 import { getEffectiveCanvasSize } from '../../engine/shared/canvasPresets';
+import { applyVisualSort, fieldMatches, sortCategoryLabels } from '../../engine/visualSort';
+import { VisualSortMenu } from './VisualSortMenu';
+import {
+  sortMenuKind,
+  getSortableFields,
+  getEffectiveSort,
+  patchForField,
+  patchForOrder,
+  patchForHeaderClick,
+} from './visualSortOptions';
 
 export interface SnapGuide {
   orientation: 'v' | 'h';
@@ -381,7 +394,9 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
   const nativeCacheKey = useMemo(() => {
     if (!supportsNativeRustQuery) return '';
-    return `${dataVersion}|${tables.length}:${measures.length}|${visual.id}|${visual.type}|${JSON.stringify(visual.dataConfig)}|${JSON.stringify(filters)}`;
+    // Sort/limit are applied client-side after the native query, so they don't invalidate it.
+    const { sortField: _sf, sortOrder: _so, limit: _lim, ...nativeDc } = visual.dataConfig;
+    return `${dataVersion}|${tables.length}:${measures.length}|${visual.id}|${visual.type}|${JSON.stringify(nativeDc)}|${JSON.stringify(filters)}`;
   }, [supportsNativeRustQuery, dataVersion, tables.length, measures.length, visual.id, visual.type, visual.dataConfig, filters]);
 
   const [asyncNativeResult, setAsyncNativeResult] = useState<NativeVisualQueryResult | null>(() =>
@@ -439,10 +454,27 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
   const queryResult = useMemo(() => {
     if (supportsNativeRustQuery && asyncNativeResult) {
+      // The native engine returns categories unsorted and without TopN; apply the
+      // exact same shared sort (+ limit after sort) as the JS QueryPlanner.
+      let nativeData = { categories: asyncNativeResult.categories, series: asyncNativeResult.series };
+      if (visual.type === 'slicer') {
+        const slicerSpec = globalDataEngine.getVisualSortSpec(visual);
+        nativeData = {
+          ...nativeData,
+          categories: sortCategoryLabels(
+            nativeData.categories,
+            visual.dataConfig.sortOrder === 'desc' ? 'desc' : 'asc',
+            slicerSpec?.categorySortKeys
+          ),
+        };
+      } else if (sortMenuKind(visual) === 'fields' && visual.dataConfig.xAxisField) {
+        const spec = globalDataEngine.getVisualSortSpec(visual);
+        if (spec) nativeData = applyVisualSort(nativeData, spec);
+      }
       return {
         ...tsQueryResult,
-        categories: asyncNativeResult.categories,
-        series: asyncNativeResult.series,
+        categories: nativeData.categories,
+        series: nativeData.series,
         summaryValue:
           asyncNativeResult.summaryValue !== null && asyncNativeResult.summaryValue !== undefined
             ? asyncNativeResult.summaryValue
@@ -451,9 +483,36 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       };
     }
     return tsQueryResult;
-  }, [supportsNativeRustQuery, asyncNativeResult, tsQueryResult]);
+  }, [supportsNativeRustQuery, asyncNativeResult, tsQueryResult, visual, tables]);
 
-  // State for interactive Drill-Through popover
+  // "Classificar por" — shared by the header "..." menu and table/matrix header clicks
+  const sortKind = sortMenuKind(visual);
+  const sortableFields = useMemo(
+    () => (sortKind === 'fields' ? getSortableFields(visual, queryResult) : []),
+    [sortKind, visual, queryResult]
+  );
+  const effectiveSort = getEffectiveSort(visual, sortableFields);
+  const applySortPatch = useCallback(
+    (patch: Partial<Visual['dataConfig']>) => {
+      updateVisual(visual.id, { dataConfig: { ...visual.dataConfig, ...patch } });
+    },
+    [updateVisual, visual.id, visual.dataConfig]
+  );
+  const isSortedBy = (field: string) =>
+    !!visual.dataConfig.sortField && (visual.dataConfig.sortField === field || fieldMatches(visual.dataConfig.sortField, field));
+  const renderSortArrow = (field: string) => {
+    if (!isSortedBy(field)) {
+      return <ArrowUpDown className="w-3 h-3 opacity-0 group-hover/th:opacity-40 shrink-0" aria-hidden />;
+    }
+    return visual.dataConfig.sortOrder === 'desc' ? (
+      <ArrowDown className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" aria-label="decrescente" />
+    ) : (
+      <ArrowUp className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" aria-label="crescente" />
+    );
+  };
+  const ariaSortFor = (field: string): 'ascending' | 'descending' | 'none' =>
+    isSortedBy(field) ? (visual.dataConfig.sortOrder === 'desc' ? 'descending' : 'ascending') : 'none';
+
   const [drillPop, setDrillPop] = useState<{
     field: string;
     value: any;
@@ -607,6 +666,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           yAxis: {
             type: 'category',
             data: categories,
+            // First (top-ranked) category at the top, as in Power BI.
+            inverse: true,
             axisLabel: { fontSize: 11, color: axisColor },
             axisLine: { lineStyle: { color: axisBorderColor } },
           },
@@ -1329,6 +1390,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
+          {sortKind !== 'none' && (
+            <VisualSortMenu
+              fields={sortKind === 'fields' ? sortableFields : []}
+              activeField={effectiveSort.field}
+              activeOrder={effectiveSort.order}
+              onSelectField={f => applySortPatch(patchForField(visual, f))}
+              onSelectOrder={o => applySortPatch(patchForOrder(visual, effectiveSort, o))}
+            />
+          )}
         </div>
       </div>
 
@@ -1612,6 +1682,12 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             const primaryY = visual.dataConfig.yAxisFields?.[0] || '';
             const useCurr = isCurrencyField(primaryY);
             const childHierarchyField = visual.dataConfig.drillFields?.[0];
+            const matrixRowField = visual.dataConfig.xAxisField;
+            // Expanded child rows follow the parent's sort: a row-header sort maps to the child field.
+            const childSortField =
+              visual.dataConfig.sortField && matrixRowField && fieldMatches(visual.dataConfig.sortField, matrixRowField)
+                ? childHierarchyField
+                : visual.dataConfig.sortField;
             const fmtCell = (val: number, colName?: string) => {
               if (colName) {
                 const m = measures.find(ms => ms.name.toLowerCase() === colName.toLowerCase());
@@ -1641,7 +1717,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                   {
                     ...visual,
                     id: `${visual.id}__child_${parentCat}`,
-                    dataConfig: { ...visual.dataConfig, xAxisField: childHierarchyField },
+                    dataConfig: { ...visual.dataConfig, xAxisField: childHierarchyField, sortField: childSortField, limit: undefined },
                   },
                   [...filters, parentFilter]
                 );
@@ -1655,20 +1731,44 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                 <table className="min-w-full border-separate border-spacing-0 text-left">
                   <thead className="bg-slate-100 dark:bg-slate-800">
                     <tr>
-                      <th className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 font-bold text-slate-800 dark:text-slate-100 border-b border-r border-slate-200 dark:border-slate-700">
-                        {visual.dataConfig.xAxisField || 'Linhas'}
+                      <th
+                        aria-sort={matrixRowField ? ariaSortFor(matrixRowField) : 'none'}
+                        onClick={() => {
+                          if (matrixRowField) applySortPatch(patchForHeaderClick(visual, matrixRowField));
+                        }}
+                        title={t.visualCard.sortColumnHint}
+                        className="group/th sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 font-bold text-slate-800 dark:text-slate-100 border-b border-r border-slate-200 dark:border-slate-700 cursor-pointer hover:text-amber-600 select-none"
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          {visual.dataConfig.xAxisField || 'Linhas'}
+                          {matrixRowField && renderSortArrow(matrixRowField)}
+                        </span>
                       </th>
                       {series.map(s => (
                         <th
                           key={s.name}
-                          onClick={() => {
-                            if (visual.dataConfig.legendField) {
-                              setCrossFilter(visual.dataConfig.tableId, visual.dataConfig.legendField, s.name);
-                            }
-                          }}
-                          className="sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 font-semibold text-right text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 cursor-pointer hover:text-amber-600"
+                          aria-sort={ariaSortFor(s.name)}
+                          onClick={() => applySortPatch(patchForHeaderClick(visual, s.name))}
+                          title={t.visualCard.sortColumnHint}
+                          className="group/th sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 font-semibold text-right text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 cursor-pointer hover:text-amber-600 select-none"
                         >
-                          {s.name}
+                          <span className="inline-flex items-center justify-end gap-1 w-full">
+                            {visual.dataConfig.legendField && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setCrossFilter(visual.dataConfig.tableId, visual.dataConfig.legendField!, s.name);
+                                }}
+                                className="p-0.5 rounded text-slate-400 hover:text-amber-600 hover:bg-slate-200 dark:hover:bg-slate-700"
+                                title={`Filtrar por ${s.name}`}
+                              >
+                                <Filter className="w-2.5 h-2.5" />
+                              </button>
+                            )}
+                            {renderSortArrow(s.name)}
+                            {s.name}
+                          </span>
                         </th>
                       ))}
                       {series.length > 1 && (
@@ -1785,8 +1885,17 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                 <tr>
                   {queryResult.rawRows[0] &&
                     Object.keys(queryResult.rawRows[0]).slice(0, 6).map(col => (
-                      <th key={col} className="px-2 py-1 font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800">
-                        {col}
+                      <th
+                        key={col}
+                        aria-sort={ariaSortFor(col)}
+                        onClick={() => applySortPatch(patchForHeaderClick(visual, col))}
+                        title={t.visualCard.sortColumnHint}
+                        className="group/th px-2 py-1 font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 cursor-pointer hover:text-amber-700 dark:hover:text-amber-400 select-none"
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          {col}
+                          {renderSortArrow(col)}
+                        </span>
                       </th>
                     ))}
                   <th className="px-1.5 py-1 font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 w-12 text-center">Drill</th>
