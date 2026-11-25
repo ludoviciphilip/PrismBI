@@ -5,6 +5,7 @@ import { computeColumnQuality } from './quality';
 import { computeColumnDistribution, ColumnDistribution } from './distribution';
 
 export const NUMERIC_TYPES: EtlType[] = ['integer', 'decimal', 'currency'];
+export const DATE_TYPES: EtlType[] = ['date', 'datetime'];
 
 export interface ColumnProfile {
   count: number;
@@ -19,6 +20,8 @@ export interface ColumnProfile {
   emptyStrings?: number;
   minLength?: number;
   maxLength?: number;
+  minDate?: string;
+  maxDate?: string;
   distribution: ColumnDistribution;
 }
 
@@ -41,7 +44,18 @@ export function computeColumnProfile(rows: Record<string, any>[], column: string
 
   const nonEmpty = sample.filter(r => !r[`__err__${column}`] && r[column] !== null && r[column] !== undefined && r[column] !== '');
 
-  if (NUMERIC_TYPES.includes(type as EtlType)) {
+  if (DATE_TYPES.includes(type as EtlType)) {
+    // Datas/datetimes usam mín/máx de data, não comprimento de string (Power Query mostra assim).
+    const timestamps = nonEmpty
+      .map(r => ({ raw: r[column], t: Date.parse(String(r[column])) }))
+      .filter(x => !Number.isNaN(x.t));
+    if (timestamps.length) {
+      const minEntry = timestamps.reduce((a, b) => (b.t < a.t ? b : a));
+      const maxEntry = timestamps.reduce((a, b) => (b.t > a.t ? b : a));
+      base.minDate = String(minEntry.raw);
+      base.maxDate = String(maxEntry.raw);
+    }
+  } else if (NUMERIC_TYPES.includes(type as EtlType)) {
     const nums = nonEmpty.map(r => Number(r[column])).filter(n => !Number.isNaN(n));
     if (nums.length) {
       const min = Math.min(...nums);

@@ -1,10 +1,11 @@
 import React from 'react';
-import { ColumnProfile, NUMERIC_TYPES } from './profile';
+import { ColumnProfile, NUMERIC_TYPES, DATE_TYPES } from './profile';
 import { EtlType } from '../../../types/etl';
 
 /** Painel inferior com as estatísticas completas da coluna ativa (como o "Perfil da Coluna" do Power Query). */
 export const ProfilePanel: React.FC<{ column: string; type: EtlType | string; profile: ColumnProfile }> = ({ column, type, profile }) => {
   const isNumeric = NUMERIC_TYPES.includes(type as EtlType);
+  const isDate = DATE_TYPES.includes(type as EtlType);
   const stat = (label: string, value: React.ReactNode) => (
     <div className="flex flex-col">
       <span className="text-slate-400 text-[10px] uppercase tracking-wide">{label}</span>
@@ -24,7 +25,12 @@ export const ProfilePanel: React.FC<{ column: string; type: EtlType | string; pr
         {stat('Vazio', profile.empty)}
         {stat('Distintos', profile.distinct)}
         {stat('Únicos', profile.unique)}
-        {isNumeric ? (
+        {isDate ? (
+          <>
+            {stat('Mínimo', profile.minDate)}
+            {stat('Máximo', profile.maxDate)}
+          </>
+        ) : isNumeric ? (
           <>
             {stat('Mínimo', profile.min)}
             {stat('Máximo', profile.max)}

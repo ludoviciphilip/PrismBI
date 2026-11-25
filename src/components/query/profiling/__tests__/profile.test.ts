@@ -27,4 +27,21 @@ describe('computeColumnProfile', () => {
     expect(p.distinct).toBe(2);
     expect(p.unique).toBe(1);
   });
+
+  it('computes min/max DATE (not string length) for date columns', () => {
+    const rows = [{ c: '2026-03-10' }, { c: '2026-01-05' }, { c: '2026-06-20' }, { c: null }];
+    const p = computeColumnProfile(rows, 'c', 'date');
+    expect(p.minDate).toBe('2026-01-05');
+    expect(p.maxDate).toBe('2026-06-20');
+    expect(p.minLength).toBeUndefined();
+    expect(p.maxLength).toBeUndefined();
+    expect(p.empty).toBe(1);
+  });
+
+  it('computes min/max DATETIME the same way', () => {
+    const rows = [{ c: '2026-03-10T08:00:00' }, { c: '2026-03-10T23:00:00' }];
+    const p = computeColumnProfile(rows, 'c', 'datetime');
+    expect(p.minDate).toBe('2026-03-10T08:00:00');
+    expect(p.maxDate).toBe('2026-03-10T23:00:00');
+  });
 });
