@@ -89,6 +89,20 @@ export interface Table {
   isDim?: boolean;
   x?: number; // for model view coordinates
   y?: number;
+  /** DuckDB table name backing this table's data (CSV/Parquet/JSON/XLSX
+   * import, .pbip load, DB connector, ETL apply/refresh). When set, `rows`
+   * is only a UI preview (capped, see PREVIEW_ROW_LIMIT in Rust) and the
+   * Rust DAX model loads the full table straight from DuckDB instead of
+   * `rows` — see docs/RUST_ENGINE_2.md §3 step 2. Absent for sample data,
+   * manual entry and other tables with no DuckDB-backed source. */
+  duckdbTable?: string;
+  /** True when `rows` is a truncated preview of a larger DuckDB table
+   * (i.e. totalRows > rows.length). Drives the "⚠ amostra de 5.000 linhas"
+   * indicator on visuals that still compute in JS off `rows`. */
+  rowsTruncated?: boolean;
+  /** Total row count in the backing DuckDB table (when known), even though
+   * `rows` itself is capped at PREVIEW_ROW_LIMIT. */
+  totalRows?: number;
 }
 
 export interface Relationship {

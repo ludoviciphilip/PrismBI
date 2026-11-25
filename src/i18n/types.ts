@@ -99,6 +99,10 @@ export interface Translations {
       clearAll: string;
       noFilters: string;
       searchFields: string;
+      sortValues: string;
+      sortAZ: string;
+      sortZA: string;
+      sortByCount: string;
     };
     visualizations: {
       title: string;
@@ -118,6 +122,11 @@ export interface Translations {
     };
   };
   visualCard: {
+    moreOptions: string;
+    sortBy: string;
+    sortAscending: string;
+    sortDescending: string;
+    sortColumnHint: string;
     focusMode: string;
     restoreSize: string;
     deleteVisual: string;

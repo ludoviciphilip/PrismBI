@@ -87,6 +87,12 @@ pub struct ExportVisualPayload {
     pub border_color: Option<String>,
     #[serde(default)]
     pub filters: Vec<ExportFilterPayload>,
+    /// PrismBI `dataConfig.sortField` (column or measure name, optionally "Tabela.Coluna").
+    #[serde(default)]
+    pub sort_field: Option<String>,
+    /// PrismBI `dataConfig.sortOrder` ("asc" | "desc").
+    #[serde(default)]
+    pub sort_order: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,7 +405,12 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
             let mut visual_inner = serde_json::Map::new();
             visual_inner.insert("visualType".into(), json!(pbi_vtype));
             if !query_state.is_empty() {
-                visual_inner.insert("query".into(), json!({ "queryState": query_state }));
+                let mut query_obj = serde_json::Map::new();
+                query_obj.insert("queryState".into(), serde_json::Value::Object(query_state));
+                if let Some(sort_def) = build_sort_definition(vis, &payload.measures) {
+                    query_obj.insert("sortDefinition".into(), sort_def);
+                }
+                visual_inner.insert("query".into(), serde_json::Value::Object(query_obj));
             }
 
             let mut objects_map = serde_json::Map::new();
@@ -553,6 +564,36 @@ fn map_bi_type_to_tmdl(dt: &str) -> &'static str {
     }
 }
 
+/// Maps PrismBI `sortField`/`sortOrder` to PBIR `query.sortDefinition`
+/// (`{ sort: [{ field: { Column|Measure: {...} }, direction }], isDefaultSort }`).
+/// A slicer (or any visual) with only `sortOrder` sorts by its category field.
+fn build_sort_definition(
+    vis: &ExportVisualPayload,
+    measures: &[ExportMeasurePayload],
+) -> Option<serde_json::Value> {
+    let order = vis.sort_order.as_deref();
+    let field = vis
+        .sort_field
+        .as_deref()
+        .filter(|f| !f.trim().is_empty())
+        .or_else(|| order.and(vis.x_axis_field.as_deref()))?;
+    let bare = field.trim_start_matches("Σ ").trim();
+    let field_expr = if let Some(m) = measures.iter().find(|m| m.name.eq_ignore_ascii_case(bare)) {
+        json!({ "Measure": { "Expression": { "SourceRef": { "Entity": m.table_name } }, "Property": m.name } })
+    } else {
+        let (entity, prop) = match bare.split_once('.') {
+            Some((t, c)) if !t.is_empty() && !c.is_empty() => (t.to_string(), c.to_string()),
+            _ => (vis.table_id.clone(), bare.to_string()),
+        };
+        json!({ "Column": { "Expression": { "SourceRef": { "Entity": entity } }, "Property": prop } })
+    };
+    let direction = if order == Some("desc") { "Descending" } else { "Ascending" };
+    Some(json!({
+        "sort": [{ "field": field_expr, "direction": direction }],
+        "isDefaultSort": false
+    }))
+}
+
 fn map_prism_to_pbi_visual_type(vt: &str) -> &'static str {
     match vt {
         "column" => "clusteredColumnChart",
@@ -657,6 +698,8 @@ mod tests {
                         background_color: None,
                         border_color: None,
                         filters: vec![],
+                        sort_field: Some("Total Vendas".into()),
+                        sort_order: Some("desc".into()),
                     },
                     ExportVisualPayload {
                         id: "vis_slicer".into(),
@@ -679,6 +722,8 @@ mod tests {
                         background_color: None,
                         border_color: None,
                         filters: vec![],
+                        sort_field: None,
+                        sort_order: Some("desc".into()),
                     },
                 ],
             }],
@@ -698,6 +743,46 @@ mod tests {
         assert_eq!(reopened.pages[0].filters[0].values, vec!["Eletronicos"]);
         assert_eq!(reopened.pages[0].visuals[0].visual_type, "matrix");
         assert_eq!(reopened.pages[0].visuals[0].title, "Matriz de Categorias");
+        // Sort round-trips through PBIR query.sortDefinition.
+        assert_eq!(reopened.pages[0].visuals[0].sort_field.as_deref(), Some("Total Vendas"));
+        assert_eq!(reopened.pages[0].visuals[0].sort_order.as_deref(), Some("desc"));
+        let slicer = reopened.pages[0].visuals.iter().find(|v| v.visual_type == "slicer").expect("slicer");
+        assert_eq!(slicer.sort_field.as_deref(), Some("f_Vendas.Categoria"));
+        assert_eq!(slicer.sort_order.as_deref(), Some("desc"));
         assert_eq!(reopened.pages[0].visuals[1].slicer_mode.as_deref(), Some("tiles"));
+    }
+
+    #[test]
+    fn test_build_sort_definition_maps_measure_and_column() {
+        let measures = vec![ExportMeasurePayload {
+            name: "Total Vendas".into(),
+            table_name: "Medidas".into(),
+            formula: "1".into(),
+            format_string: None,
+            display_folder: None,
+            description: None,
+        }];
+        let mut vis: ExportVisualPayload = serde_json::from_value(serde_json::json!({
+            "id": "v", "visualType": "column", "title": "t", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0,
+            "tableId": "f_Vendas", "xAxisField": "Categoria", "legendField": null, "yAxisFields": ["Total Vendas"],
+            "sortField": "Total Vendas", "sortOrder": "desc"
+        }))
+        .unwrap();
+        let sd = build_sort_definition(&vis, &measures).unwrap();
+        assert_eq!(sd["sort"][0]["direction"], "Descending");
+        assert_eq!(sd["sort"][0]["field"]["Measure"]["Expression"]["SourceRef"]["Entity"], "Medidas");
+        assert_eq!(sd["sort"][0]["field"]["Measure"]["Property"], "Total Vendas");
+        assert_eq!(sd["isDefaultSort"], false);
+
+        vis.sort_field = Some("d_Produto.Nome".into());
+        vis.sort_order = Some("asc".into());
+        let sd = build_sort_definition(&vis, &measures).unwrap();
+        assert_eq!(sd["sort"][0]["direction"], "Ascending");
+        assert_eq!(sd["sort"][0]["field"]["Column"]["Expression"]["SourceRef"]["Entity"], "d_Produto");
+        assert_eq!(sd["sort"][0]["field"]["Column"]["Property"], "Nome");
+
+        vis.sort_field = None;
+        vis.sort_order = None;
+        assert!(build_sort_definition(&vis, &measures).is_none());
     }
 }

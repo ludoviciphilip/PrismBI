@@ -158,6 +158,7 @@ fn open_pbip_project(
                     columns: t.columns.iter().map(|c| c.name.clone()).collect(),
                     rows: t.rows.clone(),
                     column_types: vec![],
+                    duckdb_table: Some(t.table_name.clone()),
                 })
                 .collect(),
             relationships: summary
@@ -206,11 +207,28 @@ fn sync_model_to_rust(
     payload: DaxModelSyncPayload,
 ) -> Result<usize, String> {
     let count = payload.tables.len();
+
+    // Step 1: lock only the DB connection, load (or decide to reuse) every
+    // duckdb_table-backed table, then release the lock before ever touching
+    // dax_model. Never hold both locks at once, and never acquire them in
+    // the reverse order anywhere else (see docs/RUST_ENGINE_2.md §3 step 2).
+    let freshly_loaded: HashMap<String, (u64, dax::DaxTableData)>;
+    {
+        let conn_guard = state
+            .db
+            .connection()
+            .lock()
+            .map_err(|_| "Lock DuckDB corrompido".to_string())?;
+        freshly_loaded = dax::duckdb_load::load_changed_tables(&conn_guard, &payload.tables);
+        drop(conn_guard);
+    }
+
+    // Step 2: now lock dax_model (db lock is already released).
     let mut guard = state
         .dax_model
         .lock()
         .map_err(|_| "Lock DaxModel corrompido".to_string())?;
-    guard.sync_from_payload(payload);
+    guard.sync_from_payload_with_duckdb(payload, freshly_loaded);
     Ok(count)
 }
 
@@ -497,6 +515,7 @@ pub fn run() {
             etl::commands::etl_apply,
             etl::commands::etl_to_m,
             etl::commands::etl_from_m,
+            etl::commands::etl_step_m,
         ])
         .run(tauri::generate_context!())
         .expect("Erro ao executar PrismBI");

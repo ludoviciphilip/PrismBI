@@ -45,6 +45,13 @@ interface SheetImportItem {
   selected: boolean;
   targetMode: 'new' | 'replace';
   targetTableId: string;
+  /** DuckDB table name backing this sheet (only set for native
+   * import — importCsvNative/importXlsxNative/importParquetNative/
+   * importJsonNative — which actually loaded into DuckDB; the browser-side
+   * DataImportService parsing path has no DuckDB table to point at). */
+  duckdbTable?: string;
+  totalRows?: number;
+  truncated?: boolean;
 }
 
 export const DataSourceModal: React.FC = () => {
@@ -125,7 +132,7 @@ export const DataSourceModal: React.FC = () => {
     : null;
 
   const buildSheetItems = (
-    rawSheets: { sheetName: string; sourceSheetName?: string; tableName: string; columns: Column[]; rows: Record<string, any>[] }[]
+    rawSheets: { sheetName: string; sourceSheetName?: string; tableName: string; columns: Column[]; rows: Record<string, any>[]; duckdbTable?: string; totalRows?: number; truncated?: boolean }[]
   ): SheetImportItem[] => {
     const preferredSheet = replaceTargetTable?.sourceConfig?.sheetName?.toLowerCase();
     let replaceMatchedIdx = -1;
@@ -186,6 +193,9 @@ export const DataSourceModal: React.FC = () => {
         sheetName: item.sheetName || item.originalName,
         sourceSheetName: item.sheetName || item.originalName,
         tableName: item.tableName,
+        duckdbTable: item.tableName,
+        totalRows: item.totalRows,
+        truncated: item.truncated,
         columns: item.columns.map((c, idx) => ({
           id: `col_${idx}_${c.name}`,
           name: c.name,
@@ -314,7 +324,11 @@ export const DataSourceModal: React.FC = () => {
       };
 
       if (s.targetMode === 'replace' && s.targetTableId) {
-        replaceTableData(s.targetTableId, s.columns, s.rows, sheetConfig);
+        replaceTableData(s.targetTableId, s.columns, s.rows, sheetConfig, {
+          duckdbTable: s.duckdbTable,
+          rowsTruncated: s.truncated,
+          totalRows: s.totalRows,
+        });
       } else {
         const cleanName = (s.tableName || s.sheetName).trim().replace(/\s+/g, '_');
         newTables.push({
@@ -324,6 +338,9 @@ export const DataSourceModal: React.FC = () => {
           columns: s.columns,
           rows: s.rows,
           sourceConfig: sheetConfig,
+          duckdbTable: s.duckdbTable,
+          rowsTruncated: s.truncated,
+          totalRows: s.totalRows,
         });
       }
     }

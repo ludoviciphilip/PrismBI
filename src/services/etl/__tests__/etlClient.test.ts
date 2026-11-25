@@ -70,9 +70,14 @@ describe('etlClient browser fallback', () => {
     expect(result.rows).toHaveLength(3);
   });
 
+  it('etlApply returns null for a query without columns (measures host table)', async () => {
+    const query = baseQuery([{ id: 's1', name: 'Removidas', op: 'removeColumns', columns: ['Nome', 'Valor', 'Regiao'] }]);
+    expect(await etlApply({ query, targetTable: 'Medidas' })).toBeNull();
+  });
+
   it('etlApply returns an ImportedTablePayload-shaped result', async () => {
     const query = baseQuery([{ id: 's1', name: 'Selecionar', op: 'selectColumns', columns: ['Nome', 'Valor'] }]);
-    const payload = await etlApply({ query, targetTable: 'Vendas' });
+    const payload = (await etlApply({ query, targetTable: 'Vendas' }))!;
     expect(payload.tableName).toBe('Vendas');
     expect(payload.columns.map(c => c.name)).toEqual(['Nome', 'Valor']);
     expect(payload.totalRows).toBe(3);

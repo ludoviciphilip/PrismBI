@@ -318,7 +318,7 @@ mod tests {
             m
         };
         model.sync_from_payload(DaxModelSyncPayload {
-            tables: vec![DaxTableInput {
+            tables: vec![DaxTableInput { duckdb_table: None,
                 name: "fVendas".into(),
                 columns: vec!["Categoria".into(), "Valor".into()],
                 rows: vec![

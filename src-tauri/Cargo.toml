@@ -1,6 +1,6 @@
 [package]
 name = "prismbi"
-version = "0.8.2"
+version = "0.9.0"
 description = "PrismBI — Native Linux Business Intelligence powered by Rust & DuckDB"
 authors = ["Luis Felipe de Almeida Vieira"]
 edition = "2021"

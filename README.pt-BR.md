@@ -8,7 +8,7 @@
 
 🇺🇸 [Read in English](./README.md) • 🇧🇷 **Português (Brasil)**
 
-[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.8.2-f59e0b?style=flat-square)](./package.json)
+[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.9.0-f59e0b?style=flat-square)](./package.json)
 [![CI](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml)
 [![Release](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
@@ -58,10 +58,11 @@ Construído com **Tauri v2 + Rust + DuckDB** no backend e **React + TypeScript +
 - **Funil & Cascata estilo Power BI:** Funil com `minSize` legível, topo `100%` e taxa de conversão no rodapé; Cascata real com variações positivas/negativas cruzando zero, linhas tracejadas conectoras e coluna `Total` final.
 - **Tabelas, Matrizes & Segmentadores:** Matriz Pivot com totais por linha/coluna, Tabela interativa com Drill-Through e Segmentadores no modo lista suspensa (`dropdown`) ou blocos clicáveis (`tiles`).
 
-### ⚡ Motor Analítico em Rust + DuckDB (`v0.8.0`)
+### ⚡ Motor Analítico em Rust + DuckDB (`v0.9.0`)
 - **DuckDB embarcado:** ingestão nativa rápida de **Excel (`.xlsx`/`.xls`)**, **CSV**, **Parquet**, **JSON** e endpoints **API REST (JSON)**, além de console SQL nativo.
 - **Atualização Real & Gestão de Tabelas:** botão **Atualizar Dados** que recarrega arquivos/fontes vinculados sem perder visuais, medidas ou relacionamentos — incluindo mapeamento de abas com nomes diferentes (ex.: aba `Fato` → `fLançamentos`), substituição de dados por outra planilha e renomeação completa de tabelas.
-- **Power Query (M) & Remapeamento Linux:** resolução automática de caminhos Windows → Linux em `.pbip` e suporte a `Table.RenameColumns`, `Table.RemoveColumns`, `Table.SelectColumns` e `Table.SelectRows`.
+- **Power Query visual (`v0.9.0`):** editor no estilo do Power BI (Consultas, abas Página Inicial/Transformar/Adicionar Coluna/Exibir, ~80 operações, Etapas Aplicadas editáveis, barra de fórmulas por etapa, Editor Avançado, qualidade/distribuição/perfil de colunas). Cada consulta é reexecutada no DuckDB a partir da fonte bruta (40 tipos de etapa, não destrutivo), e o **M é lido e gerado de verdade** (round-trip na importação e exportação de `.pbip`), com resolução automática de caminhos Windows → Linux.
+- **Modelo com todas as linhas (`v0.9.0`):** o motor Rust lê as tabelas direto do DuckDB (1 milhão de linhas em ~0,13 s); a prévia de 5.000 linhas fica só para as grades.
 - **Conformidade DAX medida: 364/368 (98,9%) no motor Rust nativo,** num [corpus verificado de forma independente](./docs/DAX_CONFORMANCE.md) de 368 casos (valores esperados calculados por oráculos em Python, executado em todo build do CI). **Motor Rust tipado (+165 funções),** cerca de 3× mais rápido que a v0.7 num benchmark de 200 mil linhas: avaliação nativa de `CALCULATE`, `SWITCH`, `RANKX`, `TREATAS`, `CONTAINSROW`, `GENERATESERIES`, `COALESCE`, `CONVERT`, família `IS*`, bit-shifts, matemática/trigonometria, texto (`FORMAT`, `MID`, `FIND`, `SEARCH`, `SUBSTITUTE`, `CONTAINSSTRING`), estatísticas/iteradores (`MEDIAN`, `PERCENTILE.*`, `STDEV.*`, `VAR.*`, `CONCATENATEX`), relacionamentos (`VALUES`, `DISTINCT`, `TOPN`, `LOOKUPVALUE`, `USERELATIONSHIP`, `CROSSFILTER`), financeiro (`PMT`, `PV`, `FV`, `NPER`, `NPV`, `IPMT`, `PPMT`, `SLN`, `SYD`, `DB`, `DDB`, `EFFECT`, `NOMINAL`, `RATE`), `PATH*` e Time Intelligence completo (`TOTALYTD`, `TOTALQTD`, `TOTALMTD`, `PARALLELPERIOD`, `DATESBETWEEN`, `DATESINPERIOD`, `FIRSTNONBLANK`/`LASTNONBLANK`, `OPENINGBALANCE*`/`CLOSINGBALANCE*`), além de 60+ DMVs `INFO.*` no motor TS. Veja a [Matriz de Compatibilidade](./docs/COMPATIBILITY.md).
 - **Análise Interativa:** Cross-filtering bidirecional ao clicar em qualquer visual, Matriz com hierarquia expansível em 2 níveis, Drill-Through entre páginas, Cálculos Visuais e telemetria real no Performance Analyzer.
 
@@ -79,7 +80,7 @@ Construído com **Tauri v2 + Rust + DuckDB** no backend e **React + TypeScript +
 - **GitHub Actions CI/CD:** builds automáticas para Linux (**AppImage**, **`.deb`**, **`.rpm`**) além de manifestos em `packaging/` para **AUR (`prismbi-bin`)** e **Flatpak**.
 - **Edição Profissional no Canvas:** **Undo / Redo** (`Ctrl+Z`, `Ctrl+Y` e botões na Ribbon), **seleção múltipla** (`Shift`/`Ctrl` + clique, arraste em grupo, nudge com setas, `Delete` e barra flutuante de alinhamento/distribuição) e **Smart Snap Guides** a 60fps.
 - **Visualização de Dados & Modelo:** inspeção tabular, gerenciador de relacionamentos com autodetecção e suporte a Tabelas Calendário.
-- **Power Query / ETL, Medidas Rápidas & Biblioteca UDF:** transformações de dados, assistente de medidas rápidas e editor DAX com IntelliSense.
+- **Medidas Rápidas & Biblioteca UDF:** assistente de medidas rápidas, ordenação de visuais ("Classificar por", cabeçalhos de tabela/matriz, segmentações) e editor DAX com IntelliSense.
 - **Governança & Temas:** simulação de RLS/OLS, parâmetros What-If, gerenciador de temas claros/escuros e suporte a i18n (`PT`, `EN`, `ES`) e moedas (`BRL`, `USD`, `EUR`).
 - **Atalhos de Canvas:** zoom fluido com `Ctrl + =`, `Ctrl + -`, `Ctrl + 0` e `Ctrl + Scroll`, além de movimentação livre no canvas e modelo mantendo o botão do scroll pressionado e `Esc` para sair do Modo Apresentação.
 

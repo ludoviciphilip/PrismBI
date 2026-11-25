@@ -8,6 +8,7 @@ mod contract;
 mod fixtures;
 mod repro_refresh;
 mod rhino;
+mod round2;
 mod roundtrip;
 mod security;
 mod steps;

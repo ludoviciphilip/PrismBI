@@ -1,13 +1,18 @@
 import React, { useMemo, useState } from 'react';
+import { ArrowUpAZ, ArrowDownZA, X } from 'lucide-react';
 import { Cond, Scalar } from '../../types/etl';
 import { inputCls } from './dialogs/DialogShell';
+
+export type SortRequest = { column: string; descending: boolean } | null;
 
 export const ColumnFilterMenu: React.FC<{
   column: string;
   rows: Record<string, any>[];
   onClose: () => void;
   onApply: (condition: Cond) => void;
-}> = ({ column, rows, onClose, onApply }) => {
+  /** Rodada 2: opções de ordenar/limpar ordenação no topo do menu, como no Power Query. */
+  onSort?: (sort: SortRequest) => void;
+}> = ({ column, rows, onClose, onApply, onSort }) => {
   const [search, setSearch] = useState('');
   const distinctValues = useMemo(() => {
     const set = new Set<string>();
@@ -43,11 +48,46 @@ export const ColumnFilterMenu: React.FC<{
     onClose();
   };
 
+  const sort = (descending: boolean) => {
+    onSort?.({ column, descending });
+    onClose();
+  };
+  const clearSort = () => {
+    onSort?.(null);
+    onClose();
+  };
+
   return (
     <div
       data-testid={`column-filter-${column}`}
       className="absolute z-40 mt-1 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl p-2 text-[11px]"
     >
+      {onSort && (
+        <div className="mb-2 pb-2 border-b border-slate-200 dark:border-slate-800 space-y-0.5">
+          <button
+            data-testid="sort-asc"
+            onClick={() => sort(false)}
+            className="w-full flex items-center gap-2 px-1.5 py-1 rounded hover:bg-slate-50 dark:hover:bg-slate-800 text-left"
+          >
+            <ArrowUpAZ className="w-3.5 h-3.5" /> Classificar em Ordem Crescente
+          </button>
+          <button
+            data-testid="sort-desc"
+            onClick={() => sort(true)}
+            className="w-full flex items-center gap-2 px-1.5 py-1 rounded hover:bg-slate-50 dark:hover:bg-slate-800 text-left"
+          >
+            <ArrowDownZA className="w-3.5 h-3.5" /> Classificar em Ordem Decrescente
+          </button>
+          <button
+            data-testid="sort-clear"
+            onClick={clearSort}
+            className="w-full flex items-center gap-2 px-1.5 py-1 rounded hover:bg-slate-50 dark:hover:bg-slate-800 text-left"
+          >
+            <X className="w-3.5 h-3.5" /> Limpar Classificação
+          </button>
+        </div>
+      )}
+
       <div className="flex gap-1 mb-2">
         {(['list', 'text', 'number'] as const).map(m => (
           <button

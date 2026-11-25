@@ -345,7 +345,7 @@ fn step_kind(r: &mut Rng, variant: usize) -> StepKind {
         30 => StepKind::OpaqueM {
             m: r.pick(&[
                 "Table.Buffer(Source)",
-                "Table.TransformColumns(Source, {{\"A\", each _ * 2, type number}})",
+                "Table.TransformColumnNames(Source, each Text.Upper(_))",
                 "Table.AddColumn(Source, \"X\", (r) => r[A])",
             ])
             .to_string(),

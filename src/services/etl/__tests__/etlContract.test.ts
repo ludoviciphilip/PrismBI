@@ -68,6 +68,15 @@ export const ALL_STEPS_QUERY: EtlQuery = {
         { name: 'Linhas', op: 'countRows' },
       ],
     },
+    // ---- Rodada 2 (docs/ETL_V09.md §"Rodada 2"): uma etapa executável de cada novo op.
+    { id: 's25', name: 'Linhas Invertidas', op: 'reverseRows' },
+    { id: 's26', name: 'Colunas Reordenadas', op: 'reorderColumns', columns: ['Linhas', 'Cidade', 'Soma'] },
+    { id: 's27', name: 'Cidade Abreviada', op: 'transformColumns', columns: ['Cidade'], expression: 'Text.Start(_, 3)', type: 'text' },
+    { id: 's28', name: 'Intervalo Mantido', op: 'keepRange', offset: 0, count: 2 },
+    { id: 's29', name: 'Linhas Alternadas Removidas', op: 'removeAlternateRows', offset: 0, remove: 1, keep: 1 },
+    { id: 's30', name: 'Duplicatas Mantidas', op: 'keepDuplicates', columns: ['Cidade'] },
+    { id: 's31', name: 'Erros Substituídos', op: 'replaceErrors', replacements: [{ column: 'Soma', value: 0 }] },
+    { id: 's32', name: 'Linhas Com Erros Mantidas', op: 'keepRowsWithErrors' },
   ],
 };
 
@@ -91,6 +100,8 @@ export const SHAPE_STEPS_QUERY: EtlQuery = {
       expand: [{ column: 'UF', as: 'UF' }],
     },
     { id: 'p5', name: 'Consultas Acrescentadas', op: 'appendQueries', queries: ['Vendas2025'] },
+    { id: 'p6', name: 'Cabeçalhos Rebaixados', op: 'demoteHeaders' },
+    { id: 'p7', name: 'Tabela Transposta', op: 'transpose' },
   ],
 };
 
@@ -108,6 +119,6 @@ describe('ETL contract fixture (TS ⇄ Rust)', () => {
   it('covers every EtlStep op exactly as the UI types define them', () => {
     const ops = new Set([...ALL_STEPS_QUERY.steps, ...SHAPE_STEPS_QUERY.steps].map(s => s.op));
     // opaqueM só é produzido pelo Rust (etl_from_m); o resto precisa estar aqui.
-    expect(ops.size).toBe(30);
+    expect(ops.size).toBe(40);
   });
 });

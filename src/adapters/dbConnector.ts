@@ -146,6 +146,9 @@ export function buildTableFromDbImport(
       db: dbSourceConfig,
       lastRefreshedAt: new Date().toISOString(),
     },
+    duckdbTable: imported.tableName,
+    rowsTruncated: imported.truncated,
+    totalRows: imported.totalRows,
     x: position.x,
     y: position.y,
   };

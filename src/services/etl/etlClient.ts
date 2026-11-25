@@ -45,7 +45,8 @@ export async function etlPreview(args: { query: EtlQuery; uptoStep?: number; lim
   return browserPreview(args.query, args.uptoStep, args.limit ?? 200);
 }
 
-export async function etlApply(args: { query: EtlQuery; targetTable: string }): Promise<ImportedTablePayload> {
+/** `null`: a consulta não produz colunas (tabela que só hospeda medidas). */
+export async function etlApply(args: { query: EtlQuery; targetTable: string }): Promise<ImportedTablePayload | null> {
   if (isTauriRuntime()) return invoke('etl_apply', args);
   return browserApply(args.query, args.targetTable);
 }
@@ -58,6 +59,12 @@ export async function etlToM(args: { query: EtlQuery }): Promise<string> {
 export async function etlFromM(args: { name: string; m: string }): Promise<EtlFromMResult> {
   if (isTauriRuntime()) return invoke('etl_from_m', args);
   return browserFromM(args.name, args.m);
+}
+
+/** Rodada 2: expressão M só da etapa `index`, como a barra de fórmulas do Power Query. */
+export async function etlStepM(args: { query: EtlQuery; index: number }): Promise<string> {
+  if (isTauriRuntime()) return invoke('etl_step_m', args);
+  return browserStepM(args.query, args.index);
 }
 
 // ---------------------------------------------------------------------------
@@ -580,8 +587,9 @@ function browserPreview(query: EtlQuery, uptoStep: number | undefined, limit: nu
   };
 }
 
-function browserApply(query: EtlQuery, targetTable: string): ImportedTablePayload {
+function browserApply(query: EtlQuery, targetTable: string): ImportedTablePayload | null {
   const result = runPipeline(query);
+  if (result.columns.length === 0) return null;
   return {
     tableName: targetTable,
     originalName: targetTable,
@@ -671,6 +679,16 @@ function condToM(cond: Cond): string {
     default:
       return 'true';
   }
+}
+
+/** Fallback de navegador para etl_step_m: reaproveita stepToM/browserToM. */
+function browserStepM(query: EtlQuery, index: number): string {
+  if (index < 0) return `Fonte = ${sourceToM(query.source)}`;
+  const step = query.steps[index];
+  if (!step) throw new Error(`Passo ${index} não existe`);
+  const prev = index === 0 ? 'Fonte' : `#"${query.steps[index - 1].name}"`;
+  const body = stepToM(step).replace(/\bPrev\b/g, prev);
+  return `#"${step.name}" = ${body}`;
 }
 
 function browserToM(query: EtlQuery): string {
