@@ -1787,6 +1787,28 @@ fn eval_column_agg(
         return Ok(DaxValue::Number(distinct.len() as f64));
     }
 
+    // MIN/MAX compare chronologically for date-typed (ISO text) columns and return the
+    // original value (not coerced to Number). MINA/MAXA keep numeric boolean coercion below.
+    if matches!(func, "MIN" | "MAX") {
+        let values: Vec<&DaxValue> = visible
+            .iter()
+            .map(|&i| &tbl.rows[i][cidx])
+            .filter(|v| !v.is_blank())
+            .collect();
+        if values.is_empty() {
+            return Ok(DaxValue::Blank);
+        }
+        let want_min = func == "MIN";
+        let mut best = values[0];
+        for v in &values[1..] {
+            let ord = compare_dax_values(v, best);
+            if (want_min && ord < 0) || (!want_min && ord > 0) {
+                best = v;
+            }
+        }
+        return Ok(best.clone());
+    }
+
     let nums: Vec<f64> = visible
         .iter()
         .filter_map(|&i| {
@@ -1812,8 +1834,8 @@ fn eval_column_agg(
     let out = match func {
         "SUM" => Some(nums.iter().sum()),
         "AVERAGE" | "AVERAGEA" => Some(nums.iter().sum::<f64>() / nums.len() as f64),
-        "MIN" | "MINA" => Some(nums.iter().copied().fold(f64::INFINITY, f64::min)),
-        "MAX" | "MAXA" => Some(nums.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
+        "MINA" => Some(nums.iter().copied().fold(f64::INFINITY, f64::min)),
+        "MAXA" => Some(nums.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
         "MEDIAN" => calc_median(&nums),
         "STDEV.S" => calc_stdev(&nums, true),
         "STDEV.P" => calc_stdev(&nums, false),
