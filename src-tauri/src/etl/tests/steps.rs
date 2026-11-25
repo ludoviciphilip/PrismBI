@@ -87,6 +87,39 @@ fn change_type_conversions_and_error_flags() {
 }
 
 #[test]
+fn change_type_datetime_preview_as_text() {
+    let src = text_source(&["t"], &[&[Some("2026-01-05 10:30:00")], &[Some("05/01/2026 08:00:00")], &[Some("x")]]);
+    let r = run(&query(
+        src,
+        vec![StepKind::ChangeType {
+            columns: vec![ColumnTypeSpec { column: "t".into(), ty: EtlType::Datetime }],
+            culture: Some("pt-BR".into()),
+        }],
+    ));
+    assert_eq!(r.types, vec!["datetime"]);
+    assert_rows(&r, &[json!(["2026-01-05 10:30:00"]), json!(["2026-01-05 08:00:00"]), json!([null])]);
+}
+
+#[test]
+fn preview_reports_runtime_failures_at_the_failing_step() {
+    // make_date(2026, 13, 1) compiles but fails when executed.
+    let db = DuckDbStore::new_in_memory().unwrap();
+    let q = query(
+        nums(&[Some(1.0), Some(13.0)]),
+        vec![
+            StepKind::RenameColumns { renames: vec![("v".into(), "m".into())] },
+            StepKind::AddCustomColumn { new_column: "d".into(), expression: "#date(2026, [m], 1)".into(), ty: None },
+            StepKind::RemoveColumns { columns: strs(&["k"]) },
+        ],
+    );
+    let r = preview(&db, &q, None);
+    let f = r.res.failed_step.clone().expect("failedStep");
+    assert_eq!(f.index, 1, "{}", f.message);
+    assert_cols(&r, &["k", "m"]);
+    assert_eq!(r.rows.len(), 2);
+}
+
+#[test]
 fn change_type_culture_aware() {
     let src = text_source(
         &["n", "d", "b"],

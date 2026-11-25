@@ -65,8 +65,31 @@ fn select_visible(c: &Compiled) -> String {
     }
 }
 
+/// Preview select list: like [`select_visible`], but datetimes are shown as
+/// `YYYY-MM-DD HH:MM:SS` text instead of raw microseconds.
+fn preview_list(c: &Compiled) -> String {
+    let cols: Vec<String> = c
+        .chain
+        .visible()
+        .iter()
+        .map(|col| {
+            let q = quote_ident(&col.name);
+            if super::sql::cat_of(&col.ty) == super::sql::Cat::Timestamp {
+                format!("strftime({q}, '%Y-%m-%d %H:%M:%S') AS {q}", q = q)
+            } else {
+                q
+            }
+        })
+        .collect();
+    if cols.is_empty() {
+        select_visible(c)
+    } else {
+        cols.join(", ")
+    }
+}
+
 fn run_preview(conn: &duckdb::Connection, c: &Compiled, limit: usize) -> Result<(Vec<Map<String, JsonValue>>, usize), String> {
-    let rows_sql = c.chain.select(&select_visible(c), &format!("ORDER BY {} LIMIT {}", quote_ident(ROW_IDX), limit));
+    let rows_sql = c.chain.select(&preview_list(c), &format!("ORDER BY {} LIMIT {}", quote_ident(ROW_IDX), limit));
     let mut res = execute_select_query(conn, &rows_sql).map_err(|e| clean_err(&e))?;
     if c.chain.visible().is_empty() {
         for r in &mut res.rows {
