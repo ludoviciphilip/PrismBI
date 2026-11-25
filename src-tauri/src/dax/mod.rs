@@ -437,7 +437,10 @@ impl DaxModel {
                             to_tbl.get_col_idx(&rel.to_column),
                             from_tbl.get_col_idx(&rel.from_column),
                         ) {
-                            used_rels.insert(rel_idx);
+                            // Dimensão -> fato pode ser reaplicada sempre que a
+                            // dimensão encolher de novo (máscaras só encolhem, então
+                            // termina). Só a volta fato -> dimensão é marcada como
+                            // usada, para evitar o "bounce-back" bidirecional.
                             let to_mask = &table_masks[&to_k];
                             let allowed_keys: HashSet<String> = to_tbl
                                 .rows
@@ -509,5 +512,90 @@ impl DaxModel {
     pub fn evaluate_dax(&self, expression: &str, ctx: &FilterContext) -> Result<DaxValue, String> {
         let ast = parser::parse_dax(expression)?;
         evaluator::evaluate_ast(&ast, self, ctx, &[], &HashMap::new())
+    }
+}
+
+
+#[cfg(test)]
+mod propagation_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn rows(cols: &[&str], data: &[&[serde_json::Value]]) -> Vec<serde_json::Map<String, JsonValue>> {
+        data.iter()
+            .map(|r| cols.iter().zip(r.iter()).map(|(c, v)| (c.to_string(), v.clone())).collect())
+            .collect()
+    }
+
+    /// Floco de neve: f_Vendas -> d_Produto -> d_Categoria. Com filtro em
+    /// d_Categoria E em d_Produto, a ordem de processamento vinha da iteração
+    /// de HashMap (semente aleatória): se d_Produto saía primeiro, a aresta
+    /// Produto->Vendas era marcada como usada e o filtro de Categoria, ao chegar
+    /// depois em d_Produto, nunca descia até a fato.
+    fn snowflake() -> DaxModel {
+        let mut m = DaxModel::new();
+        m.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput {
+                    name: "d_Categoria".into(),
+                    columns: vec!["CatID".into(), "Nome".into()],
+                    rows: rows(&["CatID", "Nome"], &[&[json!(1), json!("A")], &[json!(2), json!("B")]]),
+                },
+                DaxTableInput {
+                    name: "d_Produto".into(),
+                    columns: vec!["ProdID".into(), "CatID".into(), "Cor".into()],
+                    rows: rows(
+                        &["ProdID", "CatID", "Cor"],
+                        &[
+                            &[json!(10), json!(1), json!("azul")],
+                            &[json!(11), json!(2), json!("azul")],
+                            &[json!(12), json!(1), json!("verde")],
+                        ],
+                    ),
+                },
+                DaxTableInput {
+                    name: "f_Vendas".into(),
+                    columns: vec!["ProdID".into(), "Valor".into()],
+                    rows: rows(
+                        &["ProdID", "Valor"],
+                        &[&[json!(10), json!(1)], &[json!(11), json!(10)], &[json!(12), json!(100)]],
+                    ),
+                },
+            ],
+            relationships: vec![
+                DaxRelationshipInput {
+                    from_table: "f_Vendas".into(),
+                    from_column: "ProdID".into(),
+                    to_table: "d_Produto".into(),
+                    to_column: "ProdID".into(),
+                    cross_filter_direction: "single".into(),
+                    is_active: true,
+                },
+                DaxRelationshipInput {
+                    from_table: "d_Produto".into(),
+                    from_column: "CatID".into(),
+                    to_table: "d_Categoria".into(),
+                    to_column: "CatID".into(),
+                    cross_filter_direction: "single".into(),
+                    is_active: true,
+                },
+            ],
+            measures: vec![],
+        });
+        m
+    }
+
+    #[test]
+    fn snowflake_propagation_is_order_independent() {
+        for _ in 0..64 {
+            let model = snowflake();
+            let ctx = build_filter_context(&[
+                NativeFilterInput { table_id: "d_Categoria".into(), column: "Nome".into(), values: vec![json!("A")] },
+                NativeFilterInput { table_id: "d_Produto".into(), column: "Cor".into(), values: vec![json!("azul")] },
+            ]);
+            // Só o produto 10 é categoria A e azul.
+            let v = model.evaluate_dax("SUM(f_Vendas[Valor])", &ctx).unwrap();
+            assert_eq!(v, DaxValue::Number(1.0));
+        }
     }
 }
