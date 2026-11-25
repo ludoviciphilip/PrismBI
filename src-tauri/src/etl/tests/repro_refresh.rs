@@ -84,14 +84,14 @@ fn rhino_remove_steps_apply_then_refresh_all_returns() {
             .loaded_tables
             .iter()
             .filter(|t| t.table_name != "dCalendario")
-            .map(|t| DaxTableInput {
+            .map(|t| DaxTableInput { duckdb_table: None,
                 name: t.table_name.clone(),
                 columns: t.columns.iter().map(|c| c.name.clone()).collect(),
                 rows: t.rows.clone(),
                 column_types: t.columns.iter().map(|c| Some(c.data_type.clone())).collect(),
             })
             .collect();
-        tables.push(DaxTableInput {
+        tables.push(DaxTableInput { duckdb_table: None,
             name: "dCalendario".into(),
             columns: applied.columns.iter().map(|c| c.name.clone()).collect(),
             rows: applied.rows.clone(),

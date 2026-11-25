@@ -153,7 +153,7 @@ fn build_model(m: &CorpusModel) -> DaxModel {
                     })
                     .collect(),
             };
-            DaxTableInput { name: t.name.clone(), columns, rows, column_types }
+            DaxTableInput { duckdb_table: None, name: t.name.clone(), columns, rows, column_types }
         })
         .collect();
     let relationships = m
