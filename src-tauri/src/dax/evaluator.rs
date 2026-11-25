@@ -140,12 +140,11 @@ fn eval_binary(op: &BinaryOp, l: &DaxValue, r: &DaxValue) -> Result<DaxValue, St
             }
         }
         BinaryOp::Div => {
+            // DAX: raw division by zero yields Infinity/-Infinity/NaN, same as IEEE754 (it is
+            // DIVIDE(...) that safely returns BLANK/alternate). ISERROR/IFERROR treat the
+            // resulting non-finite number as an error.
             let den = r.as_f64().unwrap_or(0.0);
-            if den == 0.0 {
-                Ok(DaxValue::Blank)
-            } else {
-                Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) / den))
-            }
+            Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) / den))
         }
         BinaryOp::Concat => Ok(DaxValue::Text(format!(
             "{}{}",
@@ -322,8 +321,16 @@ fn eval_call(
             Ok(DaxValue::Blank)
         }
         "IFERROR" => match eval_arg(args, 0, model, ctx, row_stack, vars) {
+            Ok(v) if matches!(&v, DaxValue::Number(n) if !n.is_finite()) => {
+                eval_arg(args, 1, model, ctx, row_stack, vars)
+            }
             Ok(v) => Ok(v),
             Err(_) => eval_arg(args, 1, model, ctx, row_stack, vars),
+        },
+        "ISERROR" => match evaluate_ast(&args[0], model, ctx, row_stack, vars) {
+            Ok(DaxValue::Number(n)) if !n.is_finite() => Ok(DaxValue::Boolean(true)),
+            Ok(_) => Ok(DaxValue::Boolean(false)),
+            Err(_) => Ok(DaxValue::Boolean(true)),
         },
         "ABS" => Ok(DaxValue::Number(
             eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0).abs(),
@@ -341,7 +348,7 @@ fn eval_call(
         "SQRT" => {
             let n = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
             if n < 0.0 {
-                Ok(DaxValue::Blank)
+                Err("SQRT: número negativo".to_string())
             } else {
                 Ok(DaxValue::Number(n.sqrt()))
             }
