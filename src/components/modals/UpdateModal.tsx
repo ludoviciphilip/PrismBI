@@ -184,7 +184,7 @@ export const UpdateModal: React.FC = () => {
           <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 space-y-1">
             <div className="font-bold flex items-center gap-1.5">
               <CheckCircle2 className="w-4 h-4" />
-              <span>{installResult.installed ? 'AppImage atualizado!' : 'Pacote salvo em Downloads!'}</span>
+              <span>{installResult.installed ? 'Atualização instalada!' : 'Pacote salvo em Downloads!'}</span>
             </div>
             <p className="text-[11px]">{installResult.message}</p>
           </div>
@@ -221,7 +221,15 @@ export const UpdateModal: React.FC = () => {
                 className="px-4 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-60 shadow-xs"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>{installing ? 'Baixando...' : availableUpdate.isAppimage ? 'Baixar e Atualizar AppImage' : 'Baixar Pacote'}</span>
+                <span>
+                  {installing
+                    ? 'Baixando...'
+                    : availableUpdate.isAppimage
+                      ? 'Baixar e Atualizar AppImage'
+                      : availableUpdate.installKind === 'msiInstalled'
+                        ? 'Baixar e Instalar (.msi)'
+                        : 'Baixar Pacote'}
+                </span>
               </button>
             )}
           </div>

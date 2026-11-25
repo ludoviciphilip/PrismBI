@@ -1,10 +1,15 @@
-name: Release Linux Packages
+name: Release Packages
 
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (build & sign only, never publishes a GitHub Release)'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -64,12 +69,94 @@ jobs:
             (cd "$RUNNER_TEMP" && rm -rf squashfs-root && APPIMAGE_EXTRACT_AND_RUN=1 "$GITHUB_WORKSPACE/$f" --appimage-extract AppRun >/dev/null && grep -q 00-prismbi-system-webkit.sh squashfs-root/AppRun)
           done
 
-      - name: Collect release artifacts & generate SHA256SUMS.txt
+      - name: Collect Linux release artifacts
         run: |
-          mkdir -p release-assets
-          find src-tauri/target/release/bundle -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) -exec cp {} release-assets/ \;
-          (cd release-assets && sha256sum * > SHA256SUMS.txt)
+          mkdir -p release-assets-linux
+          find src-tauri/target/release/bundle -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) -exec cp {} release-assets-linux/ \;
+          ls -lh release-assets-linux
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-linux
+          path: release-assets-linux/*
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows (MSI + portable ZIP)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies & run tests
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec tsc --noEmit
+          pnpm test
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test --lib --test dax_corpus
+
+      - name: Build Tauri bundle (MSI)
+        run: pnpm tauri build --bundles msi
+
+      - name: Collect Windows release artifacts (MSI + portable ZIP)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-assets-windows | Out-Null
+          Get-ChildItem -Recurse -Path src-tauri/target/release/bundle -Filter *.msi |
+            Copy-Item -Destination release-assets-windows
+
+          $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $portableDir = "portable-staging"
+          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+          Copy-Item src-tauri/target/release/prismbi.exe -Destination $portableDir/prismbi.exe
+
+          $zipName = "PrismBI_${version}_x64-portable.zip"
+          Compress-Archive -Path "$portableDir/prismbi.exe" -DestinationPath "release-assets-windows/$zipName" -Force
+
+          Get-ChildItem release-assets-windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-windows
+          path: release-assets-windows/*
+          if-no-files-found: error
+
+  publish:
+    name: Sign & Publish release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: release-assets-*
+          merge-multiple: true
+
+      - name: Generate ONE SHA256SUMS.txt for every asset (Linux + Windows)
+        run: |
           ls -lh release-assets
+          (cd release-assets && sha256sum * > SHA256SUMS.txt)
+          cat release-assets/SHA256SUMS.txt
 
       # O updater do app (src-tauri/src/updater.rs) só instala se
       # SHA256SUMS.txt tiver assinatura Ed25519 válida da chave oficial.
@@ -102,10 +189,22 @@ jobs:
           f="docs/release-notes/${GITHUB_REF_NAME}.md"
           if [ -f "$f" ]; then echo "path=$f" >> "$GITHUB_OUTPUT"; else echo "" > "$RUNNER_TEMP/empty.md"; echo "path=$RUNNER_TEMP/empty.md" >> "$GITHUB_OUTPUT"; fi
 
+      # workflow_dispatch nunca publica (mesmo com dry_run desmarcado): serve
+      # só para validar build + assinatura numa branch, sem criar release/tag.
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
           body_path: ${{ steps.notes.outputs.path }}
           generate_release_notes: true
+
+      - name: Dry-run summary (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "### Dry run — no GitHub Release was published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Signed SHA256SUMS.txt covers:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat release-assets/SHA256SUMS.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

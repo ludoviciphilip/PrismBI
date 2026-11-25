@@ -144,7 +144,7 @@ export const WelcomeScreen: React.FC = () => {
               </span>
             </div>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              Business Intelligence nativo para Linux • Rust + DuckDB
+              Business Intelligence nativo multiplataforma • Rust + DuckDB
             </p>
           </div>
         </div>
