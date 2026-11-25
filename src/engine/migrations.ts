@@ -1,6 +1,7 @@
 import { ProjectState } from './storage';
 import { Table, Relationship, Measure, WhatIfParameter, RlsRole, CalculationGroup, PowerQueryStep, DataType, TableSourceConfig } from '../types/bi';
-import { EtlQuery, EtlSource, EtlStep, EtlType, Cond } from '../types/etl';
+import { EtlQuery, EtlStep, EtlType, Cond } from '../types/etl';
+import { fileEtlSource, inlineEtlSource } from '../services/etl/etlSource';
 
 export const CURRENT_ENGINE_VERSION = '2.2.0';
 
@@ -37,25 +38,6 @@ function filterOperatorToCond(step: PowerQueryStep): Cond | null {
   return { column, op, value } as Cond;
 }
 
-function sourceConfigToEtlSource(src?: TableSourceConfig): EtlSource {
-  if (!src) return { kind: 'table' };
-  switch (src.type) {
-    case 'xlsx':
-      return { kind: 'excel', path: src.filePath, sheet: src.sheetName };
-    case 'csv':
-      return { kind: 'csv', path: src.filePath };
-    case 'parquet':
-      return { kind: 'parquet', path: src.filePath };
-    case 'json':
-      return { kind: 'json', path: src.filePath };
-    case 'pbip':
-      return src.mScript ? { kind: 'opaqueM', m: src.mScript } : { kind: 'table' };
-    case 'db':
-      return { kind: 'db' };
-    default:
-      return { kind: 'table' };
-  }
-}
 
 /**
  * Converte um único PowerQueryStep (schema legado, destrutivo) para um EtlStep
@@ -210,10 +192,18 @@ export function migrateAppliedSteps(
       const mapped = migratePowerQueryStep(step);
       if (mapped) steps.push(mapped);
     }
+    // Os passos legados já foram aplicados (de forma destrutiva) às linhas
+    // salvas. Com fonte em arquivo, reexecutá-los a partir do arquivo bruto
+    // reproduz o resultado; sem ela, as linhas atuais viram o snapshot e os
+    // passos são descartados para não serem aplicados duas vezes.
+    const fileSource = fileEtlSource(table);
+    if (!fileSource && steps.length) {
+      console.warn(`[migração] ${table?.name || tableId}: etapas legadas já aplicadas aos dados; consulta recomeça do estado atual.`);
+    }
     result[tableId] = {
       name: table?.originalName || table?.name || tableId,
-      source: sourceConfigToEtlSource(table?.sourceConfig),
-      steps,
+      source: fileSource ?? inlineEtlSource(table),
+      steps: fileSource ? steps : [],
     };
   }
   return result;

@@ -177,6 +177,14 @@ fn ensure_raw(conn: &duckdb::Connection, q: &EtlQuery) -> Result<(), String> {
 /// Materializes the full query into `target_table` (CREATE OR REPLACE).
 /// Returns `Ok(None)` when the result has no columns (e.g. a measures host table).
 pub fn etl_apply_inner(db: &DuckDbStore, query: &EtlQuery, target_table: &str) -> Result<Option<ImportedTablePayload>, String> {
+    // Ler a própria tabela de destino tornaria a consulta cumulativa: cada
+    // "Fechar e Aplicar" partiria do resultado anterior.
+    if query.referenced_queries().iter().any(|r| r.eq_ignore_ascii_case(target_table)) {
+        return Err(format!(
+            "A consulta '{}' lê a própria tabela de destino '{}'; use a fonte original ou um snapshot.",
+            query.name, target_table
+        ));
+    }
     let conn = lock(db)?;
     ensure_raw(&conn, query)?;
     let compiled = compile(&conn, query, None)?;

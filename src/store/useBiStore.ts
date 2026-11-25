@@ -25,7 +25,8 @@ import {
   CanvasSizeConfig,
 } from '../types/bi';
 import { EtlQuery, EtlStep, EtlSource } from '../types/etl';
-import { etlApply, etlLoadRaw, setBrowserRawProvider } from '../services/etl/etlClient';
+import { etlApply, etlFromM, etlLoadRaw, setBrowserRawProvider } from '../services/etl/etlClient';
+import { tableToEtlSource } from '../services/etl/etlSource';
 import { getSampleDatasets, generateCalendarTable } from '../data/sampleDatasets';
 import { globalDataEngine } from '../engine/dataEngine';
 import { DaxEngine } from '../engine/daxEngine';
@@ -268,6 +269,8 @@ interface BiState {
   appliedSteps: Record<string, EtlQuery>;
   selectedStepByTable: Record<string, string | undefined>;
   getOrInitQuery: (tableId: string) => EtlQuery;
+  /** Como getOrInitQuery, mas converte o M de tabelas .pbip em etapas (etl_from_m) e persiste a consulta. */
+  ensureQuery: (tableId: string) => Promise<EtlQuery>;
   setQuery: (tableId: string, query: EtlQuery) => void;
   addQueryStep: (tableId: string, step: EtlStep) => void;
   updateQueryStep: (tableId: string, stepId: string, patch: Partial<EtlStep>) => void;
@@ -393,25 +396,6 @@ interface BiState {
 
 const defaultPageId = 'page_executivo';
 
-function tableSourceConfigToEtlSource(src?: TableSourceConfig): EtlSource {
-  if (!src) return { kind: 'table' };
-  switch (src.type) {
-    case 'xlsx':
-      return { kind: 'excel', path: src.filePath, sheet: src.sheetName };
-    case 'csv':
-      return { kind: 'csv', path: src.filePath };
-    case 'parquet':
-      return { kind: 'parquet', path: src.filePath };
-    case 'json':
-      return { kind: 'json', path: src.filePath };
-    case 'pbip':
-      return src.mScript ? { kind: 'opaqueM', m: src.mScript } : { kind: 'table' };
-    case 'db':
-      return { kind: 'db' };
-    default:
-      return { kind: 'table' };
-  }
-}
 
 const initialVisuals: Visual[] = [
   {
@@ -2365,8 +2349,41 @@ export const useBiStore = create<BiState>((set, get) => {
       const existing = get().appliedSteps[tableId];
       if (existing) return existing;
       const table = get().tables.find(t => t.id === tableId);
-      const source: EtlSource = tableSourceConfigToEtlSource(table?.sourceConfig);
+      const source: EtlSource = tableToEtlSource(table);
       return { name: table?.originalName || table?.name || tableId, source, steps: [] };
+    },
+
+    ensureQuery: async (tableId) => {
+      const existing = get().appliedSteps[tableId];
+      if (existing) return existing;
+      const table = get().tables.find(t => t.id === tableId);
+      if (!table) return get().getOrInitQuery(tableId);
+      const name = table.originalName || table.name;
+      const m = table.sourceConfig?.mScript;
+      let query: EtlQuery | null = null;
+      if (m && m.trim()) {
+        // Tabela vinda de .pbip: as etapas do M viram etapas editáveis (round-trip).
+        try {
+          const parsed = await etlFromM({ name, m });
+          const src = parsed.query.source;
+          const fileKinds = ['excel', 'csv', 'parquet', 'json'];
+          if (fileKinds.includes(src.kind) && table.sourceConfig?.filePath) {
+            // O caminho do M costuma ser do Windows (\\tsclient\...); usa o já resolvido na importação.
+            query = { ...parsed.query, name, source: { ...src, path: table.sourceConfig.filePath } };
+          } else if (src.kind !== 'opaqueM' && !fileKinds.includes(src.kind)) {
+            query = { ...parsed.query, name };
+          }
+          for (const w of parsed.warnings) console.warn(`[ETL] ${name}: ${w}`);
+        } catch (e) {
+          console.warn(`[ETL] ${name}: M não convertido, usando snapshot da tabela`, e);
+        }
+      }
+      if (!query) query = { name, source: tableToEtlSource(table), steps: [] };
+      // Outra chamada pode ter criado a consulta enquanto o M era convertido.
+      const raced = get().appliedSteps[tableId];
+      if (raced) return raced;
+      get().setQuery(tableId, query);
+      return query;
     },
 
     setQuery: (tableId, query) => {
@@ -2422,9 +2439,12 @@ export const useBiStore = create<BiState>((set, get) => {
       const query = get().getOrInitQuery(tableId);
       const table = get().tables.find(t => t.id === tableId);
       const payload = await etlApply({ query, targetTable: table?.originalName || table?.name || tableId });
+      // Reaproveita o id da coluna de mesmo nome: medidas, relações e visuais
+      // referenciam ids, e as etapas podem remover/reordenar colunas.
+      const idByName = new Map((table?.columns || []).map(c => [c.name, c.id]));
       get().updateTable(tableId, {
-        columns: payload.columns.map((c, i) => ({
-          id: table?.columns[i]?.id || `c_${Math.random().toString(36).slice(2, 8)}`,
+        columns: payload.columns.map(c => ({
+          id: idByName.get(c.name) || `c_${Math.random().toString(36).slice(2, 8)}`,
           name: c.name,
           originalName: c.originalName,
           dataType: (c.dataType as any) || 'text',
@@ -2437,7 +2457,7 @@ export const useBiStore = create<BiState>((set, get) => {
       const table = get().tables.find(t => t.id === tableId);
       if (!table) return;
       const query = get().appliedSteps[tableId];
-      await etlLoadRaw({ query: query?.name || table.originalName || table.name, source: query?.source || tableSourceConfigToEtlSource(table.sourceConfig) });
+      await etlLoadRaw({ query: query?.name || table.originalName || table.name, source: query?.source || tableToEtlSource(table) });
       if (query) {
         await get().closeAndApplyQuery(tableId);
       }

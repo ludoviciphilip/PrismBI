@@ -44,6 +44,7 @@ import { exportProjectToFile } from '../../engine/storage';
 import { useTranslation } from '../../i18n';
 import { getEffectiveCanvasSize } from '../../engine/shared/canvasPresets';
 import { PowerBiImportModal } from '../modals/PowerBiImportModal';
+import { etlToM } from '../../services/etl/etlClient';
 import {
   isTauriRuntime,
   pickFolderDialog,
@@ -242,6 +243,18 @@ export const Ribbon: React.FC<{
     if (!folder) return;
 
     const state = getProjectState();
+    // Round-trip M: tabelas com consulta ETL exportam o M gerado das etapas.
+    // Snapshot inline sem etapas mantém o M original (não vira um #table gigante).
+    const mByTable = new Map<string, string>();
+    for (const t of state.tables) {
+      const q = state.appliedSteps?.[t.id];
+      if (!q || (q.source.kind === 'inline' && q.steps.length === 0)) continue;
+      try {
+        mByTable.set(t.id, await etlToM({ query: q }));
+      } catch (e) {
+        console.warn(`[pbip] ${t.name}: M não gerado, mantendo o original`, e);
+      }
+    }
     const resolveTableName = (tableId: string) =>
       state.tables.find(t => t.id === tableId || t.name === tableId)?.name || tableId;
     const toExportFilters = (list: typeof state.filters) =>
@@ -257,7 +270,7 @@ export const Ribbon: React.FC<{
         tables: state.tables.map(t => ({
           name: t.name,
           isHidden: t.isHidden,
-          mScript: t.sourceConfig?.mScript ?? null,
+          mScript: mByTable.get(t.id) ?? t.sourceConfig?.mScript ?? null,
           columns: t.columns.map(c => ({
             name: c.name,
             dataType: c.dataType,

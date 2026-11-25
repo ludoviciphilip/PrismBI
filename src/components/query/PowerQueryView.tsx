@@ -69,6 +69,7 @@ export const PowerQueryView: React.FC = () => {
     tables,
     appliedSteps,
     getOrInitQuery,
+    ensureQuery,
     setQuery,
     addQueryStep,
     updateQueryStep,
@@ -102,6 +103,11 @@ export const PowerQueryView: React.FC = () => {
     setToast(msg);
     setTimeout(() => setToast(null), 2500);
   };
+
+  // Tabelas de .pbip: converte o M em etapas editáveis na primeira abertura.
+  useEffect(() => {
+    if (selectedTableId) void ensureQuery(selectedTableId);
+  }, [selectedTableId, ensureQuery]);
 
   useEffect(() => {
     if (!selectedTableId) return;

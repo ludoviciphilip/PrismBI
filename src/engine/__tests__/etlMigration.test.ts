@@ -96,10 +96,24 @@ describe('migratePowerQueryStep', () => {
 
 describe('migrateAppliedSteps', () => {
   const tables: Table[] = [
-    { id: 't1', name: 'Vendas', originalName: 'Vendas', columns: [], rows: [] },
+    {
+      id: 't1',
+      name: 'Vendas',
+      originalName: 'Vendas',
+      columns: [],
+      rows: [],
+      sourceConfig: { type: 'csv', filePath: '/dados/vendas.csv' },
+    },
+    {
+      id: 't2',
+      name: 'Metas',
+      originalName: 'Metas',
+      columns: [{ id: 'c1', name: 'B', dataType: 'number' } as any],
+      rows: [{ B: 10 }, { B: null }],
+    },
   ];
 
-  it('converts legacy PowerQueryStep[] map into EtlQuery map', () => {
+  it('converts legacy PowerQueryStep[] map into EtlQuery map (file source replays the steps)', () => {
     const legacy = {
       t1: [step({ type: 'rename', params: { oldName: 'A', newName: 'B' } }), step({ id: 's2', type: 'groupBy', params: {} })],
     };
@@ -107,8 +121,18 @@ describe('migrateAppliedSteps', () => {
     const result = migrateAppliedSteps(legacy, tables);
     warnSpy.mockRestore();
     expect(result.t1.name).toBe('Vendas');
+    expect(result.t1.source).toEqual({ kind: 'csv', path: '/dados/vendas.csv' });
     expect(result.t1.steps).toHaveLength(1);
     expect(result.t1.steps[0]).toMatchObject({ op: 'renameColumns' });
+  });
+
+  it('without a reloadable source, snapshots current rows and drops already-applied legacy steps', () => {
+    const legacy = { t2: [step({ type: 'rename', params: { oldName: 'A', newName: 'B' } })] };
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = migrateAppliedSteps(legacy, tables);
+    warnSpy.mockRestore();
+    expect(result.t2.source).toEqual({ kind: 'inline', columns: ['B'], rows: [[10], [null]] });
+    expect(result.t2.steps).toEqual([]);
   });
 
   it('passes through projects already in EtlQuery format', () => {

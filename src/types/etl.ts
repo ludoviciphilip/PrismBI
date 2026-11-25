@@ -85,11 +85,20 @@ export type EtlStepOp = EtlStep['op'];
 export type DistributiveOmit<T, K extends keyof any> = T extends any ? Omit<T, K> : never;
 
 export interface EtlSource {
-  kind: 'excel' | 'csv' | 'parquet' | 'json' | 'db' | 'table' | 'opaqueM';
+  kind: 'excel' | 'csv' | 'parquet' | 'json' | 'db' | 'table' | 'inline' | 'listDates' | 'opaqueM';
   path?: string;
   sheet?: string;
+  /** 'table': outra consulta do modelo; 'db': relação DuckDB (ex. "pg.public.pedidos"). */
   table?: string;
   m?: string;
+  /** 'inline': literal #table({..}, {{..}}) ou snapshot de uma tabela sem fonte recarregável. */
+  columns?: string[];
+  rows?: Scalar[][];
+  /** 'listDates': List.Dates(#date, count, #duration(stepDays, 0, 0, 0)). */
+  start?: string;
+  count?: number;
+  stepDays?: number;
+  function?: string;
 }
 
 export interface EtlQuery {

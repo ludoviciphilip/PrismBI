@@ -4,6 +4,7 @@
 //! Expected values in `steps.rs` / `security.rs` were derived by hand from
 //! Power Query semantics, never by running the engine and copying output.
 
+mod contract;
 mod fixtures;
 mod rhino;
 mod roundtrip;
