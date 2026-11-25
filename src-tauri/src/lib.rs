@@ -1,6 +1,7 @@
 pub mod connectors;
 pub mod dax;
 pub mod engine;
+pub mod etl;
 pub mod pbi;
 pub mod updater;
 
