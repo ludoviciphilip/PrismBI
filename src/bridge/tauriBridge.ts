@@ -215,7 +215,7 @@ export interface ExportPbipPayload {
 }
 
 export interface DaxModelSyncPayload {
-  tables: { name: string; columns: string[]; rows: Record<string, any>[] }[];
+  tables: { name: string; columns: string[]; rows: Record<string, any>[]; columnTypes?: (string | null)[] }[];
   relationships: {
     fromTable: string;
     fromColumn: string;
