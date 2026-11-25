@@ -978,6 +978,73 @@ fn eval_table_expr_owned<'a>(
                 return Ok((TableEval::Owned(synth), (0..n).collect(), base_ctx));
             }
         }
+        if matches!(upper.as_str(), "UNION" | "INTERSECT" | "EXCEPT") && args.len() >= 2 {
+            let (t1, i1, c1) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let (t2, i2, _) = eval_table_expr_owned(&args[1], model, ctx, row_stack, vars)?;
+            let t1 = t1.as_ref();
+            let t2 = t2.as_ref();
+            let row_key = |t: &DaxTableData, idx: usize| -> String {
+                t.rows[idx].iter().map(|v| v.canonical_key()).collect::<Vec<_>>().join("\u{1}")
+            };
+            let rows: Vec<Vec<DaxValue>> = match upper.as_str() {
+                "UNION" => i1
+                    .iter()
+                    .map(|&i| t1.rows[i].clone())
+                    .chain(i2.iter().map(|&i| t2.rows[i].clone()))
+                    .collect(),
+                "INTERSECT" => {
+                    let keys2: HashSet<String> = i2.iter().map(|&i| row_key(t2, i)).collect();
+                    i1.iter()
+                        .filter(|&&i| keys2.contains(&row_key(t1, i)))
+                        .map(|&i| t1.rows[i].clone())
+                        .collect()
+                }
+                _ => {
+                    // EXCEPT
+                    let keys2: HashSet<String> = i2.iter().map(|&i| row_key(t2, i)).collect();
+                    i1.iter()
+                        .filter(|&&i| !keys2.contains(&row_key(t1, i)))
+                        .map(|&i| t1.rows[i].clone())
+                        .collect()
+                }
+            };
+            let n = rows.len();
+            let synth = DaxTableData {
+                name: format!("{}_{}", upper, t1.name),
+                columns: t1.columns.clone(),
+                col_index: t1.col_index.clone(),
+                rows,
+            };
+            return Ok((TableEval::Owned(synth), (0..n).collect(), c1));
+        }
+        if upper == "CROSSJOIN" && args.len() >= 2 {
+            let (t1, i1, c1) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let (t2, i2, _) = eval_table_expr_owned(&args[1], model, ctx, row_stack, vars)?;
+            let t1 = t1.as_ref();
+            let t2 = t2.as_ref();
+            let mut columns: Vec<String> = t1.columns.iter().map(|c| format!("{}.{}", t1.name, c)).collect();
+            columns.extend(t2.columns.iter().map(|c| format!("{}.{}", t2.name, c)));
+            let mut col_index = HashMap::new();
+            for (idx, c) in columns.iter().enumerate() {
+                col_index.insert(c.to_lowercase(), idx);
+            }
+            let mut rows = Vec::with_capacity(i1.len() * i2.len());
+            for &a in &i1 {
+                for &b in &i2 {
+                    let mut row = t1.rows[a].clone();
+                    row.extend(t2.rows[b].clone());
+                    rows.push(row);
+                }
+            }
+            let n = rows.len();
+            let synth = DaxTableData {
+                name: format!("CROSSJOIN_{}_{}", t1.name, t2.name),
+                columns,
+                col_index,
+                rows,
+            };
+            return Ok((TableEval::Owned(synth), (0..n).collect(), c1));
+        }
         if name.eq_ignore_ascii_case("GENERATESERIES") {
             let start = args
                 .first()
