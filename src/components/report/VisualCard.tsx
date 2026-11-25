@@ -666,6 +666,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           yAxis: {
             type: 'category',
             data: categories,
+            // First (top-ranked) category at the top, as in Power BI.
+            inverse: true,
             axisLabel: { fontSize: 11, color: axisColor },
             axisLine: { lineStyle: { color: axisBorderColor } },
           },
