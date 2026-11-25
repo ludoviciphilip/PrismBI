@@ -140,3 +140,38 @@ Expressões `each …` com: `[Coluna]`, literais, `+ - * /`, `&`, comparações,
 - Nomes de mês e dia (`Date.MonthName`/`Date.DayOfWeekName`) vêm de tabelas estáticas (pt, en, es). Sem cultura, inglês.
 - Nulos no filtro como no M: `=`/`<>` tratam `null` como valor (`null <> 5` é verdadeiro), operadores relacionais e funções de texto com `null` dão `null`, que descarta a linha (inclusive dentro de `not`).
 - `mergeQueries` casa `null` com `null` (como o M) e lê a tabela **já materializada** da outra consulta; na abertura de `.pbip` as consultas são processadas em ordem de dependência.
+
+## Rodada 2 (feedback do teste no desktop): novas etapas e comandos
+
+Adições ao schema. São compatíveis: nenhuma etapa existente muda.
+
+```ts
+type EtlStep = /* …todas as anteriores… */
+  | { op: 'transformColumns'; columns: string[]; expression: string; type?: EtlType }
+      // Table.TransformColumns(prev, {{"c", each <expr>, type}}). `expression` usa `_` como o valor da célula
+      // (ex.: "Text.Start(_, 3)", "_ * 1.1", "Date.Year(_)", "\"R$ \" & _"). A mesma expressão vale para todas as colunas.
+  | { op: 'reorderColumns'; columns: string[] }                 // Table.ReorderColumns (ordem completa)
+  | { op: 'demoteHeaders' }                                     // Table.DemoteHeaders ("Usar cabeçalhos como 1ª linha")
+  | { op: 'transpose' }                                         // Table.Transpose (colunas viram Column1..N)
+  | { op: 'reverseRows' }                                       // Table.ReverseRows
+  | { op: 'keepRange'; offset: number; count: number }          // Table.Range (offset 0-based)
+  | { op: 'removeAlternateRows'; offset: number; remove: number; keep: number }   // Table.AlternateRows
+  | { op: 'keepDuplicates'; columns?: string[] }                // mantém linhas cuja chave aparece mais de uma vez
+  | { op: 'replaceErrors'; replacements: { column: string; value: Scalar }[] }   // Table.ReplaceErrorValues
+  | { op: 'keepRowsWithErrors'; columns?: string[] }            // Table.SelectRowsWithErrors
+```
+
+Funções novas no subconjunto de expressões (`addCustomColumn` e `transformColumns`):
+- **Texto:** `Text.BeforeDelimiter`, `Text.AfterDelimiter`, `Text.BetweenDelimiters` (só as formas com 2 e 3 argumentos de texto), `Text.PadStart`, `Text.PadEnd`, `Text.Replace`, `Text.Clean`, `Text.Reverse`, `Text.Repeat`.
+- **Número:** `Number.Power`, `Number.Sqrt`, `Number.Mod`, `Number.IntegerDivide`, `Number.RoundUp`, `Number.RoundDown`, `Number.Sign`, `Number.Ln`, `Number.Log10`, `Number.Exp`, `Number.IsEven`, `Number.IsOdd`.
+- **Data:** `Date.QuarterOfYear`, `Date.WeekOfYear`, `Date.DayOfYear`, `Date.DaysInMonth`, `Date.StartOfMonth`, `Date.EndOfMonth`, `Date.StartOfYear`, `Date.EndOfYear`, `Date.StartOfQuarter`, `Date.EndOfQuarter`, `Date.StartOfWeek`, `Date.EndOfWeek`, `Date.AddYears`, `Date.AddQuarters`, `Date.AddWeeks`, `Date.IsInCurrentYear`, `DateTime.Date`, `DateTime.Time`, `DateTime.LocalNow`, `Date.ToText(_, "yyyy-MM")` (só formatos com `yyyy yy MM M dd d MMM MMMM`, nomes de mês de tabela fixa e cultura opcional).
+- **Duração:** `Duration.Days(a - b)`, quando a diferença é entre datas.
+
+Novo comando:
+
+| Comando | Entrada | Saída |
+| :--- | :--- | :--- |
+| `etl_step_m` | `{ query: EtlQuery, index: number }` | `string`: só a expressão da etapa `index`, como na barra de fórmulas do Power Query (`= Table.AddColumn(#"Etapa Anterior", …)`) |
+
+- **Edição na barra de fórmulas:** o frontend troca a expressão da etapa no M completo (`etl_to_m`), reconverte com `etl_from_m` e substitui só aquela etapa. Se a conversão falhar, mostra o erro e não altera a consulta.
+- **"Atualizar Dados":** tabelas com consulta ETL são recarregadas por `etl_load_raw` (com `pbipRoot`) seguido de `etl_apply`. **Nunca** pelo interpretador M antigo nem por `refresh_pbip_tables`, que descartariam as etapas editadas.
