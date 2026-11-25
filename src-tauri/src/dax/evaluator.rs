@@ -1,7 +1,8 @@
 use crate::dax::ast::{BinaryOp, Expr, UnaryOp};
-use crate::dax::functions::{add_days, parse_iso_ymd, try_eval_scalar_fn};
+use crate::dax::functions;
+use crate::dax::functions::try_eval_scalar_fn;
 use crate::dax::parser::parse_dax;
-use crate::dax::{DaxModel, DaxTableData, DaxValue, FilterContext, RelOverride};
+use crate::dax::{DaxModel, DaxTableData, DaxValue, FilterContext, RelOverride, ValueKey, ColumnType};
 use std::collections::{HashMap, HashSet};
 
 // `eval_call` below is a routing table; the implementations live in one module per family.
@@ -34,7 +35,7 @@ pub fn evaluate_ast(
 ) -> Result<DaxValue, String> {
     match expr {
         Expr::Blank => Ok(DaxValue::Blank),
-        Expr::Number(n) => Ok(DaxValue::Number(*n)),
+        Expr::Number(n) => Ok(DaxValue::number_smart(*n)),
         Expr::Text(s) => Ok(DaxValue::Text(s.clone())),
         Expr::Boolean(b) => Ok(DaxValue::Boolean(*b)),
         Expr::Ident(id) => {
@@ -85,8 +86,8 @@ pub fn evaluate_ast(
         Expr::Unary { op, expr } => {
             let v = evaluate_ast(expr, model, ctx, row_stack, vars)?;
             match op {
-                UnaryOp::Neg => Ok(DaxValue::Number(-(v.as_f64().unwrap_or(0.0)))),
-                UnaryOp::Pos => Ok(DaxValue::Number(v.as_f64().unwrap_or(0.0))),
+                UnaryOp::Neg => Ok(v.dax_neg()),
+                UnaryOp::Pos => Ok(DaxValue::number_smart(v.as_f64().unwrap_or(0.0))),
                 UnaryOp::Not => Ok(DaxValue::Boolean(!v.as_bool())),
             }
         }
@@ -135,47 +136,54 @@ pub fn evaluate_ast(
 }
 
 fn eval_binary(op: &BinaryOp, l: &DaxValue, r: &DaxValue) -> Result<DaxValue, String> {
-    // Date ± number arithmetic yields a date (DAX stores dates as a serial day count
-    // internally; here dates are ISO text, so shift the civil date directly).
+    // Date ± number arithmetic yields a date (DAX stores dates as a serial day
+    // count). Works uniformly whether the operand is a native `DateTime` or a
+    // legacy ISO `Text` cell (`as_date_serial` bridges both), and preserves
+    // the operand's own representation in the result.
     if matches!(op, BinaryOp::Add | BinaryOp::Sub) {
-        let l_date = match l {
-            DaxValue::Text(s) => parse_iso_ymd(s),
-            _ => None,
-        };
-        let r_date = match r {
-            DaxValue::Text(s) => parse_iso_ymd(s),
-            _ => None,
-        };
-        if let (Some((y, m, d)), None) = (l_date, r_date) {
-            let delta = r.as_f64().unwrap_or(0.0).round() as i32;
-            let signed = if matches!(op, BinaryOp::Sub) { -delta } else { delta };
-            let (ny, nm, nd) = add_days(y, m, d, signed);
-            return Ok(DaxValue::Text(format!("{:04}-{:02}-{:02}", ny, nm, nd)));
-        }
-        if let (None, Some((y, m, d))) = (l_date, r_date) {
-            if matches!(op, BinaryOp::Add) {
-                let delta = l.as_f64().unwrap_or(0.0).round() as i32;
-                let (ny, nm, nd) = add_days(y, m, d, delta);
-                return Ok(DaxValue::Text(format!("{:04}-{:02}-{:02}", ny, nm, nd)));
+        let l_date = l.as_date_serial();
+        let r_date = r.as_date_serial();
+        let l_is_dt = matches!(l, DaxValue::DateTime(_));
+        let r_is_dt = matches!(r, DaxValue::DateTime(_));
+        let wrap = |serial: f64, is_dt: bool| {
+            if is_dt {
+                DaxValue::DateTime(serial)
+            } else {
+                DaxValue::Text(functions::serial_to_iso(serial))
             }
+        };
+        match (l_date, r_date) {
+            (Some(ls), None) => {
+                let delta = r.as_f64().unwrap_or(0.0);
+                let signed = if matches!(op, BinaryOp::Sub) { -delta } else { delta };
+                return Ok(wrap(ls + signed, l_is_dt));
+            }
+            (None, Some(rs)) if matches!(op, BinaryOp::Add) => {
+                let delta = l.as_f64().unwrap_or(0.0);
+                return Ok(wrap(rs + delta, r_is_dt));
+            }
+            (Some(ls), Some(rs)) if matches!(op, BinaryOp::Sub) => {
+                // DateTime - DateTime -> Decimal days (DAX: pure number of days).
+                return Ok(DaxValue::Decimal(ls - rs));
+            }
+            _ => {}
         }
     }
     match op {
-        BinaryOp::Add => Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) + r.as_f64().unwrap_or(0.0))),
-        BinaryOp::Sub => Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) - r.as_f64().unwrap_or(0.0))),
+        BinaryOp::Add => Ok(l.dax_add(r)),
+        BinaryOp::Sub => Ok(l.dax_sub(r)),
         BinaryOp::Mul => {
             if l.is_blank() || r.is_blank() {
                 Ok(DaxValue::Blank)
             } else {
-                Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) * r.as_f64().unwrap_or(0.0)))
+                Ok(l.dax_mul(r))
             }
         }
         BinaryOp::Div => {
             // DAX: raw division by zero yields Infinity/-Infinity/NaN, same as IEEE754 (it is
             // DIVIDE(...) that safely returns BLANK/alternate). ISERROR/IFERROR treat the
             // resulting non-finite number as an error.
-            let den = r.as_f64().unwrap_or(0.0);
-            Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) / den))
+            Ok(l.dax_div(r))
         }
         BinaryOp::Concat => Ok(DaxValue::Text(format!(
             "{}{}",
@@ -341,6 +349,16 @@ fn eval_arg(
 
 #[cfg(test)]
 mod tests {
+    /// Monta a chave de filtro como o frontend faz: valor JSON convertido pelo
+    /// tipo da coluna (ver `build_filter_context`).
+    fn typed_keys(model: &DaxModel, table: &str, col: &str, raw: &str) -> std::collections::HashSet<crate::dax::ValueKey> {
+        let ctx = crate::dax::build_filter_context(
+            &[crate::dax::NativeFilterInput { table_id: table.into(), column: col.into(), values: vec![serde_json::Value::String(raw.into())] }],
+            model,
+        );
+        ctx.filters[&table.to_lowercase()][&col.to_lowercase()].clone()
+    }
+
     use super::*;
     use crate::dax::{DaxMeasureInput, DaxModelSyncPayload, DaxRelationshipInput, DaxTableInput};
     use crate::engine::DuckDbStore;
@@ -372,10 +390,10 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { name: "fLançamentos".into(), columns: vec!["Data".into(), "Valor".into(), "Categoria".into(), "Tipo".into()], rows: f_rows },
-                DaxTableInput { name: "dCategorias".into(), columns: vec!["Categoria".into(), "Grupo DRE".into(), "DRE".into()], rows: cat_rows },
-                DaxTableInput { name: "dEstrutura".into(), columns: vec!["Linha".into(), "Ordem".into()], rows: est_rows },
-                DaxTableInput { name: "dCalendario".into(), columns: vec!["Data".into(), "Mês".into()], rows: cal_rows },
+                DaxTableInput { column_types: vec![], name: "fLançamentos".into(), columns: vec!["Data".into(), "Valor".into(), "Categoria".into(), "Tipo".into()], rows: f_rows },
+                DaxTableInput { column_types: vec![], name: "dCategorias".into(), columns: vec!["Categoria".into(), "Grupo DRE".into(), "DRE".into()], rows: cat_rows },
+                DaxTableInput { column_types: vec![], name: "dEstrutura".into(), columns: vec!["Linha".into(), "Ordem".into()], rows: est_rows },
+                DaxTableInput { column_types: vec![], name: "dCalendario".into(), columns: vec!["Data".into(), "Mês".into()], rows: cal_rows },
             ],
             relationships: vec![
                 DaxRelationshipInput {
@@ -427,7 +445,7 @@ mod tests {
         assert!((dre_total - 22500.0).abs() < 1e-6);
 
         let mut ctx_rec = FilterContext::default();
-        ctx_rec.set_column_filter("dEstrutura", "Linha", [DaxValue::Text("Receita Bruta".into()).canonical_key()].into_iter().collect());
+        ctx_rec.set_column_filter("dEstrutura", "Linha", typed_keys(&model, "dEstrutura", "Linha", "Receita Bruta"));
         let dre_rec = model.evaluate_dax("[DRE]", &ctx_rec).unwrap().as_f64().unwrap();
         assert!((dre_rec - 25000.0).abs() < 1e-6);
     }
@@ -449,7 +467,7 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "dCal".into(),
                     columns: vec!["Data".into()],
                     rows: vec![
@@ -460,7 +478,7 @@ mod tests {
                         make_cal_row("2026-03-05"),
                     ],
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "fVendas".into(),
                     columns: vec!["Data".into(), "Valor".into()],
                     rows: vec![
@@ -523,13 +541,7 @@ mod tests {
         });
 
         let mut ctx_feb_2026 = FilterContext::default();
-        ctx_feb_2026.set_column_filter(
-            "dCal",
-            "Data",
-            [DaxValue::Text("2026-02-15".into()).canonical_key()]
-                .into_iter()
-                .collect(),
-        );
+        ctx_feb_2026.set_column_filter("dCal", "Data", typed_keys(&model, "dCal", "Data", "2026-02-15"));
 
         let ytd = model.evaluate_dax("[Receita YTD]", &ctx_feb_2026).unwrap().as_f64().unwrap();
         assert!((ytd - 700.0).abs() < 1e-6);
@@ -564,7 +576,7 @@ mod tests {
         let tables_input: Vec<DaxTableInput> = summary
             .loaded_tables
             .iter()
-            .map(|t| DaxTableInput {
+            .map(|t| DaxTableInput { column_types: vec![],
                 name: t.table_name.clone(),
                 columns: t.columns.iter().map(|c| c.name.clone()).collect(),
                 rows: t.rows.clone(),
@@ -623,43 +635,23 @@ mod tests {
         );
 
         let mut ctx_set = FilterContext::default();
-        ctx_set.set_column_filter(
-            "dCalendario",
-            "Ano",
-            [DaxValue::Text("2026".into()).canonical_key()].into_iter().collect(),
-        );
-        ctx_set.set_column_filter(
-            "dCalendario",
-            "Nome do Mês",
-            [DaxValue::Text("Setembro".into()).canonical_key()].into_iter().collect(),
-        );
+        ctx_set.set_column_filter("dCalendario", "Ano", typed_keys(&model, "dCalendario", "Ano", "2026"));
+        ctx_set.set_column_filter("dCalendario", "Nome do Mês", typed_keys(&model, "dCalendario", "Nome do Mês", "Setembro"));
         let fat_set = model.evaluate_dax("[Faturamento]", &ctx_set).expect("eval Faturamento Setembro");
         let sal_set = model.evaluate_dax("[Salários]", &ctx_set).expect("eval Salários Setembro");
         let mut ctx_out = FilterContext::default();
-        ctx_out.set_column_filter(
-            "dCalendario",
-            "Nome do Mês",
-            [DaxValue::Text("Outubro".into()).canonical_key()].into_iter().collect(),
-        );
+        ctx_out.set_column_filter("dCalendario", "Nome do Mês", typed_keys(&model, "dCalendario", "Nome do Mês", "Outubro"));
         let fat_out = model.evaluate_dax("[Faturamento]", &ctx_out).expect("eval Faturamento Outubro");
 
         let mut ctx_nov_mesano = FilterContext::default();
-        ctx_nov_mesano.set_column_filter(
-            "dCalendario",
-            "Mês/Ano",
-            [DaxValue::Text("Nov/2026".into()).canonical_key()].into_iter().collect(),
-        );
+        ctx_nov_mesano.set_column_filter("dCalendario", "Mês/Ano", typed_keys(&model, "dCalendario", "Mês/Ano", "Nov/2026"));
         let fat_nov = model.evaluate_dax("[Faturamento]", &ctx_nov_mesano).expect("eval Fat Nov");
         let lucro_nov = model.evaluate_dax("[Lucro Atual]", &ctx_nov_mesano).expect("eval Lucro Nov");
         let fat_prev_nov = model.evaluate_dax("[Faturamento Mês Passado]", &ctx_nov_mesano).expect("eval Fat Prev Nov");
         let lucro_prev_nov = model.evaluate_dax("[Lucro Mês Passado]", &ctx_nov_mesano).expect("eval Lucro Prev Nov");
 
         let mut ctx_out_mesano = FilterContext::default();
-        ctx_out_mesano.set_column_filter(
-            "dCalendario",
-            "Mês/Ano",
-            [DaxValue::Text("Out/2026".into()).canonical_key()].into_iter().collect(),
-        );
+        ctx_out_mesano.set_column_filter("dCalendario", "Mês/Ano", typed_keys(&model, "dCalendario", "Mês/Ano", "Out/2026"));
         let fat_out_m = model.evaluate_dax("[Faturamento]", &ctx_out_mesano).expect("eval Fat Out");
         let lucro_out_m = model.evaluate_dax("[Lucro Atual]", &ctx_out_mesano).expect("eval Lucro Out");
         let fat_prev_out = model.evaluate_dax("[Faturamento Mês Passado]", &ctx_out_mesano).expect("eval Fat Prev Out");
@@ -733,12 +725,12 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "dCalendario".into(),
                     columns: vec!["Data".into(), "Mês/Ano".into()],
                     rows: cal_rows,
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "fLanc".into(),
                     columns: vec!["Data".into(), "Valor".into()],
                     rows: fact_rows,
@@ -772,11 +764,7 @@ mod tests {
         });
 
         let mut ctx_nov = FilterContext::default();
-        ctx_nov.set_column_filter(
-            "dCalendario",
-            "Mês/Ano",
-            [DaxValue::Text("Nov/2026".into()).canonical_key()].into_iter().collect(),
-        );
+        ctx_nov.set_column_filter("dCalendario", "Mês/Ano", typed_keys(&model, "dCalendario", "Mês/Ano", "Nov/2026"));
 
         let prev_dateadd = model.evaluate_dax("[Fat Mes Passado DateAdd]", &ctx_nov).unwrap().as_f64().unwrap();
         let prev_month = model.evaluate_dax("[Fat Mes Passado Prev]", &ctx_nov).unwrap().as_f64().unwrap();
@@ -817,7 +805,7 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "dCal".into(),
                     columns: vec!["Data".into(), "Ano".into(), "Mes".into()],
                     rows: vec![
@@ -826,7 +814,7 @@ mod tests {
                         cal_row("2026-03-20", 2026, 3),
                     ],
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "fVendas".into(),
                     columns: vec!["Data".into(), "Valor".into()],
                     rows: vec![
@@ -835,7 +823,7 @@ mod tests {
                         sale_row("2026-03-20", 65606.32),
                     ],
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "fAberturas".into(),
                     columns: vec!["Data".into(), "Saldo".into()],
                     // Only day 1 of month exists in fAberturas
@@ -868,16 +856,8 @@ mod tests {
         });
 
         let mut ctx = FilterContext::default();
-        ctx.set_column_filter(
-            "dCal",
-            "Ano",
-            [DaxValue::Text("2026".into()).canonical_key()].into_iter().collect(),
-        );
-        ctx.set_column_filter(
-            "dCal",
-            "Mes",
-            [DaxValue::Text("3".into()).canonical_key()].into_iter().collect(),
-        );
+        ctx.set_column_filter("dCal", "Ano", typed_keys(&model, "dCal", "Ano", "2026"));
+        ctx.set_column_filter("dCal", "Mes", typed_keys(&model, "dCal", "Mes", "3"));
 
         let total = model.evaluate_dax("[Fat]", &ctx).unwrap().as_f64().unwrap();
         assert!((total - 128723.52).abs() < 1e-6);
@@ -888,7 +868,7 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "dCal".into(),
                     columns: vec!["Data".into(), "Trimestre".into()],
                     rows: vec![
@@ -898,7 +878,7 @@ mod tests {
                         serde_json::from_value(json!({"Data": "2026-04-30", "Trimestre": "T2"})).unwrap(),
                     ],
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "dClientes".into(),
                     columns: vec!["Id".into(), "Nome".into()],
                     rows: vec![
@@ -906,7 +886,7 @@ mod tests {
                         serde_json::from_value(json!({"Id": 2, "Nome": "Beta"})).unwrap(),
                     ],
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "fPedidos".into(),
                     columns: vec!["DataPedido".into(), "DataEntrega".into(), "ClienteId".into(), "Valor".into()],
                     rows: vec![
@@ -980,7 +960,7 @@ mod tests {
         assert!((between - 400.0).abs() < 1e-6);
 
         let mut ctx_apr = FilterContext::default();
-        ctx_apr.set_column_filter("dCal", "Trimestre", [DaxValue::Text("T2".into()).canonical_key()].into_iter().collect());
+        ctx_apr.set_column_filter("dCal", "Trimestre", typed_keys(&model, "dCal", "Trimestre", "T2"));
         let qtd = model.evaluate_dax("[QTD T2]", &ctx_apr).unwrap().as_f64().unwrap();
         assert!((qtd - 1200.0).abs() < 1e-6);
         let close_m = model.evaluate_dax("CLOSINGBALANCEMONTH([Total], dCal[Data])", &ctx_apr).unwrap().as_f64().unwrap();
@@ -1015,7 +995,7 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "f".into(),
                     columns: vec!["ProdID".into(), "Valor".into()],
                     rows: rows(json!([
@@ -1023,7 +1003,7 @@ mod tests {
                         {"ProdID": 2, "Valor": 20}, {"ProdID": 3, "Valor": 40}
                     ])),
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "p".into(),
                     columns: vec!["ProdID".into(), "Cat".into(), "GrupoID".into(), "Preco".into()],
                     rows: rows(json!([
@@ -1032,7 +1012,7 @@ mod tests {
                         {"ProdID": 3, "Cat": "B", "GrupoID": 2, "Preco": 2}
                     ])),
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "g".into(),
                     columns: vec!["GrupoID".into(), "Grupo".into()],
                     rows: rows(json!([{"GrupoID": 1, "Grupo": "G1"}, {"GrupoID": 2, "Grupo": "G2"}])),
@@ -1208,7 +1188,7 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "fVendas".into(),
                     columns: vec!["Cat".into(), "Valor".into()],
                     rows: vec![
@@ -1217,7 +1197,7 @@ mod tests {
                         serde_json::json!({"Cat": "C", "Valor": 400}).as_object().unwrap().clone(),
                     ],
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "dGrupo".into(),
                     columns: vec!["Nome".into()],
                     rows: vec![

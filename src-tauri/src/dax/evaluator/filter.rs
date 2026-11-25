@@ -143,12 +143,12 @@ pub(super) fn eval_first_last_nonblank(
         return Ok(DaxValue::Blank);
     };
     let vis = model.get_visible_row_indices(table, ctx);
-    let mut distinct_vals: Vec<(String, DaxValue)> = Vec::new();
+    let mut distinct_vals: Vec<(ValueKey, DaxValue)> = Vec::new();
     let mut seen = HashSet::new();
     for r_idx in vis {
         let v = &tbl.rows[r_idx][cidx];
-        if !v.is_blank() && seen.insert(v.canonical_key()) {
-            distinct_vals.push((v.canonical_key(), v.clone()));
+        if !v.is_blank() && seen.insert(v.value_key()) {
+            distinct_vals.push((v.value_key(), v.clone()));
         }
     }
     distinct_vals.sort_by(|a, b| a.1.as_display_string().cmp(&b.1.as_display_string()));
@@ -261,7 +261,7 @@ pub(super) fn apply_calculate_modifier(
                                         let rc = RowContext { table: tbl, row_idx: r_idx };
                                         let v = evaluate_ast(inner, model, outer_ctx, std::slice::from_ref(&rc), vars)?;
                                         if v.as_bool() {
-                                            allowed.insert(tbl.rows[r_idx][cidx].canonical_key());
+                                            allowed.insert(tbl.rows[r_idx][cidx].value_key());
                                         }
                                     }
                                     // KEEPFILTERS intersects with any existing filter on the same
@@ -432,7 +432,7 @@ pub(super) fn apply_calculate_modifier(
                                     let mut allowed = HashSet::new();
                                     for &r_idx in &src_indices {
                                         if let Some(cell) = src_data.rows[r_idx].get(col_pos) {
-                                            allowed.insert(cell.canonical_key());
+                                            allowed.insert(cell.value_key());
                                         }
                                     }
                                     next_ctx.set_column_filter(&target_tbl.name, column, allowed);
@@ -460,8 +460,8 @@ pub(super) fn apply_calculate_modifier(
                                 .collect(),
                         };
                         for (cidx, t, c) in filter_cols {
-                            let allowed: HashSet<String> =
-                                kept_indices.iter().map(|&i| tbl.rows[i][cidx].canonical_key()).collect();
+                            let allowed: HashSet<ValueKey> =
+                                kept_indices.iter().map(|&i| tbl.rows[i][cidx].value_key()).collect();
                             next_ctx.set_column_filter(&t, &c, allowed);
                         }
                     }
@@ -473,7 +473,7 @@ pub(super) fn apply_calculate_modifier(
                         if let Some(tbl) = model.get_table(table) {
                             let mut allowed = HashSet::new();
                             if !picked.is_blank() {
-                                allowed.insert(picked.canonical_key());
+                                allowed.insert(picked.value_key());
                             }
                             next_ctx.clear_table(&tbl.name);
                             next_ctx.set_column_filter(&tbl.name, column, allowed);
@@ -497,7 +497,7 @@ pub(super) fn apply_calculate_modifier(
                     let rc = RowContext { table: tbl, row_idx: r_idx };
                     let v = evaluate_ast(expr, model, outer_ctx, &[rc], vars)?;
                     if v.as_bool() {
-                        allowed.insert(tbl.rows[r_idx][cidx].canonical_key());
+                        allowed.insert(tbl.rows[r_idx][cidx].value_key());
                     }
                 }
                 next_ctx.set_column_filter(&tbl.name, &col_name, allowed);
@@ -602,7 +602,7 @@ pub(super) fn eval_selected_value(
         if val.is_blank() {
             continue;
         }
-        distinct_keys.insert(val.canonical_key());
+        distinct_keys.insert(val.value_key());
         if first_val.is_none() {
             first_val = Some(val.clone());
         }
@@ -630,7 +630,7 @@ pub(super) fn count_distinct_visible(
         .get_visible_row_indices(table_name, ctx)
         .into_iter()
         .filter(|&i| !tbl.rows[i][cidx].is_blank())
-        .map(|i| tbl.rows[i][cidx].canonical_key())
+        .map(|i| tbl.rows[i][cidx].value_key())
         .collect::<HashSet<_>>()
         .len()
 }

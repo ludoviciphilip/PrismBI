@@ -1,4 +1,4 @@
-use crate::dax::{build_filter_context, DaxModel, FilterContext, NativeFilterInput};
+use crate::dax::{build_filter_context, DaxModel, FilterContext, NativeFilterInput, ValueKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
@@ -118,7 +118,7 @@ pub fn execute_visual_query(
 ) -> Result<NativeVisualQueryResult, String> {
     let t0 = Instant::now();
     let agg = req.aggregation.as_deref().unwrap_or("SUM");
-    let base_ctx = build_filter_context(&req.filters);
+    let base_ctx = build_filter_context(&req.filters, model);
 
     // 1. Card, KPI, or Gauge
     if matches!(req.visual_type.as_str(), "card" | "kpi" | "gauge") {
@@ -179,7 +179,7 @@ pub fn execute_visual_query(
             })
             .cloned()
             .collect();
-        let slicer_ctx = build_filter_context(&remaining_filters);
+        let slicer_ctx = build_filter_context(&remaining_filters, model);
         let mut cats = BTreeSet::new();
         if let Some(tbl) = model.get_table(&slicer_tbl_name) {
             if let Some(cidx) = tbl.get_col_idx(&slicer_col) {
@@ -208,13 +208,13 @@ pub fn execute_visual_query(
     // 4. Grouped visuals & matrix
     let raw_cat = req.x_axis_field.as_deref().unwrap_or("");
     let (cat_tbl_name, cat_col) = resolve_table_and_col(model, &req.table_id, raw_cat);
-    let mut cat_entries: BTreeMap<String, String> = BTreeMap::new(); // display -> canonical_key
+    let mut cat_entries: BTreeMap<String, ValueKey> = BTreeMap::new(); // display -> value_key
     if let Some(tbl) = model.get_table(&cat_tbl_name) {
         if let Some(cidx) = tbl.get_col_idx(&cat_col) {
             for r_idx in model.get_visible_row_indices(&tbl.name, &base_ctx) {
                 let v = &tbl.rows[r_idx][cidx];
                 let disp = v.as_display_string();
-                let key = v.canonical_key();
+                let key = v.value_key();
                 let label = if disp.is_empty() { "Sem dados".to_string() } else { disp };
                 cat_entries.entry(label).or_insert(key);
             }
@@ -224,14 +224,14 @@ pub fn execute_visual_query(
     let categories: Vec<String> = cat_entries.keys().cloned().collect();
     if let Some(ref leg_raw) = req.legend_field.as_ref().filter(|s| !s.trim().is_empty()) {
         let (leg_tbl_name, leg_col) = resolve_table_and_col(model, &req.table_id, leg_raw);
-        let mut leg_entries: BTreeMap<String, String> = BTreeMap::new();
+        let mut leg_entries: BTreeMap<String, ValueKey> = BTreeMap::new();
         if let Some(tbl) = model.get_table(&leg_tbl_name) {
             if let Some(cidx) = tbl.get_col_idx(&leg_col) {
                 for r_idx in model.get_visible_row_indices(&tbl.name, &base_ctx) {
                     let v = &tbl.rows[r_idx][cidx];
                     let disp = v.as_display_string();
                     if !disp.is_empty() {
-                        leg_entries.entry(disp).or_insert_with(|| v.canonical_key());
+                        leg_entries.entry(disp).or_insert_with(|| v.value_key());
                     }
                 }
             }
@@ -326,6 +326,7 @@ mod tests {
                     make_row("A", 50.0),
                     make_row("B", 200.0),
                 ],
+                column_types: vec![],
             }],
             relationships: Vec::<DaxRelationshipInput>::new(),
             measures: vec![

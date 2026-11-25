@@ -115,7 +115,7 @@ pub(super) fn eval_divide(
             Ok(DaxValue::Blank)
         }
     } else {
-        Ok(DaxValue::Number(num / den))
+        Ok(DaxValue::number_smart(num / den))
     }
 }
 
@@ -145,7 +145,7 @@ pub(super) fn eval_iferror(
     vars: &HashMap<String, DaxValue>,
 ) -> Result<DaxValue, String> {
     match eval_arg(args, 0, model, ctx, row_stack, vars) {
-    Ok(v) if matches!(&v, DaxValue::Number(n) if !n.is_finite()) => {
+    Ok(v) if v.as_f64().is_some_and(|n| !n.is_finite()) => {
         eval_arg(args, 1, model, ctx, row_stack, vars)
     }
     Ok(v) => Ok(v),
@@ -162,7 +162,7 @@ pub(super) fn eval_iserror(
     vars: &HashMap<String, DaxValue>,
 ) -> Result<DaxValue, String> {
     match evaluate_ast(&args[0], model, ctx, row_stack, vars) {
-    Ok(DaxValue::Number(n)) if !n.is_finite() => Ok(DaxValue::Boolean(true)),
+    Ok(v) if v.as_f64().is_some_and(|n| !n.is_finite()) => Ok(DaxValue::Boolean(true)),
     Ok(_) => Ok(DaxValue::Boolean(false)),
     Err(_) => Ok(DaxValue::Boolean(true)),
 }
@@ -176,7 +176,7 @@ pub(super) fn eval_abs(
     row_stack: &[RowContext<'_>],
     vars: &HashMap<String, DaxValue>,
 ) -> Result<DaxValue, String> {
-    Ok(DaxValue::Number(
+    Ok(DaxValue::number_smart(
     eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0).abs(),
 ))
 }
@@ -192,7 +192,7 @@ pub(super) fn eval_round(
     let n = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
     let digits = eval_arg(args, 1, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0) as i32;
     let factor = 10f64.powi(digits);
-    Ok(DaxValue::Number((n * factor).round() / factor))
+    Ok(DaxValue::number_smart((n * factor).round() / factor))
 }
 
 /// DAX `INT`.
@@ -204,7 +204,7 @@ pub(super) fn eval_int(
     vars: &HashMap<String, DaxValue>,
 ) -> Result<DaxValue, String> {
     let n = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
-    Ok(DaxValue::Number(n.floor()))
+    Ok(DaxValue::number_smart(n.floor()))
 }
 
 /// DAX `SQRT`.
@@ -219,7 +219,7 @@ pub(super) fn eval_sqrt(
     if n < 0.0 {
         Err("SQRT: número negativo".to_string())
     } else {
-        Ok(DaxValue::Number(n.sqrt()))
+        Ok(DaxValue::number_smart(n.sqrt()))
     }
 }
 
@@ -233,7 +233,7 @@ pub(super) fn eval_power(
 ) -> Result<DaxValue, String> {
     let base = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
     let exp = eval_arg(args, 1, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
-    Ok(DaxValue::Number(base.powf(exp)))
+    Ok(DaxValue::number_smart(base.powf(exp)))
 }
 
 /// DAX `UPPER`.
@@ -270,7 +270,7 @@ pub(super) fn eval_len(
     row_stack: &[RowContext<'_>],
     vars: &HashMap<String, DaxValue>,
 ) -> Result<DaxValue, String> {
-    Ok(DaxValue::Number(
+    Ok(DaxValue::number_smart(
     eval_arg(args, 0, model, ctx, row_stack, vars)?.as_display_string().chars().count() as f64,
 ))
 }
@@ -332,7 +332,7 @@ pub(super) fn eval_date_part(
             "MONTH" => m as f64,
             _ => d as f64,
         };
-        Ok(DaxValue::Number(val))
+        Ok(DaxValue::number_smart(val))
     } else {
         Ok(DaxValue::Blank)
     }

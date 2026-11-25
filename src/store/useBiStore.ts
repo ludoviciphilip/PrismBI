@@ -682,6 +682,7 @@ async function pushModelToRustAsync(
         name: t.name,
         columns: t.columns.map(c => c.name),
         rows: t.rows || [],
+        columnTypes: t.columns.map(c => c.dataType ?? null),
       })),
       relationships: relationships.map(r => ({
         fromTable: r.fromTable,

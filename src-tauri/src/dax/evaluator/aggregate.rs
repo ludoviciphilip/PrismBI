@@ -60,13 +60,13 @@ pub(super) fn eval_rankx(
             .collect();
         better.sort_by(|a, b| a.partial_cmp(b).unwrap());
         better.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-        Ok(DaxValue::Number((better.len() + 1) as f64))
+        Ok(DaxValue::number_smart((better.len() + 1) as f64))
     } else {
         let better = scores
             .iter()
             .filter(|&&s| if ascending { s < target_num - 1e-9 } else { s > target_num + 1e-9 })
             .count();
-        Ok(DaxValue::Number((better + 1) as f64))
+        Ok(DaxValue::number_smart((better + 1) as f64))
     }
 }
 
@@ -116,7 +116,7 @@ pub(super) fn eval_percentile(
         })
         .collect();
     Ok(calc_percentile(&nums, k, fname == "PERCENTILE.INC")
-        .map(DaxValue::Number)
+        .map(DaxValue::number_smart)
         .unwrap_or(DaxValue::Blank))
 }
 
@@ -132,7 +132,7 @@ pub(super) fn eval_countrows(
         return Err("COUNTROWS requer expressão de tabela".to_string());
     };
     let (_, indices, _) = eval_table_expr(first, model, ctx, row_stack, vars)?;
-    Ok(DaxValue::Number(indices.len() as f64))
+    Ok(DaxValue::number_smart(indices.len() as f64))
 }
 
 /// DAX `ISEMPTY`.
@@ -210,7 +210,7 @@ pub(super) fn eval_x_aggregate(
                 cnt += 1;
             }
         }
-        return Ok(DaxValue::Number(cnt as f64));
+        return Ok(DaxValue::number_smart(cnt as f64));
     }
     let mut vals = Vec::new();
     for r_idx in row_indices {
@@ -241,7 +241,7 @@ pub(super) fn eval_x_aggregate(
         "GEOMEANX" => calc_geomean(&vals),
         _ => None,
     };
-    Ok(res.map(DaxValue::Number).unwrap_or(DaxValue::Blank))
+    Ok(res.map(DaxValue::number_smart).unwrap_or(DaxValue::Blank))
 }
 
 /// DAX `PERCENTILEX.INC`, `PERCENTILEX.EXC`.
@@ -272,7 +272,7 @@ pub(super) fn eval_percentilex(
         }
     }
     Ok(calc_percentile(&vals, k, fname == "PERCENTILEX.INC")
-        .map(DaxValue::Number)
+        .map(DaxValue::number_smart)
         .unwrap_or(DaxValue::Blank))
 }
 
@@ -346,13 +346,13 @@ pub(super) fn eval_xnpv_xirr(
         let rate = evaluate_ast(&args[3], model, ctx, row_stack, vars)?
             .as_f64()
             .ok_or("XNPV: taxa deve ser numérica")?;
-        calc_xnpv(rate, &flows).map(DaxValue::Number)
+        calc_xnpv(rate, &flows).map(DaxValue::number_smart)
     } else {
         let guess = match args.get(3) {
             None | Some(Expr::Blank) => 0.1,
             Some(e) => evaluate_ast(e, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.1),
         };
-        calc_xirr(&flows, guess).map(DaxValue::Number)
+        calc_xirr(&flows, guess).map(DaxValue::number_smart)
     }
 }
 
@@ -382,7 +382,9 @@ pub(super) fn eval_dated_flows(
             .ok_or_else(|| format!("{}: valor não numérico '{}'", fname, value.as_display_string()))?;
         let date = evaluate_ast(&args[2], model, &iter_ctx, &next_stack, vars)?;
         let day = match &date {
-            DaxValue::Number(n) => n.floor() as i64,
+            DaxValue::Integer(_) | DaxValue::Decimal(_) | DaxValue::Currency(_) => {
+                date.as_f64().unwrap_or(0.0).floor() as i64
+            }
             other => parse_flexible_ymd(&other.as_display_string())
                 .map(|(y, m, d)| civil_to_days(y, m, d) as i64)
                 .ok_or_else(|| format!("{}: data inválida '{}'", fname, other.as_display_string()))?,
@@ -409,18 +411,18 @@ pub(super) fn eval_column_agg(
 
     if func == "COUNT" || func == "COUNTA" {
         let cnt = visible.iter().filter(|&&i| !tbl.rows[i][cidx].is_blank()).count();
-        return Ok(DaxValue::Number(cnt as f64));
+        return Ok(DaxValue::number_smart(cnt as f64));
     }
     if func == "COUNTBLANK" {
         let cnt = visible.iter().filter(|&&i| tbl.rows[i][cidx].is_blank()).count();
-        return Ok(DaxValue::Number(cnt as f64));
+        return Ok(DaxValue::number_smart(cnt as f64));
     }
     if func == "DISTINCTCOUNT" {
         let distinct: HashSet<String> = visible
             .iter()
             .map(|&i| tbl.rows[i][cidx].canonical_key())
             .collect();
-        return Ok(DaxValue::Number(distinct.len() as f64));
+        return Ok(DaxValue::number_smart(distinct.len() as f64));
     }
     if func == "DISTINCTCOUNTNOBLANK" {
         let distinct: HashSet<String> = visible
@@ -428,7 +430,7 @@ pub(super) fn eval_column_agg(
             .filter(|&&i| !tbl.rows[i][cidx].is_blank())
             .map(|&i| tbl.rows[i][cidx].canonical_key())
             .collect();
-        return Ok(DaxValue::Number(distinct.len() as f64));
+        return Ok(DaxValue::number_smart(distinct.len() as f64));
     }
 
     // MIN/MAX compare chronologically for date-typed (ISO text) columns and return the
@@ -461,10 +463,10 @@ pub(super) fn eval_column_agg(
                 None
             } else if matches!(func, "AVERAGEA" | "MINA" | "MAXA") {
                 match v {
-                    DaxValue::Number(n) => Some(*n),
                     DaxValue::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
                     DaxValue::Text(_) => Some(0.0),
                     DaxValue::Blank => None,
+                    other => other.as_f64(),
                 }
             } else {
                 v.as_f64()
@@ -489,5 +491,5 @@ pub(super) fn eval_column_agg(
         "GEOMEAN" => calc_geomean(&nums),
         _ => None,
     };
-    Ok(out.map(DaxValue::Number).unwrap_or(DaxValue::Blank))
+    Ok(out.map(DaxValue::number_smart).unwrap_or(DaxValue::Blank))
 }

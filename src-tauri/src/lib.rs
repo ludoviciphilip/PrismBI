@@ -156,6 +156,7 @@ fn open_pbip_project(
                     name: t.table_name.clone(),
                     columns: t.columns.iter().map(|c| c.name.clone()).collect(),
                     rows: t.rows.clone(),
+                    column_types: vec![],
                 })
                 .collect(),
             relationships: summary
@@ -218,11 +219,11 @@ fn evaluate_dax_native(
     expression: String,
     filters: Option<Vec<NativeFilterInput>>,
 ) -> Result<NativeDaxEvalResult, String> {
-    let ctx = build_filter_context(&filters.unwrap_or_default());
     let guard = state
         .dax_model
         .lock()
         .map_err(|_| "Lock DaxModel corrompido".to_string())?;
+    let ctx = build_filter_context(&filters.unwrap_or_default(), &guard);
     let val = guard.evaluate_dax(&expression, &ctx)?;
     Ok(NativeDaxEvalResult {
         display: val.as_display_string(),
@@ -241,7 +242,7 @@ fn evaluate_dax_batch_native(
         .map_err(|_| "Lock DaxModel corrompido".to_string())?;
     let mut out = HashMap::with_capacity(items.len());
     for (key, expr, flist) in items {
-        let ctx = build_filter_context(&flist);
+        let ctx = build_filter_context(&flist, &guard);
         let val = guard.evaluate_dax(&expr, &ctx).unwrap_or(dax::DaxValue::Blank);
         out.insert(key, val.to_json());
     }
