@@ -210,22 +210,12 @@ impl ConnectorConfig {
                     ("dbname", database.clone()),
                     ("user", user.clone()),
                 ];
-                if let Some(pw) = password {
-                    if !pw.is_empty() {
-                        pairs.push(("password", pw.clone()));
-                    }
-                }
                 if let Some(mode) = ssl_mode {
                     if !mode.is_empty() {
                         pairs.push(("sslmode", mode.clone()));
                     }
                 }
-                let conn_str = build_keyvalue_conn_string(&pairs);
-                Ok(Some(format!(
-                    "ATTACH {} AS {} (TYPE POSTGRES, READ_ONLY)",
-                    quote_sql_literal(&conn_str),
-                    quoted_alias
-                )))
+                Ok(Some(attach_with_secret("POSTGRES", alias, &pairs, password.as_deref())))
             }
             ConnectorConfig::Mysql {
                 host,
@@ -238,23 +228,13 @@ impl ConnectorConfig {
                 {
                     return Err("Host, banco de dados e usuário são obrigatórios para MySQL".to_string());
                 }
-                let mut pairs: Vec<(&str, String)> = vec![
+                let pairs: Vec<(&str, String)> = vec![
                     ("host", host.clone()),
                     ("port", port.to_string()),
                     ("database", database.clone()),
                     ("user", user.clone()),
                 ];
-                if let Some(pw) = password {
-                    if !pw.is_empty() {
-                        pairs.push(("password", pw.clone()));
-                    }
-                }
-                let conn_str = build_keyvalue_conn_string(&pairs);
-                Ok(Some(format!(
-                    "ATTACH {} AS {} (TYPE MYSQL, READ_ONLY)",
-                    quote_sql_literal(&conn_str),
-                    quoted_alias
-                )))
+                Ok(Some(attach_with_secret("MYSQL", alias, &pairs, password.as_deref())))
             }
             ConnectorConfig::ParquetGlob { .. } => Ok(None),
         }
@@ -284,6 +264,42 @@ impl ConnectorConfig {
             }
             _ => Err("build_parquet_select só se aplica a ConnectorConfig::ParquetGlob".to_string()),
         }
+    }
+}
+
+/// Nome do SECRET temporário associado a um alias de conexão.
+pub fn secret_name_for(alias: &str) -> String {
+    format!("{}_secret", alias)
+}
+
+/// `ATTACH` de Postgres/MySQL. A senha vai num `TEMPORARY SECRET` (vive só na
+/// memória do processo) em vez da connection string: o driver MySQL não
+/// entende o escaping libpq, e a connection string aparece em
+/// `duckdb_databases()` e em mensagens de erro (que só mascaravam parte dela).
+fn attach_with_secret(
+    db_type: &str,
+    alias: &str,
+    pairs: &[(&str, String)],
+    password: Option<&str>,
+) -> String {
+    let conn_str = build_keyvalue_conn_string(pairs);
+    let quoted_alias = quote_ident(alias);
+    match password.filter(|p| !p.is_empty()) {
+        Some(pw) => {
+            let secret = quote_ident(&secret_name_for(alias));
+            format!(
+                "CREATE OR REPLACE TEMPORARY SECRET {secret} (TYPE {db_type}, PASSWORD {pw}); \
+                 ATTACH {conn} AS {quoted_alias} (TYPE {db_type}, SECRET {secret}, READ_ONLY)",
+                pw = quote_sql_literal(pw),
+                conn = quote_sql_literal(&conn_str),
+            )
+        }
+        None => format!(
+            "ATTACH {} AS {} (TYPE {}, READ_ONLY)",
+            quote_sql_literal(&conn_str),
+            quoted_alias,
+            db_type
+        ),
     }
 }
 
@@ -363,14 +379,21 @@ mod tests {
             ssl_mode: Some("require".to_string()),
         };
         let sql = cfg.build_attach_sql("pg_1").unwrap().unwrap();
-        assert!(sql.starts_with("ATTACH '"));
-        assert!(sql.contains("host=db.internal"));
-        assert!(sql.contains("port=5432"));
-        assert!(sql.contains("dbname=sales"));
-        assert!(sql.contains("user=reader"));
-        assert!(sql.contains("password=s3cret"));
-        assert!(sql.contains("sslmode=require"));
-        assert!(sql.ends_with("AS \"pg_1\" (TYPE POSTGRES, READ_ONLY)"));
+        // Senha vai num SECRET temporário (só em memória), nunca na
+        // connection string — que aparece em duckdb_databases() e em
+        // mensagens de erro do driver.
+        assert!(sql.starts_with(
+            "CREATE OR REPLACE TEMPORARY SECRET \"pg_1_secret\" (TYPE POSTGRES, PASSWORD 's3cret');"
+        ));
+        let attach = sql.split_once(';').unwrap().1.trim();
+        assert!(attach.starts_with("ATTACH '"));
+        assert!(attach.contains("host=db.internal"));
+        assert!(attach.contains("port=5432"));
+        assert!(attach.contains("dbname=sales"));
+        assert!(attach.contains("user=reader"));
+        assert!(attach.contains("sslmode=require"));
+        assert!(!attach.contains("s3cret"));
+        assert!(attach.ends_with("AS \"pg_1\" (TYPE POSTGRES, SECRET \"pg_1_secret\", READ_ONLY)"));
     }
 
     #[test]
@@ -385,11 +408,9 @@ mod tests {
             ssl_mode: None,
         };
         let sql = cfg.build_attach_sql("pg_2").unwrap().unwrap();
-        // password must be single-quoted (libpq style) with internal quote/
-        // backslash escaped, then the whole ATTACH literal re-escapes single
-        // quotes again (standard SQL '' doubling) since it is itself a SQL
-        // string literal.
-        assert!(sql.contains("password=''p@ss w\\''rd\\\\x'''"));
+        // No SECRET a senha é um literal SQL comum: só '' dobrado.
+        assert!(sql.contains("PASSWORD 'p@ss w''rd\\x'"));
+        assert!(!sql.split_once(';').unwrap().1.contains("p@ss"));
     }
 
     #[test]
@@ -416,10 +437,28 @@ mod tests {
             password: Some("hunter2".to_string()),
         };
         let sql = cfg.build_attach_sql("my_1").unwrap().unwrap();
-        assert!(sql.contains("host=mysql.internal"));
-        assert!(sql.contains("database=shop"));
-        assert!(sql.contains("password=hunter2"));
-        assert!(sql.ends_with("AS \"my_1\" (TYPE MYSQL, READ_ONLY)"));
+        assert!(sql.starts_with(
+            "CREATE OR REPLACE TEMPORARY SECRET \"my_1_secret\" (TYPE MYSQL, PASSWORD 'hunter2');"
+        ));
+        let attach = sql.split_once(';').unwrap().1.trim();
+        assert!(attach.contains("host=mysql.internal"));
+        assert!(attach.contains("database=shop"));
+        assert!(!attach.contains("hunter2"));
+        assert!(attach.ends_with("AS \"my_1\" (TYPE MYSQL, SECRET \"my_1_secret\", READ_ONLY)"));
+    }
+
+    #[test]
+    fn attach_without_password_has_no_secret() {
+        let cfg = ConnectorConfig::Mysql {
+            host: "h".into(),
+            port: 3306,
+            database: "d".into(),
+            user: "u".into(),
+            password: None,
+        };
+        let sql = cfg.build_attach_sql("my_2").unwrap().unwrap();
+        assert!(sql.starts_with("ATTACH '"));
+        assert!(!sql.contains("SECRET"));
     }
 
     #[test]

@@ -99,8 +99,14 @@ impl ConnectionManager {
         let is_parquet = matches!(config, ConnectorConfig::ParquetGlob { .. });
         if let Some(attach_sql) = config.build_attach_sql(&alias)? {
             conn_guard
-                .execute(&attach_sql, [])
-                .map_err(|e| format!("Falha ao conectar: {}", e))?;
+                .execute_batch(&attach_sql)
+                .map_err(|e| format!("Falha ao conectar: {}", e))
+                .inspect_err(|_| {
+                    let _ = conn_guard.execute_batch(&format!(
+                        "DROP TEMPORARY SECRET IF EXISTS {}",
+                        quote_ident(&super::config::secret_name_for(&alias))
+                    ));
+                })?;
         }
         drop(conn_guard);
 
@@ -264,13 +270,13 @@ impl ConnectionManager {
             .connection()
             .lock()
             .map_err(|_| "Lock DuckDB corrompido".to_string())?;
-        let wrapped = if kind == ConnectorKind::ParquetGlob {
+        if kind == ConnectorKind::ParquetGlob {
             let cfg = self.get_parquet_config(connection_id)?;
-            cfg.build_parquet_select(Some(limit))?
-        } else {
-            format!("SELECT * FROM ({}) AS _prismbi_preview LIMIT {}", sql, limit)
-        };
-        execute_select_query(&conn, &wrapped).map(Into::into)
+            return execute_select_query(&conn, &cfg.build_parquet_select(Some(limit))?).map(Into::into);
+        }
+        let (alias, _) = self.get_alias(connection_id)?;
+        let wrapped = format!("SELECT * FROM ({}) AS _prismbi_preview LIMIT {}", sql, limit);
+        with_default_catalog(&conn, &alias, |c| execute_select_query(c, &wrapped)).map(Into::into)
     }
 
     /// Importa uma tabela ou consulta SQL do catálogo anexado para uma
@@ -286,6 +292,11 @@ impl ConnectionManager {
         let (alias, kind) = self.get_alias(connection_id)?;
         let safe_name = sanitize_identifier(target_table_name);
 
+        // SQL do usuário roda com o banco conectado como catálogo padrão
+        // (`USE alias`), então não depende do alias efêmero e sobrevive a
+        // reconexões no "Atualizar Dados". O destino é qualificado com o
+        // catálogo do app para não ser criado na fonte (que é READ_ONLY).
+        let run_in_source = matches!(source, ImportSource::Sql(_)) && kind != ConnectorKind::ParquetGlob;
         let select_sql = match (&source, kind) {
             (ImportSource::Table { schema, table }, ConnectorKind::ParquetGlob) => {
                 let _ = (schema, table);
@@ -315,13 +326,23 @@ impl ConnectionManager {
             .connection()
             .lock()
             .map_err(|_| "Lock DuckDB corrompido".to_string())?;
+        let app_catalog = current_catalog(&conn)?;
         let create_sql = format!(
-            "CREATE OR REPLACE TABLE {} AS {}",
+            "CREATE OR REPLACE TABLE {}.main.{} AS {}",
+            quote_ident(&app_catalog),
             quote_ident(&safe_name),
             select_sql
         );
-        conn.execute(&create_sql, [])
-            .map_err(|e| format!("Erro ao importar dados: {}", e))?;
+        let run = |c: &duckdb::Connection| {
+            c.execute(&create_sql, [])
+                .map(|_| ())
+                .map_err(|e| format!("Erro ao importar dados: {}", e))
+        };
+        if run_in_source {
+            with_default_catalog(&conn, &alias, run)?;
+        } else {
+            run(&conn)?;
+        }
 
         crate::engine::duckdb_store::build_table_payload_pub(&conn, &safe_name, target_table_name)
     }
@@ -334,6 +355,10 @@ impl ConnectionManager {
                 .lock()
                 .map_err(|_| "Lock DuckDB corrompido".to_string())?;
             let _ = conn.execute(&format!("DETACH {}", quote_ident(&alias)), []);
+            let _ = conn.execute_batch(&format!(
+                "DROP TEMPORARY SECRET IF EXISTS {}",
+                quote_ident(&super::config::secret_name_for(&alias))
+            ));
         }
         let mut map = self
             .connections
@@ -348,6 +373,30 @@ impl ConnectionManager {
 pub enum ImportSource {
     Table { schema: String, table: String },
     Sql(String),
+}
+
+fn current_catalog(conn: &Connection) -> Result<String, String> {
+    conn.query_row("SELECT current_database()", [], |r| r.get(0))
+        .map_err(|e| format!("Erro ao ler catálogo atual: {}", e))
+}
+
+/// Executa `f` com `alias` como catálogo padrão e sempre restaura o anterior,
+/// inclusive em caso de erro (a conexão DuckDB é compartilhada pelo app).
+fn with_default_catalog<T>(
+    conn: &Connection,
+    alias: &str,
+    f: impl FnOnce(&Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    let previous = current_catalog(conn)?;
+    conn.execute_batch(&format!("USE {}", quote_ident(alias)))
+        .map_err(|e| format!("Erro ao selecionar o banco conectado: {}", e))?;
+    let out = f(conn);
+    let restored = conn.execute_batch(&format!("USE {}", quote_ident(&previous)));
+    match (out, restored) {
+        (Ok(v), Ok(())) => Ok(v),
+        (Err(e), _) => Err(e),
+        (Ok(_), Err(e)) => Err(format!("Erro ao restaurar o catálogo do app: {}", e)),
+    }
 }
 
 fn install_and_load_extension(conn: &Connection, extension: &str) -> Result<(), String> {

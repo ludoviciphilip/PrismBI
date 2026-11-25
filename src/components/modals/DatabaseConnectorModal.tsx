@@ -345,6 +345,11 @@ export const NativeDbConnectorPanel: React.FC<{ onImported?: () => void }> = ({ 
 
           {mode === 'sql' && (
             <div className="space-y-2">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                A consulta roda direto no banco conectado (somente leitura). Use os nomes do próprio banco,
+                por exemplo <code className="font-mono">SELECT * FROM vendas</code> (SQLite/DuckDB) ou{' '}
+                <code className="font-mono">SELECT * FROM public.vendas</code> (PostgreSQL/MySQL: schema.tabela).
+              </p>
               <textarea
                 className="w-full h-20 px-2 py-1.5 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
                 value={sql}

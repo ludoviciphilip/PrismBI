@@ -112,33 +112,9 @@ fn duckdb_file_connector_query_preview_isolated_from_main_catalog() {
         )
         .expect("connect");
 
-    // Sem qualificar com o catálogo anexado, a consulta roda contra o
-    // catálogo principal (vazio) — confirma que o ATTACH não "vaza" dados
-    // da fonte externa para o namespace padrão sem qualificação explícita.
-    let err = manager
-        .query_preview(
-            &store,
-            &info.connection_id,
-            "SELECT uf, COUNT(*) AS qtd FROM clientes GROUP BY uf ORDER BY uf",
-            100,
-        )
-        .expect_err("clientes não deveria existir no catálogo principal");
-    assert!(err.to_lowercase().contains("clientes") || err.to_lowercase().contains("not found") || err.to_lowercase().contains("catalog"));
-
-    // Importar a tabela torna-a disponível no catálogo principal, e então
-    // a mesma consulta (sem prefixo) passa a funcionar.
-    manager
-        .import_table(
-            &store,
-            &info.connection_id,
-            ImportSource::Table {
-                schema: "main".to_string(),
-                table: "clientes".to_string(),
-            },
-            "clientes",
-        )
-        .expect("import_table");
-
+    // O SQL do usuário roda com o banco conectado como catálogo padrão:
+    // `clientes` sem prefixo resolve na fonte, sem precisar conhecer o alias
+    // interno (conn_<uuid>), que muda a cada conexão.
     let preview = manager
         .query_preview(
             &store,
@@ -146,20 +122,124 @@ fn duckdb_file_connector_query_preview_isolated_from_main_catalog() {
             "SELECT uf, COUNT(*) AS qtd FROM clientes GROUP BY uf ORDER BY uf",
             100,
         )
-        .expect("query_preview after import");
+        .expect("SQL sem prefixo deve resolver no banco conectado");
     assert_eq!(preview.row_count, 2);
 
+    // O catálogo padrão do app é restaurado depois da consulta.
+    let current: String = store
+        .connection()
+        .lock()
+        .unwrap()
+        .query_row("SELECT current_database()", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(current, "memory");
+
     manager.disconnect(&store, &info.connection_id).unwrap();
+}
+
+/// Regressão: tabela importada por SQL precisa continuar atualizável depois
+/// de reconectar (o alias interno muda; o SQL salvo não pode depender dele).
+#[test]
+fn duckdb_file_sql_import_survives_reconnect_like_refresh() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("source3.duckdb");
+    {
+        let setup = duckdb::Connection::open(&db_path).expect("create source duckdb");
+        setup
+            .execute_batch(
+                "CREATE TABLE vendas (id INTEGER, valor DOUBLE); \
+                 INSERT INTO vendas VALUES (1, 10.0), (2, 32.5);",
+            )
+            .expect("seed");
+    }
+    let store = DuckDbStore::new_in_memory().expect("init target duckdb");
+    let manager = ConnectionManager::new();
+    let cfg = || ConnectorConfig::DuckdbFile {
+        path: db_path.to_string_lossy().to_string(),
+    };
+    let sql = "SELECT id, valor * 2 AS dobro FROM vendas".to_string();
+
+    for round in 0..2 {
+        let info = manager.connect(&store, cfg()).expect("connect");
+        let payload = manager
+            .import_table(&store, &info.connection_id, ImportSource::Sql(sql.clone()), "f_Dobro")
+            .unwrap_or_else(|e| panic!("rodada {}: {}", round, e));
+        assert_eq!(payload.rows.len(), 2, "rodada {}", round);
+        manager.disconnect(&store, &info.connection_id).unwrap();
+    }
+
+    // A tabela importada vive no catálogo principal do app.
+    let n: i64 = store
+        .connection()
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM memory.main.\"f_Dobro\"", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 2);
 }
 
 #[test]
 #[ignore = "requer servidor PostgreSQL real acessível pela rede; cobertura de geração de SQL em connectors::config::tests"]
 fn postgres_live_connection_smoke_test() {
-    unreachable!("executar manualmente com um servidor Postgres de teste configurado");
+    live_server_roundtrip("PRISMBI_TEST_PG", |host, port, user, password, database| {
+        ConnectorConfig::Postgres {
+            host,
+            port,
+            database,
+            user,
+            password: Some(password),
+            schema: None,
+            ssl_mode: Some("disable".into()),
+        }
+    }, "vendas");
 }
 
 #[test]
 #[ignore = "requer servidor MySQL/MariaDB real acessível pela rede; cobertura de geração de SQL em connectors::config::tests"]
 fn mysql_live_connection_smoke_test() {
-    unreachable!("executar manualmente com um servidor MySQL de teste configurado");
+    live_server_roundtrip("PRISMBI_TEST_MYSQL", |host, port, user, password, database| {
+        ConnectorConfig::Mysql { host, port, database: database.clone(), user, password: Some(password) }
+    }, "loja");
+}
+
+/// Teste de ponta a ponta contra um servidor real. Variáveis:
+/// `<PREFIX>_HOST`, `_PORT`, `_USER`, `_PASSWORD`, `_DB`. A tabela
+/// `<schema>.pedidos(id, cliente, valor)` com 3 linhas (Ana 10.50, Bruno 20,
+/// Ana 5.25) precisa existir. O CI sobe os serviços (ver ci.yml); localmente:
+/// `podman run -e POSTGRES_PASSWORD=... -p 55432:5432 postgres:16-alpine`.
+fn live_server_roundtrip(
+    prefix: &str,
+    make: impl Fn(String, u16, String, String, String) -> ConnectorConfig,
+    schema: &str,
+) {
+    let var = |k: &str| std::env::var(format!("{}_{}", prefix, k)).ok();
+    let (Some(host), Some(port), Some(user), Some(password), Some(db)) =
+        (var("HOST"), var("PORT"), var("USER"), var("PASSWORD"), var("DB"))
+    else {
+        panic!("defina {}_HOST/_PORT/_USER/_PASSWORD/_DB para rodar este teste", prefix);
+    };
+    let store = DuckDbStore::new_in_memory().expect("duckdb");
+    let manager = ConnectionManager::new();
+    let info = manager
+        .connect(&store, make(host, port.parse().unwrap(), user, password, db))
+        .expect("connect");
+
+    let tables = manager.list_tables(&store, &info.connection_id, Some(schema)).expect("list_tables");
+    assert!(tables.iter().any(|t| t.name == "pedidos"), "pedidos não listada: {:?}", tables.iter().map(|t| &t.name).collect::<Vec<_>>());
+
+    let preview = manager
+        .preview_table(&store, &info.connection_id, schema, "pedidos", 10)
+        .expect("preview_table");
+    assert_eq!(preview.row_count, 3);
+
+    // SQL com schema explícito, rodando no banco conectado.
+    let sql = format!("SELECT cliente, SUM(valor) AS total FROM {}.pedidos GROUP BY cliente ORDER BY cliente", schema);
+    let q = manager.query_preview(&store, &info.connection_id, &sql, 10).expect("query_preview");
+    assert_eq!(q.row_count, 2);
+
+    let imported = manager
+        .import_table(&store, &info.connection_id, ImportSource::Sql(sql), "f_TotalCliente")
+        .expect("import sql");
+    assert_eq!(imported.rows.len(), 2);
+    manager.disconnect(&store, &info.connection_id).unwrap();
 }
