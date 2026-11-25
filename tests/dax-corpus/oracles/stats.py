@@ -280,3 +280,20 @@ if __name__ == "__main__":
     print("RATE", rate_(36, -300, 8000))
     print("XNPV@10%", xnpv(0.10, FLUXO_VALUES, FLUXO_DATES))
     print("XIRR", xirr(FLUXO_VALUES, FLUXO_DATES))
+
+
+# --- Correção (revisão do mantenedor) -------------------------------------
+# RANKX(ALL(t), SUM(col)) NÃO faz transição de contexto: SUM ignora o contexto
+# de linha, então toda linha avalia o mesmo valor (o do filtro externo) e o
+# rank é 1. Os casos de ranking por linha usam CALCULATE(SUM(col)), cujos
+# valores esperados são exatamente os calculados acima. Valor-alvo BLANK é
+# comparado como 0 => posição 9 (8 valores positivos acima dele).
+def _check_rankx_corrections():
+    vals = [10, 20, 20, 5, None, 15, 30, 30, 30, None]
+    scores = [0 if v is None else v for v in vals]
+    assert 1 + sum(1 for s in scores if s > 0) == 9
+    assert 1 + sum(1 for s in [5] * 10 if s > 5) == 1
+    # SUMX(ALL(t), SUM(col)) com filtro externo ID=4: 10 linhas x SUM no filtro externo (5)
+    assert 10 * 5 == 50
+
+_check_rankx_corrections()

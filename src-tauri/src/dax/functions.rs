@@ -1233,9 +1233,169 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
     Ok(Some(res))
 }
 
+/// One dated cash flow for XNPV/XIRR: (amount, day number — any consistent day epoch).
+pub type DatedFlow = (f64, i64);
+
+/// Year fractions `(d_i - d_first) / 365` (d_first = earliest date) paired with amounts.
+fn xnpv_terms(flows: &[DatedFlow]) -> Vec<(f64, f64)> {
+    let first = flows.iter().map(|f| f.1).min().unwrap_or(0);
+    flows.iter().map(|&(v, d)| (v, (d - first) as f64 / 365.0)).collect()
+}
+
+fn xnpv_at(terms: &[(f64, f64)], rate: f64) -> f64 {
+    terms.iter().map(|&(v, t)| v / (1.0 + rate).powf(t)).sum()
+}
+
+/// d/d(rate) of `xnpv_at`.
+fn xnpv_derivative(terms: &[(f64, f64)], rate: f64) -> f64 {
+    terms.iter().map(|&(v, t)| -t * v / (1.0 + rate).powf(t + 1.0)).sum()
+}
+
+/// XNPV = Σ v_i / (1 + rate)^((d_i - d_1) / 365), d_1 = earliest date (Microsoft Learn).
+pub fn calc_xnpv(rate: f64, flows: &[DatedFlow]) -> Result<f64, String> {
+    if rate <= -1.0 {
+        return Err(format!("XNPV: taxa deve ser maior que -1 (recebido {})", rate));
+    }
+    Ok(xnpv_at(&xnpv_terms(flows), rate))
+}
+
+const XIRR_TOL: f64 = 1e-10;
+
+/// Newton-Raphson on XNPV(rate) = 0. `None` when it diverges (rate leaves (-1, ∞), non-finite
+/// values, flat derivative) or doesn't converge within `max_iter` steps.
+fn xirr_newton(terms: &[(f64, f64)], guess: f64, max_iter: usize) -> Option<f64> {
+    let scale = terms.iter().map(|t| t.0.abs()).fold(1.0, f64::max);
+    let mut r = guess;
+    for _ in 0..max_iter {
+        if r <= -1.0 || !r.is_finite() {
+            return None;
+        }
+        let f = xnpv_at(terms, r);
+        if !f.is_finite() {
+            return None;
+        }
+        if f.abs() <= XIRR_TOL * scale {
+            return Some(r);
+        }
+        let df = xnpv_derivative(terms, r);
+        if !df.is_finite() || df.abs() < 1e-300 {
+            return None;
+        }
+        let next = r - f / df;
+        if (next - r).abs() <= XIRR_TOL * (1.0 + r.abs()) {
+            return (next > -1.0 && xnpv_at(terms, next).abs() <= 1e-6 * scale).then_some(next);
+        }
+        r = next;
+    }
+    None
+}
+
+/// Bisection fallback: scan a ladder of rates in (-1, ∞) for a sign change of XNPV and
+/// bisect it. `None` when no bracket exists (no real IRR in the scanned range).
+fn xirr_bisection(terms: &[(f64, f64)]) -> Option<f64> {
+    const LADDER: [f64; 18] = [
+        -0.999_999, -0.99, -0.9, -0.75, -0.5, -0.25, 0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 100.0,
+        1e3, 1e4, 1e6,
+    ];
+    let scale = terms.iter().map(|t| t.0.abs()).fold(1.0, f64::max);
+    let mut prev: Option<(f64, f64)> = None;
+    for &r in &LADDER {
+        let f = xnpv_at(terms, r);
+        if !f.is_finite() {
+            prev = None;
+            continue;
+        }
+        if f == 0.0 {
+            return Some(r);
+        }
+        if let Some((pr, pf)) = prev {
+            if pf.signum() != f.signum() {
+                let (mut lo, mut hi, mut flo) = (pr, r, pf);
+                for _ in 0..300 {
+                    let mid = 0.5 * (lo + hi);
+                    let fm = xnpv_at(terms, mid);
+                    if fm.abs() <= XIRR_TOL * scale || (hi - lo).abs() <= XIRR_TOL * (1.0 + mid.abs()) {
+                        return Some(mid);
+                    }
+                    if fm.signum() == flo.signum() {
+                        lo = mid;
+                        flo = fm;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                return Some(0.5 * (lo + hi));
+            }
+        }
+        prev = Some((r, f));
+    }
+    None
+}
+
+/// XIRR: the rate r with XNPV(r) = 0. Newton-Raphson from `guess` (DAX default 0.1), falling
+/// back to bracketing + bisection when Newton diverges or stalls; a DAX error when neither
+/// finds a root (e.g. flows without both signs, or no real IRR).
+pub fn calc_xirr(flows: &[DatedFlow], guess: f64) -> Result<f64, String> {
+    let has_pos = flows.iter().any(|f| f.0 > 0.0);
+    let has_neg = flows.iter().any(|f| f.0 < 0.0);
+    if !has_pos || !has_neg {
+        return Err("XIRR requer ao menos um fluxo positivo e um negativo".to_string());
+    }
+    let terms = xnpv_terms(flows);
+    xirr_newton(&terms, guess, 100)
+        .or_else(|| xirr_bisection(&terms))
+        .ok_or_else(|| "XIRR não convergiu: nenhuma taxa zera o XNPV destes fluxos".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fluxo() -> Vec<DatedFlow> {
+        // tests/dax-corpus/models/stats.json t_Fluxo
+        [((2024, 1, 1), -10000.0), ((2024, 3, 1), 2750.0), ((2024, 6, 1), 4250.0), ((2024, 10, 1), 3250.0), ((2025, 1, 1), 2750.0)]
+            .iter()
+            .map(|&((y, m, d), v)| (v, civil_to_days(y, m, d) as i64))
+            .collect()
+    }
+
+    #[test]
+    fn test_xnpv_formula_and_rate_domain() {
+        let flows = fluxo();
+        assert!((calc_xnpv(0.10, &flows).unwrap() - 2316.808365460487).abs() < 1e-6);
+        // Rate 0 is the plain sum; order of the rows doesn't matter (d_1 = earliest date).
+        assert!((calc_xnpv(0.0, &flows).unwrap() - 3000.0).abs() < 1e-9);
+        let mut rev = flows.clone();
+        rev.reverse();
+        assert!((calc_xnpv(0.10, &rev).unwrap() - 2316.808365460487).abs() < 1e-6);
+        assert!(calc_xnpv(-1.0, &flows).is_err());
+    }
+
+    #[test]
+    fn test_xirr_newton_bisection_fallback_and_failure() {
+        let flows = fluxo();
+        let expected = 0.6122389541287326;
+        // Newton from the default guess converges on its own.
+        let terms = xnpv_terms(&flows);
+        let newton = xirr_newton(&terms, 0.1, 100).expect("newton converges from 0.1");
+        assert!((newton - expected).abs() < 1e-8);
+        assert!((calc_xirr(&flows, 0.1).unwrap() - expected).abs() < 1e-8);
+        // Bisection alone finds the same root.
+        assert!((xirr_bisection(&terms).unwrap() - expected).abs() < 1e-8);
+
+        // -100 now, +110 in one year: IRR = 10%. From guess 50 the first Newton step jumps
+        // below -1 (diverges), so the bisection fallback must provide the answer.
+        let simple = vec![(-100.0, 0), (110.0, 365)];
+        assert!(xirr_newton(&xnpv_terms(&simple), 50.0, 100).is_none());
+        assert!((calc_xirr(&simple, 50.0).unwrap() - 0.10).abs() < 1e-8);
+
+        // Mixed signs but no real root: 100 - 300x + 250x² > 0 for every x = 1/(1+r).
+        let no_root = vec![(100.0, 0), (-300.0, 365), (250.0, 730)];
+        assert!(calc_xirr(&no_root, 0.1).is_err());
+        // Single-signed flows have no IRR.
+        assert!(calc_xirr(&[(100.0, 0), (50.0, 365)], 0.1).is_err());
+    }
+
 
     #[test]
     fn test_scalar_math_text_date_financial_functions() {
