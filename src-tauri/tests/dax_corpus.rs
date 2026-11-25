@@ -210,12 +210,18 @@ fn dax_corpus_rust_engine() {
         .collect();
     case_files.sort();
 
+    // DAX_CORPUS_ONLY=<categoria>: roda só essa categoria, grava relatório próprio
+    // e não mexe na baseline (útil para trabalho em paralelo).
+    let only = std::env::var("DAX_CORPUS_ONLY").ok().filter(|s| !s.is_empty());
     let mut results = Vec::new();
     let mut passing = BTreeSet::new();
     let mut seen = BTreeSet::new();
     for path in case_files {
         let file: CorpusFile = serde_json::from_str(&fs::read_to_string(&path).unwrap())
             .unwrap_or_else(|e| panic!("{}: {}", path.display(), e));
+        if only.as_deref().is_some_and(|o| o != file.category) {
+            continue;
+        }
         let model = models
             .get(&file.model)
             .unwrap_or_else(|| panic!("modelo {} inexistente", file.model));
@@ -259,7 +265,10 @@ fn dax_corpus_rust_engine() {
         "engine": ENGINE, "total": results.len(), "passing": passing.len(), "results": results,
     });
     fs::write(
-        dir.join(format!(".report-{}.json", ENGINE)),
+        dir.join(match &only {
+            Some(o) => format!(".report-{}.{}.json", ENGINE, o),
+            None => format!(".report-{}.json", ENGINE),
+        }),
         serde_json::to_string_pretty(&report).unwrap(),
     )
     .unwrap();
@@ -271,7 +280,7 @@ fn dax_corpus_rust_engine() {
         .unwrap_or_default();
     let known: BTreeSet<String> = baseline.get(ENGINE).cloned().unwrap_or_default().into_iter().collect();
 
-    if std::env::var("UPDATE_DAX_BASELINE").as_deref() == Ok("1") {
+    if std::env::var("UPDATE_DAX_BASELINE").as_deref() == Ok("1") && only.is_none() {
         baseline.insert(ENGINE.into(), passing.iter().cloned().collect());
         fs::write(&baseline_path, serde_json::to_string_pretty(&baseline).unwrap() + "\n").unwrap();
     }

@@ -152,11 +152,13 @@ function loadCorpus() {
     models.set(f.replace(/\.json$/, ''), JSON.parse(fs.readFileSync(path.join(modelsDir, f), 'utf8')));
   }
   const casesDir = path.join(CORPUS_DIR, 'cases');
+  const only = process.env.DAX_CORPUS_ONLY;
   const files: CorpusFile[] = fs
     .readdirSync(casesDir)
     .filter(f => f.endsWith('.json'))
     .sort()
-    .map(f => JSON.parse(fs.readFileSync(path.join(casesDir, f), 'utf8')));
+    .map(f => JSON.parse(fs.readFileSync(path.join(casesDir, f), 'utf8')) as CorpusFile)
+    .filter(f => !only || f.category === only);
   return { models, files };
 }
 
@@ -194,12 +196,13 @@ describe('Corpus de conformidade DAX (motor TS)', () => {
     }
 
     const passing = results.filter(r => r.pass).map(r => r.id).sort();
+    const only = process.env.DAX_CORPUS_ONLY;
     fs.writeFileSync(
-      path.join(CORPUS_DIR, `.report-${ENGINE}.json`),
+      path.join(CORPUS_DIR, only ? `.report-${ENGINE}.${only}.json` : `.report-${ENGINE}.json`),
       JSON.stringify({ engine: ENGINE, total: results.length, passing: passing.length, results }, null, 2)
     );
 
-    if (process.env.UPDATE_DAX_BASELINE === '1') {
+    if (process.env.UPDATE_DAX_BASELINE === '1' && !only) {
       const next = { ...baseline, [ENGINE]: passing };
       fs.writeFileSync(baselinePath, JSON.stringify(next, null, 2) + '\n');
     }
