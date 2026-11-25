@@ -17,7 +17,12 @@ function makeCtx(selectedColumns: string[] = []): RibbonCtx {
 }
 
 describe('<Ribbon /> tabbed layout', () => {
-  const tabs = [homeTab({ onCloseAndApply: vi.fn(), onRefreshPreview: vi.fn() }), transformTab(), addColumnTab(), viewTab({ formulaBar: true, quality: true, distribution: true, profile: true }, vi.fn())];
+  const tabs = [
+    homeTab({ onCloseAndApply: vi.fn(), onApply: vi.fn(), onClose: vi.fn(), onRefreshPreview: vi.fn() }),
+    transformTab(),
+    addColumnTab(),
+    viewTab({ formulaBar: true, quality: true, distribution: true, profile: true }, vi.fn()),
+  ];
 
   it('renders the four documented tabs', () => {
     render(<Ribbon tabs={tabs} activeTabId="home" onTabChange={vi.fn()} ctx={makeCtx()} />);
@@ -55,5 +60,30 @@ describe('<Ribbon /> tabbed layout', () => {
     fireEvent.mouseEnter(screen.getByTestId('ribbon-item-removeColumnsMenu'));
     const removeBtn = screen.getByTestId('ribbon-item-removeColumns') as HTMLButtonElement;
     expect(removeBtn.disabled).toBe(false);
+  });
+
+  it('looks and behaves like real buttons: cursor-pointer, disabled chrome, focus ring', () => {
+    render(<Ribbon tabs={tabs} activeTabId="home" onTabChange={vi.fn()} ctx={makeCtx([])} />);
+    const closeApply = screen.getByTestId('ribbon-item-closeApply');
+    expect(closeApply.className).toContain('cursor-pointer');
+    expect(closeApply.className).toContain('focus-visible:ring');
+
+    const removeColumnsMenu = screen.getByTestId('ribbon-item-removeColumnsMenu');
+    fireEvent.mouseEnter(removeColumnsMenu);
+    const disabledBtn = screen.getByTestId('ribbon-item-removeColumns') as HTMLButtonElement;
+    expect(disabledBtn.className).toContain('disabled:opacity-40');
+    expect(disabledBtn.className).toContain('disabled:cursor-not-allowed');
+  });
+
+  it('shows a ▸ chevron on dropdown (submenu) top-level buttons', () => {
+    render(<Ribbon tabs={tabs} activeTabId="home" onTabChange={vi.fn()} ctx={makeCtx(['Nome'])} />);
+    // "Remover Colunas" is a submenu (dropdown) at the top level of the Geral group.
+    expect(screen.getByTestId('ribbon-chevron-removeColumnsMenu')).toBeTruthy();
+  });
+
+  it('renders icons for the primary Home/Geral actions', () => {
+    render(<Ribbon tabs={tabs} activeTabId="home" onTabChange={vi.fn()} ctx={makeCtx([])} />);
+    const closeApply = screen.getByTestId('ribbon-item-closeApply');
+    expect(closeApply.querySelector('svg')).toBeTruthy();
   });
 });

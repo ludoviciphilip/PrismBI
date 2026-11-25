@@ -40,4 +40,36 @@ describe('<ConsultasPane />', () => {
     fireEvent.click(screen.getByTestId('consultas-expand'));
     expect(screen.getByTestId('consultas-pane')).toBeTruthy();
   });
+
+  it('shows an "alterações pendentes" dot on dirty queries only', () => {
+    const dirtyQueries = [
+      { id: 't1', name: 'f_Vendas', stepCount: 3, dirty: true },
+      { id: 't2', name: 'd_Produto', stepCount: 0, dirty: false },
+    ];
+    render(<ConsultasPane queries={dirtyQueries} selectedId="t1" onSelect={vi.fn()} />);
+    expect(screen.getByTestId('consulta-dirty-t1')).toBeTruthy();
+    expect(screen.queryByTestId('consulta-dirty-t2')).toBeNull();
+  });
+
+  it('opens a context menu with Renomear/Duplicar/Referência/Excluir on right-click', () => {
+    const onRename = vi.fn();
+    const onDuplicate = vi.fn();
+    const onReference = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <ConsultasPane
+        queries={queries}
+        selectedId="t1"
+        onSelect={vi.fn()}
+        onRename={onRename}
+        onDuplicate={onDuplicate}
+        onReference={onReference}
+        onDelete={onDelete}
+      />,
+    );
+    fireEvent.contextMenu(screen.getByTestId('consulta-item-t1'));
+    expect(screen.getByText('Renomear')).toBeTruthy();
+    fireEvent.click(screen.getByText('Duplicar'));
+    expect(onDuplicate).toHaveBeenCalledWith('t1');
+  });
 });
