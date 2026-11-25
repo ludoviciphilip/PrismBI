@@ -415,6 +415,8 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
         None
     };
     let filters = extract_pbir_filters(vj);
+    let (sort_field, sort_order) =
+        extract_pbir_sort_definition(visual_obj, category_field.as_deref(), &value_fields);
 
     let id = vj
         .get("name")
@@ -460,7 +462,47 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
         action_target,
         text_content,
         filters,
+        sort_field,
+        sort_order,
     })
+}
+
+/// Reads the first entry of PBIR `visual.query.sortDefinition.sort` into a
+/// PrismBI (sortField, sortOrder) pair. Column fields that match the visual's
+/// category keep its (possibly table-qualified) name; measures stay bare.
+fn extract_pbir_sort_definition(
+    visual_obj: &JsonValue,
+    category_field: Option<&str>,
+    value_fields: &[String],
+) -> (Option<String>, Option<String>) {
+    let Some(first) = visual_obj
+        .get("query")
+        .and_then(|q| q.get("sortDefinition"))
+        .and_then(|sd| sd.get("sort"))
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first())
+    else {
+        return (None, None);
+    };
+    let order = first
+        .get("direction")
+        .and_then(|d| d.as_str())
+        .map(|d| if d.eq_ignore_ascii_case("descending") { "desc" } else { "asc" }.to_string());
+    let is_measure = first.get("field").and_then(|f| f.get("Measure")).is_some();
+    let field = first.get("field").and_then(extract_pbir_field_entity_prop).map(|(tbl, prop)| {
+        let bare_cat = category_field.map(|c| c.rsplit('.').next().unwrap_or(c));
+        if is_measure || value_fields.iter().any(|v| v.eq_ignore_ascii_case(&prop)) {
+            prop
+        } else if bare_cat.is_some_and(|c| c.eq_ignore_ascii_case(&prop)) {
+            category_field.unwrap_or(&prop).to_string()
+        } else {
+            match tbl {
+                Some(t) if !t.eq_ignore_ascii_case("medidas") => format!("{}.{}", t, prop),
+                _ => prop,
+            }
+        }
+    });
+    (field, order)
 }
 
 fn strip_pbir_literal(raw: &str) -> String {

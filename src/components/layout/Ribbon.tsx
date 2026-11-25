@@ -257,6 +257,14 @@ export const Ribbon: React.FC<{
     }
     const resolveTableName = (tableId: string) =>
       state.tables.find(t => t.id === tableId || t.name === tableId)?.name || tableId;
+    // "tableId.Coluna" -> "NomeDaTabela.Coluna" (PBIR entities are table names).
+    const qualifyExportField = (field: string) => {
+      const dot = field.indexOf('.');
+      if (dot <= 0) return field;
+      const prefix = field.slice(0, dot);
+      const known = state.tables.some(t => t.id === prefix || t.name === prefix);
+      return known ? `${resolveTableName(prefix)}.${field.slice(dot + 1)}` : field;
+    };
     const toExportFilters = (list: typeof state.filters) =>
       list.map(f => ({
         table: resolveTableName(f.tableId),
@@ -324,6 +332,9 @@ export const Ribbon: React.FC<{
             backgroundColor: v.formatConfig.backgroundColor ?? null,
             borderColor: v.formatConfig.borderColor ?? null,
             filters: toExportFilters(state.filters.filter(f => f.level === 'visual' && f.visualId === v.id)),
+            // Mapped to PBIR query.sortDefinition by the Rust writer.
+            sortField: v.dataConfig.sortField ? qualifyExportField(v.dataConfig.sortField) : null,
+            sortOrder: v.dataConfig.sortOrder ?? null,
           })),
         })),
         themeName: state.activeThemeId || theme || 'PrismTheme',

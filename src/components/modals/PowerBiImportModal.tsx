@@ -234,6 +234,8 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({
                   legendField: v.legendField || undefined,
                   yAxisFields: v.valueFields.length > 0 ? v.valueFields : undefined,
                   aggregation: 'SUM',
+                  ...(v.sortField && vType !== 'slicer' ? { sortField: v.sortField } : {}),
+                  ...(v.sortOrder ? { sortOrder: v.sortOrder } : {}),
                   ...(vType === 'slicer'
                     ? {
                         slicerConfig: {

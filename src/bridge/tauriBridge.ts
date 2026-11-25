@@ -115,6 +115,9 @@ export interface PbiVisualMeta {
   actionTarget?: string | null;
   textContent?: string | null;
   filters?: PbiFilterMeta[];
+  /** From PBIR query.sortDefinition (first sort entry). */
+  sortField?: string | null;
+  sortOrder?: 'asc' | 'desc' | null;
 }
 
 export interface PbiPageMeta {
@@ -208,6 +211,9 @@ export interface ExportPbipPayload {
       backgroundColor?: string | null;
       borderColor?: string | null;
       filters?: ExportPbipFilter[];
+      /** Written as PBIR query.sortDefinition. */
+      sortField?: string | null;
+      sortOrder?: 'asc' | 'desc' | null;
     }[];
   }[];
   themeName?: string | null;

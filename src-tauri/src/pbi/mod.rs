@@ -99,6 +99,12 @@ pub struct PbiVisualMeta {
     pub text_content: Option<String>,
     #[serde(default)]
     pub filters: Vec<PbiFilterMeta>,
+    /// Primary sort field from PBIR `query.sortDefinition` (PrismBI `dataConfig.sortField`).
+    #[serde(default)]
+    pub sort_field: Option<String>,
+    /// "asc" | "desc" (PrismBI `dataConfig.sortOrder`).
+    #[serde(default)]
+    pub sort_order: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -492,6 +498,8 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
                     action_target: None,
                     text_content: None,
                     filters: Vec::new(),
+                    sort_field: None,
+                    sort_order: None,
                 });
             }
         }
