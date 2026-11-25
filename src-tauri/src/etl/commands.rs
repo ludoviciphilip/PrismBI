@@ -224,6 +224,11 @@ pub fn etl_from_m_impl(name: &str, m: &str) -> Result<FromMResponse, String> {
     Ok(FromMResponse { query, warnings })
 }
 
+/// Only the formula-bar expression of one step (`"= Table.AddColumn(...)"`).
+pub fn etl_step_m_impl(query: &EtlQuery, index: usize) -> Result<String, String> {
+    super::m_to::step_m_expr(query, index)
+}
+
 // ------------------------------------------------------------ Tauri layer
 
 #[tauri::command]
@@ -260,4 +265,9 @@ pub fn etl_to_m(query: EtlQuery) -> Result<String, String> {
 #[tauri::command]
 pub fn etl_from_m(name: String, m: String) -> Result<FromMResponse, String> {
     etl_from_m_impl(&name, &m)
+}
+
+#[tauri::command]
+pub fn etl_step_m(query: EtlQuery, index: usize) -> Result<String, String> {
+    etl_step_m_impl(&query, index)
 }

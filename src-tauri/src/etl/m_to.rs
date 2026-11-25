@@ -472,6 +472,50 @@ pub fn m_step_expr(kind: &StepKind, prev: &str) -> Result<String, String> {
             }
             m.trim().to_string()
         }
+        // ---- Rodada 2 (docs/ETL_V09.md §"Rodada 2") ----
+        StepKind::TransformColumns { columns, expression, ty } => {
+            if expression.trim().is_empty() {
+                return Err("transformColumns sem fórmula".into());
+            }
+            let body = each_body(expression);
+            let specs = columns
+                .iter()
+                .map(|c| match ty {
+                    Some(t) => format!("{{{}, {}, {}}}", quote_m_string(c), body, m_type(*t)),
+                    None => format!("{{{}, {}}}", quote_m_string(c), body),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("Table.TransformColumns({},{{{}}})", prev, specs)
+        }
+        StepKind::ReorderColumns { columns } => format!("Table.ReorderColumns({},{})", prev, m_text_list(columns)),
+        StepKind::DemoteHeaders => format!("Table.DemoteHeaders({})", prev),
+        StepKind::Transpose => format!("Table.Transpose({})", prev),
+        StepKind::ReverseRows => format!("Table.ReverseRows({})", prev),
+        StepKind::KeepRange { offset, count } => format!("Table.Range({},{},{})", prev, offset, count),
+        StepKind::RemoveAlternateRows { offset, remove, keep } => {
+            format!("Table.AlternateRows({},{},{},{})", prev, offset, remove, keep)
+        }
+        // Forma canônica do PrismBI (não existe equivalente nativo no Power Query):
+        // uma pseudo-função no mesmo estilo de `PrismBI.DbTable`, reconhecida só
+        // pelo nosso `etl_from_m`. Ver docs/ETL_V09.md.
+        StepKind::KeepDuplicates { columns } => match columns {
+            Some(cols) => format!("PrismBI.KeepDuplicates({}, {})", prev, m_text_list(cols)),
+            None => format!("PrismBI.KeepDuplicates({})", prev),
+        },
+        StepKind::ReplaceErrors { replacements } => format!(
+            "Table.ReplaceErrorValues({},{{{}}})",
+            prev,
+            replacements
+                .iter()
+                .map(|r| format!("{{{}, {}}}", quote_m_string(&r.column), m_scalar(&r.value)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        StepKind::KeepRowsWithErrors { columns } => match columns {
+            Some(cols) => format!("Table.SelectRowsWithErrors({}, {})", prev, m_text_list(cols)),
+            None => format!("Table.SelectRowsWithErrors({})", prev),
+        },
     })
 }
 
@@ -637,4 +681,40 @@ pub fn query_to_m(q: &EtlQuery) -> Result<String, String> {
     out.push_str("in\n    ");
     out.push_str(&prev);
     Ok(out)
+}
+
+/// M expression of a single step (`etl_step_m`): `"= <expr>"`, as the
+/// formula bar shows it, with `prev` resolved to the real previous binding
+/// name (not a placeholder).
+pub fn step_m_expr(q: &EtlQuery, index: usize) -> Result<String, String> {
+    if index >= q.steps.len() {
+        return Err(format!("índice de etapa inválido: {}", index));
+    }
+    let mut used: HashSet<String> = HashSet::new();
+    let mut step_names = Vec::with_capacity(q.steps.len());
+    for s in &q.steps {
+        let base = if s.name.trim().is_empty() {
+            s.kind.default_step_name().to_string()
+        } else {
+            s.name.clone()
+        };
+        let mut name = base.clone();
+        let mut i = 2;
+        while used.contains(&name) {
+            name = format!("{} ({})", base, i);
+            i += 1;
+        }
+        used.insert(name.clone());
+        step_names.push(name);
+    }
+    let bindings = source_bindings(&q.source, &used)?;
+    let mut prev = quote_m_ident(&bindings.last().unwrap().0);
+    for (i, (s, name)) in q.steps.iter().zip(&step_names).enumerate() {
+        let expr = m_step_expr(&s.kind, &prev).map_err(|e| format!("passo '{}': {}", name, e))?;
+        if i == index {
+            return Ok(format!("= {}", expr));
+        }
+        prev = quote_m_ident(name);
+    }
+    Err("etapa não encontrada".into())
 }

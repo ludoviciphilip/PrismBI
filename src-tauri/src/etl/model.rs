@@ -363,6 +363,46 @@ pub enum StepKind {
     OpaqueM {
         m: String,
     },
+    // ---- Rodada 2 (docs/ETL_V09.md §"Rodada 2") ----
+    TransformColumns {
+        columns: Vec<String>,
+        expression: String,
+        #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+        ty: Option<EtlType>,
+    },
+    ReorderColumns {
+        columns: Vec<String>,
+    },
+    DemoteHeaders,
+    Transpose,
+    ReverseRows,
+    KeepRange {
+        offset: u64,
+        count: u64,
+    },
+    RemoveAlternateRows {
+        offset: u64,
+        remove: u64,
+        keep: u64,
+    },
+    KeepDuplicates {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        columns: Option<Vec<String>>,
+    },
+    ReplaceErrors {
+        replacements: Vec<ReplaceErrorSpec>,
+    },
+    KeepRowsWithErrors {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        columns: Option<Vec<String>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceErrorSpec {
+    pub column: String,
+    pub value: Scalar,
 }
 
 impl StepKind {
@@ -400,6 +440,16 @@ impl StepKind {
             StepKind::MergeQueries { .. } => "mergeQueries",
             StepKind::AppendQueries { .. } => "appendQueries",
             StepKind::OpaqueM { .. } => "opaqueM",
+            StepKind::TransformColumns { .. } => "transformColumns",
+            StepKind::ReorderColumns { .. } => "reorderColumns",
+            StepKind::DemoteHeaders => "demoteHeaders",
+            StepKind::Transpose => "transpose",
+            StepKind::ReverseRows => "reverseRows",
+            StepKind::KeepRange { .. } => "keepRange",
+            StepKind::RemoveAlternateRows { .. } => "removeAlternateRows",
+            StepKind::KeepDuplicates { .. } => "keepDuplicates",
+            StepKind::ReplaceErrors { .. } => "replaceErrors",
+            StepKind::KeepRowsWithErrors { .. } => "keepRowsWithErrors",
         }
     }
 
@@ -437,6 +487,16 @@ impl StepKind {
             StepKind::MergeQueries { .. } => "Merged Queries",
             StepKind::AppendQueries { .. } => "Appended Query",
             StepKind::OpaqueM { .. } => "Custom Step",
+            StepKind::TransformColumns { .. } => "Transformed Column",
+            StepKind::ReorderColumns { .. } => "Reordered Columns",
+            StepKind::DemoteHeaders => "Demoted Headers",
+            StepKind::Transpose => "Transposed Table",
+            StepKind::ReverseRows => "Reversed Rows",
+            StepKind::KeepRange { .. } => "Kept Range of Rows",
+            StepKind::RemoveAlternateRows { .. } => "Removed Alternate Rows",
+            StepKind::KeepDuplicates { .. } => "Kept Duplicates",
+            StepKind::ReplaceErrors { .. } => "Replaced Errors",
+            StepKind::KeepRowsWithErrors { .. } => "Kept Rows With Errors",
         }
     }
 }

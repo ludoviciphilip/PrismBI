@@ -282,6 +282,70 @@
             "op": "countRows"
           }
         ]
+      },
+      {
+        "id": "s25",
+        "name": "Linhas Invertidas",
+        "op": "reverseRows"
+      },
+      {
+        "id": "s26",
+        "name": "Colunas Reordenadas",
+        "op": "reorderColumns",
+        "columns": [
+          "Linhas",
+          "Cidade",
+          "Soma"
+        ]
+      },
+      {
+        "id": "s27",
+        "name": "Cidade Abreviada",
+        "op": "transformColumns",
+        "columns": [
+          "Cidade"
+        ],
+        "expression": "Text.Start(_, 3)",
+        "type": "text"
+      },
+      {
+        "id": "s28",
+        "name": "Intervalo Mantido",
+        "op": "keepRange",
+        "offset": 0,
+        "count": 2
+      },
+      {
+        "id": "s29",
+        "name": "Linhas Alternadas Removidas",
+        "op": "removeAlternateRows",
+        "offset": 0,
+        "remove": 1,
+        "keep": 1
+      },
+      {
+        "id": "s30",
+        "name": "Duplicatas Mantidas",
+        "op": "keepDuplicates",
+        "columns": [
+          "Cidade"
+        ]
+      },
+      {
+        "id": "s31",
+        "name": "Erros Substituídos",
+        "op": "replaceErrors",
+        "replacements": [
+          {
+            "column": "Soma",
+            "value": 0
+          }
+        ]
+      },
+      {
+        "id": "s32",
+        "name": "Linhas Com Erros Mantidas",
+        "op": "keepRowsWithErrors"
       }
     ]
   },
@@ -352,6 +416,16 @@
         "queries": [
           "Vendas2025"
         ]
+      },
+      {
+        "id": "p6",
+        "name": "Cabeçalhos Rebaixados",
+        "op": "demoteHeaders"
+      },
+      {
+        "id": "p7",
+        "name": "Tabela Transposta",
+        "op": "transpose"
       }
     ]
   }

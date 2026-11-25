@@ -1280,25 +1280,71 @@ impl<'a> Converter<'a> {
                 } else {
                     items.iter().map(|p| p.unparen().as_list()).collect::<Option<_>>()?
                 };
-                let mut func = None;
-                let mut columns = Vec::new();
-                for p in pairs {
-                    if p.len() < 2 || p.len() > 3 {
-                        return None;
-                    }
-                    let f = text_fn_of(&p[1])?;
-                    if let Some(t) = p.get(2) {
-                        if etl_type_of(t).ok()? != Some(EtlType::Text) {
+                if pairs.is_empty() {
+                    return None;
+                }
+                // Try the fixed Text.* form (textTransform) first; fall back to the
+                // generic transformColumns (arbitrary `each` expression with `_`).
+                let text_transform = (|| -> Option<StepKind> {
+                    let mut func = None;
+                    let mut columns = Vec::new();
+                    for p in &pairs {
+                        if p.len() < 2 || p.len() > 3 {
                             return None;
                         }
+                        let f = text_fn_of(&p[1])?;
+                        if let Some(t) = p.get(2) {
+                            if etl_type_of(t).ok()? != Some(EtlType::Text) {
+                                return None;
+                            }
+                        }
+                        if func.is_some_and(|x| x != f) {
+                            return None;
+                        }
+                        func = Some(f);
+                        columns.push(text_of(&p[0])?);
                     }
-                    if func.is_some_and(|x| x != f) {
-                        return None;
+                    Some(StepKind::TextTransform { columns, func: func? })
+                })();
+                match text_transform {
+                    Some(k) => k,
+                    None => {
+                        let has_type = pairs[0].len() == 3;
+                        let mut columns = Vec::new();
+                        let mut expr_text: Option<String> = None;
+                        let mut ty: Option<EtlType> = None;
+                        for (i, p) in pairs.iter().enumerate() {
+                            if p.len() < 2 || p.len() > 3 || (p.len() == 3) != has_type {
+                                return None;
+                            }
+                            let ExprKind::Each(body) = &p[1].unparen().kind else {
+                                return None;
+                            };
+                            let t = body.text(self.src).to_string();
+                            if let Some(existing) = &expr_text {
+                                if existing != &t {
+                                    return None;
+                                }
+                            } else {
+                                expr_text = Some(t);
+                            }
+                            if has_type {
+                                let got = etl_type_of(&p[2]).ok()?;
+                                if i == 0 {
+                                    ty = got;
+                                } else if ty != got {
+                                    return None;
+                                }
+                            }
+                            columns.push(text_of(&p[0])?);
+                        }
+                        StepKind::TransformColumns {
+                            columns,
+                            expression: expr_text?,
+                            ty,
+                        }
                     }
-                    func = Some(f);
-                    columns.push(text_of(&p[0])?);
                 }
-                StepKind::TextTransform { columns, func: func? }
             }
             ("Table.UnpivotOtherColumns", [keep, attr, val]) => StepKind::UnpivotOtherColumns {
                 keep: text_list(keep)?,
@@ -1381,6 +1427,42 @@ impl<'a> Converter<'a> {
                     step: i64_of(step)?,
                 }
             }
+            // ---- Rodada 2 (docs/ETL_V09.md §"Rodada 2") ----
+            ("Table.ReorderColumns", [c]) => StepKind::ReorderColumns { columns: text_list(c)? },
+            ("Table.DemoteHeaders", []) => StepKind::DemoteHeaders,
+            ("Table.Transpose", []) => StepKind::Transpose,
+            ("Table.ReverseRows", []) => StepKind::ReverseRows,
+            ("Table.Range", [o, c]) => StepKind::KeepRange { offset: u64_of(o)?, count: u64_of(c)? },
+            ("Table.AlternateRows", [o, r, k]) => StepKind::RemoveAlternateRows {
+                offset: u64_of(o)?,
+                remove: u64_of(r)?,
+                keep: u64_of(k)?,
+            },
+            ("PrismBI.KeepDuplicates", []) => StepKind::KeepDuplicates { columns: None },
+            ("PrismBI.KeepDuplicates", [c]) => StepKind::KeepDuplicates { columns: Some(text_list(c)?) },
+            ("Table.ReplaceErrorValues", [specs]) => {
+                let items = specs.unparen().as_list()?;
+                let pairs: Vec<&[Expr]> = if items.len() == 2 && text_of(&items[0]).is_some() {
+                    vec![items]
+                } else {
+                    items.iter().map(|p| p.unparen().as_list()).collect::<Option<_>>()?
+                };
+                let mut replacements = Vec::new();
+                for p in pairs {
+                    if p.len() != 2 {
+                        return None;
+                    }
+                    replacements.push(ReplaceErrorSpec {
+                        column: text_of(&p[0])?,
+                        value: scalar_of(&p[1])?,
+                    });
+                }
+                StepKind::ReplaceErrors { replacements }
+            }
+            ("Table.SelectRowsWithErrors", []) => StepKind::KeepRowsWithErrors { columns: None },
+            ("Table.SelectRowsWithErrors", [c]) => StepKind::KeepRowsWithErrors {
+                columns: Some(text_list(c)?),
+            },
             _ => return None,
         };
         steps.push((name, kind));
