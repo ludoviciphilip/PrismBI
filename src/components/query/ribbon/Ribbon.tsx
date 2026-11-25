@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronRight } from 'lucide-react';
 import { MenuNode, RibbonCtx, RibbonTabDef } from './menus';
 
 /** Um botão do ribbon: ação direta ou abre um dropdown ▸ com submenus aninhados. */
-const RibbonNodeButton: React.FC<{ node: MenuNode; ctx: RibbonCtx }> = ({ node, ctx }) => {
+const RibbonNodeButton: React.FC<{ node: MenuNode; ctx: RibbonCtx; onAction?: () => void }> = ({ node, ctx, onAction }) => {
   const [open, setOpen] = useState(false);
   const enabled = node.enabled ? node.enabled(ctx) : true;
   const title = !enabled ? node.disabledReason || 'Indisponível' : undefined;
@@ -14,7 +15,10 @@ const RibbonNodeButton: React.FC<{ node: MenuNode; ctx: RibbonCtx }> = ({ node, 
         data-testid={`ribbon-item-${node.id}`}
         title={title}
         disabled={!enabled}
-        onClick={() => node.run(ctx)}
+        onClick={() => {
+          node.run(ctx);
+          onAction?.();
+        }}
         className="w-full text-left px-3 py-1.5 text-[12px] hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed rounded-md"
       >
         {node.label}
@@ -36,12 +40,15 @@ const RibbonNodeButton: React.FC<{ node: MenuNode; ctx: RibbonCtx }> = ({ node, 
         <ChevronRight className="w-3 h-3 text-slate-400" />
       </button>
       {open && enabled && (
+        // Submenu aninhado: já está dentro de um dropdown de topo (portalizado),
+        // então pode ficar absolute normalmente — não sofre o corte do
+        // `overflow-x-auto` da faixa de grupos (ver TopLevelButton).
         <div
           data-testid={`ribbon-submenu-${node.id}`}
           className="absolute left-full top-0 min-w-[200px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl py-1 z-50"
         >
           {node.items.map(child => (
-            <RibbonNodeButton key={child.id} node={child} ctx={ctx} />
+            <RibbonNodeButton key={child.id} node={child} ctx={ctx} onAction={onAction} />
           ))}
         </div>
       )}
@@ -49,11 +56,27 @@ const RibbonNodeButton: React.FC<{ node: MenuNode; ctx: RibbonCtx }> = ({ node, 
   );
 };
 
-/** Botão de topo-de-grupo: cada MenuNode de 1º nível vira um botão clicável/dropdown na faixa. */
+/**
+ * Botão de topo-de-grupo: cada MenuNode de 1º nível vira um botão clicável/dropdown
+ * na faixa. O dropdown é renderizado via portal em document.body e posicionado
+ * pelas coordenadas do botão: a faixa de grupos usa `overflow-x-auto` para rolar
+ * horizontalmente em 1280px, e por regra do CSS isso força `overflow-y` a
+ * também cortar (computa para `auto`) — um dropdown `absolute` comum dentro
+ * dela ficaria cortado verticalmente. O portal evita esse corte.
+ */
 const TopLevelButton: React.FC<{ node: MenuNode; ctx: RibbonCtx }> = ({ node, ctx }) => {
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
   const enabled = node.enabled ? node.enabled(ctx) : true;
   const title = !enabled ? node.disabledReason || 'Indisponível' : undefined;
+
+  useLayoutEffect(() => {
+    if (open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      setPos({ left: rect.left, top: rect.bottom + 2 });
+    }
+  }, [open]);
 
   if (node.kind === 'action') {
     return (
@@ -70,8 +93,16 @@ const TopLevelButton: React.FC<{ node: MenuNode; ctx: RibbonCtx }> = ({ node, ct
   }
 
   return (
-    <div className="relative" onMouseLeave={() => setOpen(false)}>
+    <div
+      className="relative"
+      onMouseLeave={e => {
+        // só fecha se o mouse não foi para o menu portalizado
+        const next = e.relatedTarget as Node | null;
+        if (!next || !(next as HTMLElement).closest?.(`[data-portal-for="${node.id}"]`)) setOpen(false);
+      }}
+    >
       <button
+        ref={btnRef}
         data-testid={`ribbon-item-${node.id}`}
         title={title}
         disabled={!enabled}
@@ -84,16 +115,22 @@ const TopLevelButton: React.FC<{ node: MenuNode; ctx: RibbonCtx }> = ({ node, ct
           <ChevronRight className="w-2.5 h-2.5 rotate-90" />
         </span>
       </button>
-      {open && enabled && (
-        <div
-          data-testid={`ribbon-submenu-${node.id}`}
-          className="absolute left-0 top-full mt-0.5 min-w-[200px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl py-1 z-50"
-        >
-          {node.items.map(child => (
-            <RibbonNodeButton key={child.id} node={child} ctx={ctx} />
-          ))}
-        </div>
-      )}
+      {open && enabled && pos
+        ? createPortal(
+            <div
+              data-testid={`ribbon-submenu-${node.id}`}
+              data-portal-for={node.id}
+              onMouseLeave={() => setOpen(false)}
+              style={{ position: 'fixed', left: pos.left, top: pos.top }}
+              className="min-w-[200px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl py-1 z-50"
+            >
+              {node.items.map(child => (
+                <RibbonNodeButton key={child.id} node={child} ctx={ctx} onAction={() => setOpen(false)} />
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 };
