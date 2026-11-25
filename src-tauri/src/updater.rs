@@ -177,7 +177,11 @@ pub fn classify_install(
     if exists("/var/lib/pacman/local") {
         return InstallKind::Managed;
     }
-    if exists("/var/lib/dpkg/info/prismbi.list") || exists("/etc/debian_version") {
+    // O pacote .deb gerado pelo Tauri se chama "prism-bi".
+    if exists("/var/lib/dpkg/info/prism-bi.list")
+        || exists("/var/lib/dpkg/info/prismbi.list")
+        || exists("/etc/debian_version")
+    {
         return InstallKind::Deb;
     }
     if exists("/etc/redhat-release") || exists("/etc/fedora-release") || exists("/etc/SuSE-release")
@@ -579,6 +583,10 @@ mod tests {
         );
         assert_eq!(
             classify_install(None, None, Some(usr), &|p| p == "/etc/debian_version"),
+            InstallKind::Deb
+        );
+        assert_eq!(
+            classify_install(None, None, Some(usr), &|p| p == "/var/lib/dpkg/info/prism-bi.list"),
             InstallKind::Deb
         );
         assert_eq!(
