@@ -7,6 +7,7 @@
 mod contract;
 mod fixtures;
 mod rhino;
+mod round2;
 mod roundtrip;
 mod security;
 mod steps;

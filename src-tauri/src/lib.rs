@@ -497,6 +497,7 @@ pub fn run() {
             etl::commands::etl_apply,
             etl::commands::etl_to_m,
             etl::commands::etl_from_m,
+            etl::commands::etl_step_m,
         ])
         .run(tauri::generate_context!())
         .expect("Erro ao executar PrismBI");

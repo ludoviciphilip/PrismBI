@@ -1646,6 +1646,252 @@ fn compile_step(ctx: &mut CompileCtx<'_>, chain: &Chain, kind: &StepKind) -> Res
                 parts.join(" UNION ALL BY NAME ")
             )
         }
+
+        // ---- Rodada 2 (docs/ETL_V09.md §"Rodada 2") ----
+        StepKind::TransformColumns { columns, expression, ty } => {
+            if columns.is_empty() {
+                return Err("transformColumns exige ao menos uma coluna".into());
+            }
+            for c in columns {
+                chain.require(c)?;
+            }
+            let mut items = vec![qi(ROW_IDX)];
+            let mut new_flags: Vec<String> = Vec::new();
+            for c in chain.visible() {
+                if !columns.contains(&c.name) {
+                    items.push(qi(&c.name));
+                    continue;
+                }
+                let cat = cat_of(&c.ty);
+                let x = qi(&c.name);
+                let (expr, rescat) = custom_expr::translate_cell(expression, chain, (x.clone(), cat))
+                    .map_err(|e| format!("'{}': {}", c.name, e))?;
+                let conv = match ty {
+                    Some(t) => convert_expr(&format!("({})", expr), rescat, *t, INVARIANT, false),
+                    None => expr,
+                };
+                items.push(format!("{} AS {}", conv, x));
+                let failed = conversion_failed(&x, cat, &conv);
+                let old = if chain.has_flag(&c.name) {
+                    format!("COALESCE({}, FALSE)", qi(&flag_name(&c.name)))
+                } else {
+                    "FALSE".to_string()
+                };
+                new_flags.push(format!("({} OR {}) AS {}", old, failed, qi(&flag_name(&c.name))));
+            }
+            for f in chain.flags() {
+                let col = &f[ERR_PREFIX.len()..];
+                if !columns.iter().any(|c| c == col) {
+                    items.push(qi(&f));
+                }
+            }
+            items.extend(new_flags);
+            sel(&items, &p, "")
+        }
+
+        StepKind::ReorderColumns { columns } => {
+            check_unique_ci(columns)?;
+            if columns.len() != vis.len() || !columns.iter().all(|c| vis.contains(c)) {
+                return Err("reorderColumns deve listar exatamente as colunas existentes, sem repetir nem omitir".into());
+            }
+            let mut items = vec![qi(ROW_IDX)];
+            for c in columns {
+                items.push(qi(c));
+                if chain.has_flag(c) {
+                    items.push(qi(&flag_name(c)));
+                }
+            }
+            sel(&items, &p, "")
+        }
+
+        StepKind::DemoteHeaders => {
+            if vis.is_empty() {
+                return Ok(sel(&chain.passthrough(), &p, ""));
+            }
+            let col_names: Vec<String> = (1..=vis.len()).map(|i| format!("Column{}", i)).collect();
+            let header_cols: Vec<String> = vis
+                .iter()
+                .zip(&col_names)
+                .map(|(n, c)| format!("{} AS {}", lit_str(n), qi(c)))
+                .collect();
+            let header_select = format!(
+                "SELECT (SELECT min({r}) FROM {p}) - 1 AS {r}, {cols}",
+                r = qi(ROW_IDX),
+                p = p,
+                cols = header_cols.join(", ")
+            );
+            let mut data_items = vec![qi(ROW_IDX)];
+            for (n, c) in vis.iter().zip(&col_names) {
+                let info = chain.col(n).unwrap();
+                data_items.push(format!("{} AS {}", to_text(&qi(n), cat_of(&info.ty), INVARIANT), qi(c)));
+            }
+            let data_select = sel(&data_items, &p, "");
+            format!("{} UNION ALL BY NAME {}", header_select, data_select)
+        }
+
+        StepKind::Transpose => {
+            const MAX_CELLS: usize = 10_000;
+            if vis.is_empty() {
+                return Ok(sel(&chain.passthrough(), &p, "WHERE FALSE"));
+            }
+            let count_sql = chain.select("count(*)", "");
+            let row_count: i64 = ctx
+                .conn
+                .query_row(&count_sql, [], |r| r.get(0))
+                .map_err(|e| clean_err(&e.to_string()))?;
+            let row_count = row_count.max(0) as usize;
+            if row_count.saturating_mul(vis.len()) > MAX_CELLS {
+                return Err(format!("tabela grande demais para transpor (limite de {} células)", MAX_CELLS));
+            }
+            if row_count == 0 {
+                let rows: Vec<String> = (1..=vis.len()).map(|i| format!("({})", i)).collect();
+                return Ok(format!(
+                    "SELECT * FROM (VALUES {}) AS __t({})",
+                    rows.join(", "),
+                    qi(ROW_IDX)
+                ));
+            }
+            let col_names: Vec<String> = (1..=row_count).map(|i| format!("Column{}", i)).collect();
+            let mut text_cols: Vec<String> = Vec::new();
+            for n in &vis {
+                let info = chain.col(n).unwrap();
+                text_cols.push(to_text(&qi(n), cat_of(&info.ty), INVARIANT));
+            }
+            let mut union_parts = Vec::new();
+            for (oi, tcol) in text_cols.iter().enumerate() {
+                let mut row_items = vec![format!("{} AS {}", oi + 1, qi(ROW_IDX))];
+                for k in 0..row_count {
+                    row_items.push(format!(
+                        "(SELECT {} FROM {} ORDER BY {} LIMIT 1 OFFSET {}) AS {}",
+                        tcol,
+                        p,
+                        qi(ROW_IDX),
+                        k,
+                        qi(&col_names[k])
+                    ));
+                }
+                union_parts.push(format!("SELECT {}", row_items.join(", ")));
+            }
+            union_parts.join(" UNION ALL BY NAME ")
+        }
+
+        StepKind::ReverseRows => {
+            let mut items = vec![format!("row_number() OVER (ORDER BY {} DESC) AS {}", qi(ROW_IDX), qi(ROW_IDX))];
+            items.extend(chain.passthrough().into_iter().skip(1));
+            sel(&items, &p, "")
+        }
+
+        StepKind::KeepRange { offset, count } => sel(
+            &chain.passthrough(),
+            &p,
+            &format!(
+                "QUALIFY row_number() OVER (ORDER BY {r}) > {o} AND row_number() OVER (ORDER BY {r}) <= {o} + {c}",
+                r = qi(ROW_IDX),
+                o = offset,
+                c = count
+            ),
+        ),
+
+        StepKind::RemoveAlternateRows { offset, remove, keep } => {
+            let cycle = remove + keep;
+            if cycle == 0 {
+                return Err("removeAlternateRows: 'remove' + 'keep' deve ser maior que zero".into());
+            }
+            sel(
+                &chain.passthrough(),
+                &p,
+                &format!(
+                    "QUALIFY row_number() OVER (ORDER BY {r}) <= {o} OR ((row_number() OVER (ORDER BY {r}) - {o} - 1) % {cy}) >= {rm}",
+                    r = qi(ROW_IDX),
+                    o = offset,
+                    cy = cycle,
+                    rm = remove
+                ),
+            )
+        }
+
+        StepKind::KeepDuplicates { columns } => {
+            let cols = match columns {
+                Some(c) => {
+                    for x in c {
+                        chain.require(x)?;
+                    }
+                    c.clone()
+                }
+                None => vis.clone(),
+            };
+            if cols.is_empty() {
+                return Ok(sel(&chain.passthrough(), &p, "WHERE FALSE"));
+            }
+            sel(
+                &chain.passthrough(),
+                &p,
+                &format!(
+                    "QUALIFY count(*) OVER (PARTITION BY {}) > 1",
+                    cols.iter().map(|c| qi(c)).collect::<Vec<_>>().join(", ")
+                ),
+            )
+        }
+
+        StepKind::ReplaceErrors { replacements } => {
+            let mut seen = HashSet::new();
+            for r in replacements {
+                chain.require(&r.column)?;
+                if !seen.insert(r.column.clone()) {
+                    return Err(format!("coluna '{}' repetida em replaceErrors", r.column));
+                }
+            }
+            let mut items = vec![qi(ROW_IDX)];
+            for c in chain.visible() {
+                match replacements.iter().find(|r| r.column == c.name) {
+                    Some(r) if chain.has_flag(&c.name) => {
+                        let cat = cat_of(&c.ty);
+                        if !(r.value.is_null() || cats_compatible(cat, scalar_cat(&r.value))) {
+                            return Err(format!("valor de substituição incompatível com a coluna '{}'", c.name));
+                        }
+                        let x = qi(&c.name);
+                        items.push(format!(
+                            "(CASE WHEN COALESCE({f}, FALSE) THEN {v} ELSE {x} END) AS {x}",
+                            f = qi(&flag_name(&c.name)),
+                            v = lit_scalar(&r.value)?,
+                            x = x
+                        ));
+                    }
+                    _ => items.push(qi(&c.name)),
+                }
+            }
+            for f in chain.flags() {
+                let col = &f[ERR_PREFIX.len()..];
+                if replacements.iter().any(|r| r.column == col) {
+                    items.push(format!("FALSE AS {}", qi(&f)));
+                } else {
+                    items.push(qi(&f));
+                }
+            }
+            sel(&items, &p, "")
+        }
+
+        StepKind::KeepRowsWithErrors { columns } => {
+            let flags: Vec<String> = match columns {
+                Some(cols) => {
+                    let mut f = Vec::new();
+                    for c in cols {
+                        chain.require(c)?;
+                        if chain.has_flag(c) {
+                            f.push(flag_name(c));
+                        }
+                    }
+                    f
+                }
+                None => vis.iter().filter(|c| chain.has_flag(c)).map(|c| flag_name(c)).collect(),
+            };
+            if flags.is_empty() {
+                sel(&chain.passthrough(), &p, "WHERE FALSE")
+            } else {
+                let conds: Vec<String> = flags.iter().map(|f| format!("COALESCE({}, FALSE)", qi(f))).collect();
+                sel(&chain.passthrough(), &p, &format!("WHERE {}", conds.join(" OR ")))
+            }
+        }
     })
 }
 
