@@ -206,7 +206,7 @@ describe('visualSort — engine integration', () => {
     w: 100,
     h: 100,
     dataConfig: { tableId: 't1', xAxisField: 'NomeMes', yAxisFields: ['Valor'], aggregation: 'SUM', ...dc },
-    formatConfig: {},
+    formatConfig: { showTitle: true },
   });
 
   it('JS planner and a native-shaped result sort identically through the shared spec', () => {
