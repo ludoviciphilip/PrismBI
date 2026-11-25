@@ -492,6 +492,11 @@ pub fn run() {
             credentials_get_exists,
             credentials_delete,
             credentials_get,
+            etl::commands::etl_load_raw,
+            etl::commands::etl_preview,
+            etl::commands::etl_apply,
+            etl::commands::etl_to_m,
+            etl::commands::etl_from_m,
         ])
         .run(tauri::generate_context!())
         .expect("Erro ao executar PrismBI");
