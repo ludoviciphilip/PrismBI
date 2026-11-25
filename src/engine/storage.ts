@@ -49,6 +49,8 @@ export interface ProjectState {
   currency?: string;
   /** Consultas de ETL por tabela (v0.9.0+). Chave = tableId. */
   appliedSteps?: Record<string, EtlQuery>;
+  /** Snapshot da última consulta aplicada com sucesso por tabela — usado para "consultas sujas". */
+  appliedQuerySnapshot?: Record<string, EtlQuery>;
   updatedAt: string;
 }
 

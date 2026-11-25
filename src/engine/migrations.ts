@@ -409,6 +409,7 @@ export function migrateProjectState(rawState: any): ProjectState {
     showGrid: rawState.showGrid !== undefined ? Boolean(rawState.showGrid) : true,
     snapToGrid: rawState.snapToGrid !== undefined ? Boolean(rawState.snapToGrid) : true,
     appliedSteps: migrateAppliedSteps(rawState.appliedSteps, synced.tables),
+    appliedQuerySnapshot: migrateAppliedSteps(rawState.appliedQuerySnapshot, synced.tables),
     updatedAt: rawState.updatedAt || new Date().toISOString(),
   };
 }

@@ -26,6 +26,11 @@ import {
 } from '../types/bi';
 import { EtlQuery, EtlStep, EtlSource } from '../types/etl';
 import { etlApply, etlFromM, etlLoadRaw, setBrowserRawProvider } from '../services/etl/etlClient';
+
+export interface ApplyAllQueriesResult {
+  applied: { tableId: string; name: string; rowCount: number; truncated: boolean }[];
+  errors: { tableId: string; name: string; stepIndex?: number; message: string } | null;
+}
 import { tableToEtlSource } from '../services/etl/etlSource';
 import { getSampleDatasets, generateCalendarTable } from '../data/sampleDatasets';
 import { globalDataEngine } from '../engine/dataEngine';
@@ -267,6 +272,8 @@ interface BiState {
 
   // Power Query / ETL
   appliedSteps: Record<string, EtlQuery>;
+  /** Snapshot da última EtlQuery efetivamente aplicada por tabela — usado para detectar "consultas sujas". */
+  appliedQuerySnapshot: Record<string, EtlQuery>;
   selectedStepByTable: Record<string, string | undefined>;
   getOrInitQuery: (tableId: string) => EtlQuery;
   /** Como getOrInitQuery, mas converte o M de tabelas .pbip em etapas (etl_from_m) e persiste a consulta. */
@@ -283,6 +290,16 @@ interface BiState {
   selectQueryStep: (tableId: string, stepId: string | undefined) => void;
   closeAndApplyQuery: (tableId: string) => Promise<void>;
   refreshTableData: (tableId: string) => Promise<void>;
+  /** true se as etapas da tabela mudaram desde a última aplicação bem-sucedida. */
+  isQueryDirty: (tableId: string) => boolean;
+  /** true se QUALQUER tabela com consulta Power Query tem alterações pendentes. */
+  hasPendingQueryChanges: () => boolean;
+  /**
+   * Aplica TODAS as consultas sujas, em ordem de dependência (mergeQueries/appendQueries
+   * primeiro), reportando progresso via onProgress. Para no primeiro erro — mantém as
+   * tabelas já aplicadas com sucesso e devolve qual consulta/etapa falhou.
+   */
+  applyAllDirtyQueries: (onProgress?: (info: { name: string; index: number; total: number }) => void) => Promise<ApplyAllQueriesResult>;
 
   // Governance & RLS
   rlsRoles: RlsRole[];
@@ -2385,6 +2402,7 @@ export const useBiStore = create<BiState>((set, get) => {
 
     // Power Query / ETL (v0.9.0 — ver docs/ETL_V09.md)
     appliedSteps: {},
+    appliedQuerySnapshot: {},
     selectedStepByTable: {},
 
     getOrInitQuery: (tableId) => {
@@ -2493,6 +2511,97 @@ export const useBiStore = create<BiState>((set, get) => {
         })),
         rows: payload.rows,
       });
+      set({ appliedQuerySnapshot: { ...get().appliedQuerySnapshot, [tableId]: query } });
+    },
+
+    isQueryDirty: (tableId) => {
+      const current = get().appliedSteps[tableId];
+      if (!current) return false;
+      const snapshot = get().appliedQuerySnapshot[tableId];
+      // Nunca aplicada: só é "suja" se já tem etapas (consulta vazia = ainda nada a aplicar).
+      if (!snapshot) return current.steps.length > 0;
+      return JSON.stringify(current) !== JSON.stringify(snapshot);
+    },
+
+    hasPendingQueryChanges: () => {
+      return get().tables.some(t => get().isQueryDirty(t.id));
+    },
+
+    applyAllDirtyQueries: async (onProgress) => {
+      const dirtyIds = get().tables.map(t => t.id).filter(id => get().isQueryDirty(id));
+      if (!dirtyIds.length) return { applied: [], errors: null };
+
+      // Ordena por dependência: se a consulta de A referencia B (mergeQueries/appendQueries),
+      // B deve ser aplicada primeiro — senão A lê um B ainda não atualizado.
+      const nameToId = new Map(get().tables.map(t => [t.originalName || t.name, t.id] as const));
+      const depsOf: Record<string, string[]> = {};
+      dirtyIds.forEach(id => {
+        const q = get().appliedSteps[id];
+        const ds = new Set<string>();
+        (q?.steps || []).forEach(s => {
+          if (s.op === 'mergeQueries') {
+            const depId = nameToId.get(s.rightQuery);
+            if (depId && depId !== id) ds.add(depId);
+          }
+          if (s.op === 'appendQueries') {
+            s.queries.forEach(n => {
+              const depId = nameToId.get(n);
+              if (depId && depId !== id) ds.add(depId);
+            });
+          }
+        });
+        depsOf[id] = Array.from(ds);
+      });
+      const ordered: string[] = [];
+      const visiting = new Set<string>();
+      const visited = new Set<string>();
+      const visit = (id: string) => {
+        if (visited.has(id) || visiting.has(id)) return; // guarda contra ciclos
+        visiting.add(id);
+        (depsOf[id] || []).forEach(d => {
+          if (dirtyIds.includes(d)) visit(d);
+        });
+        visiting.delete(id);
+        visited.add(id);
+        ordered.push(id);
+      };
+      dirtyIds.forEach(visit);
+
+      const applied: ApplyAllQueriesResult['applied'] = [];
+      for (let i = 0; i < ordered.length; i++) {
+        const tableId = ordered[i];
+        const table = get().tables.find(t => t.id === tableId);
+        const name = table?.originalName || table?.name || tableId;
+        onProgress?.({ name, index: i + 1, total: ordered.length });
+        try {
+          const query = get().getOrInitQuery(tableId);
+          const payload = await etlApply({ query, targetTable: name });
+          const idByName = new Map((table?.columns || []).map(c => [c.name, c.id]));
+          get().updateTable(tableId, {
+            columns: payload.columns.map(c => ({
+              id: idByName.get(c.name) || `c_${Math.random().toString(36).slice(2, 8)}`,
+              name: c.name,
+              originalName: c.originalName,
+              dataType: (c.dataType as any) || 'text',
+            })),
+            rows: payload.rows,
+          });
+          set({ appliedQuerySnapshot: { ...get().appliedQuerySnapshot, [tableId]: query } });
+          applied.push({
+            tableId,
+            name,
+            rowCount: payload.totalRows ?? payload.rows.length,
+            truncated: !!payload.truncated,
+          });
+        } catch (e: any) {
+          const idx = get().appliedSteps[tableId]?.steps.length;
+          return {
+            applied,
+            errors: { tableId, name, stepIndex: e?.stepIndex ?? idx, message: e?.message || String(e) },
+          };
+        }
+      }
+      return { applied, errors: null };
     },
 
     refreshEtlTable: async (tableId) => {
@@ -2784,6 +2893,7 @@ export const useBiStore = create<BiState>((set, get) => {
         dashboardTiles: [],
         goals: [],
         appliedSteps: {},
+        appliedQuerySnapshot: {},
         performanceMetrics: [],
         lastSavedAt: null,
       };
@@ -2860,6 +2970,7 @@ export const useBiStore = create<BiState>((set, get) => {
         language: get().language,
         currency: get().currency,
         appliedSteps: get().appliedSteps,
+        appliedQuerySnapshot: get().appliedQuerySnapshot,
         updatedAt: new Date().toISOString(),
       };
     },
@@ -2935,6 +3046,7 @@ export const useBiStore = create<BiState>((set, get) => {
         showGrid: state.showGrid !== undefined ? state.showGrid : true,
         snapToGrid: state.snapToGrid !== undefined ? state.snapToGrid : true,
         appliedSteps: state.appliedSteps || {},
+        appliedQuerySnapshot: state.appliedQuerySnapshot || {},
         lastSavedAt: new Date().toLocaleTimeString('pt-BR'),
       }));
       globalDataEngine.setSchema(state.tables || [], state.relationships || [], state.measures || []);
