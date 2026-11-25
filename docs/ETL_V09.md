@@ -73,10 +73,14 @@ type EtlStep = { id: string; name: string } & (            // name = nome do pas
 );
 
 interface EtlSource {                 // de onde vem raw__<tabela>
-  kind: 'excel' | 'csv' | 'parquet' | 'json' | 'db' | 'table' | 'opaqueM';
+  kind: 'excel' | 'csv' | 'parquet' | 'json' | 'db' | 'table' | 'inline' | 'listDates' | 'opaqueM';
   path?: string; sheet?: string;      // excel/csv/parquet/json (sheet = Item do Excel.Workbook)
   table?: string;                     // 'table': outra consulta do modelo (referência)
-  m?: string;                         // 'opaqueM': fonte M não reconhecida (ex.: calendário via função)
+                                      // 'db': relação DuckDB, ex. catálogo ATTACH "pg.public.pedidos"
+  m?: string;                         // 'opaqueM': fonte M não reconhecida
+  columns?: string[]; rows?: Scalar[][];   // 'inline': #table({..}, {{..}}) literal (ex.: tabela de medidas)
+  start?: string; count?: number; stepDays?: number;  // 'listDates': List.Dates(#date, count, #duration(stepDays,0,0,0))
+  function?: string;                  // 'listDates': função chamada no M se não for List.Dates (ex.: "Query1")
 }
 
 interface EtlQuery { name: string; source: EtlSource; steps: EtlStep[] }
@@ -89,13 +93,15 @@ Expressões `each …` com: `[Coluna]`, literais, `+ - * /`, `&`, comparações,
 
 | Comando | Entrada | Saída |
 | :--- | :--- | :--- |
-| `etl_load_raw` | `{ query: string, source: EtlSource, pbipRoot?: string }` | `{ rawTable, columns: {name,type}[], rowCount }`: (re)carrega a fonte bruta em `raw__<query>` |
+| `etl_load_raw` | `{ query: string, source: EtlSource, pbipRoot?: string }` | `{ rawTable, columns: {name,type}[], rowCount, sourcePath? }`: (re)carrega a fonte bruta em `raw__<query>` |
 | `etl_preview` | `{ query: EtlQuery, uptoStep?: number, limit?: number }` | `{ columns: {name,type}[], rows: object[], rowCount: number, warnings: string[], failedStep?: { index, message } }` |
 | `etl_apply` | `{ query: EtlQuery, targetTable: string }` | `ImportedTablePayload` (mesmo formato dos importadores atuais) |
 | `etl_to_m` | `{ query: EtlQuery }` | `string` (script `let … in` completo) |
 | `etl_from_m` | `{ name: string, m: string }` | `{ query: EtlQuery, warnings: string[] }` |
 
-- `uptoStep` é inclusivo (o índice do passo selecionado no painel "Etapas Aplicadas"). Omitido, aplica todos.
+- `uptoStep` é inclusivo (o índice do passo selecionado no painel "Etapas Aplicadas"). Omitido, aplica todos. Negativo (ex. `-1`) mostra só a fonte (etapa "Source").
+- `columns[].type` usa o vocabulário `EtlType` (`text`, `integer`, `decimal`, `currency` = `DECIMAL(19,4)`, `date`, `datetime`, `boolean`). Colunas brutas de Excel/CSV são `text` (as células tipadas vêm em forma canônica: números com `.`, datas ISO).
+- `etl_preview`/`etl_apply` carregam `raw__<query>` sozinhos se ele ainda não existir (sem `pbipRoot`, então caminhos relativos exigem `etl_load_raw` antes).
 - Num passo que falha, o preview mostra os dados até o passo anterior e preenche `failedStep`, como o Power Query.
 - Nomes de colunas e tabelas são sempre citados com `quote_ident`. Valores entram como literais escapados ou parâmetros, nunca interpolados crus.
 
@@ -110,3 +116,27 @@ Expressões `each …` com: `[Coluna]`, literais, `+ - * /`, `&`, comparações,
 - A barra de fórmulas mostra o M do passo; a aba "Editor Avançado" mostra o M completo (`etl_to_m`), que pode ser editado e aplicado (`etl_from_m`).
 - "Fechar e Aplicar" chama `etl_apply`. "Atualizar Dados" chama `etl_load_raw` e depois `etl_apply` para tabelas com consulta.
 - Sem Tauri (navegador), cai para o `EtlEngine` TS, com aviso de recursos limitados.
+
+## Notas da implementação v0.9.0 (motor Rust)
+
+### Desvios do rascunho original
+- **Fontes `inline` e `listDates`** (novas em `EtlSource.kind`). Sem elas, duas consultas reais do Rhino só caberiam como `opaqueM`:
+  - `Medidas`: `Source = "Medidas="` + `#table(1, {{Source}})` vira `inline` (`columns: ["Column1"]`, `rows: [["Medidas="]]`); o M gerado é `#table({"Column1"}, {{"Medidas="}})`. Uma consulta que termina sem colunas (tabela de medidas) não cria tabela no modelo.
+  - `dCalendario`: `Query1(#date(2026,4,1), 275, #duration(1,0,0,0))` + `Table.FromList(Source, Splitter.SplitByNothing(), null, null, ExtraValues.Error)` vira `listDates` (`start`, `count`, `stepDays`, `function: "Query1"`), gerado no DuckDB como uma coluna `Column1` de datas. No Rhino, `Query1` é `List.Dates` (expressions.tmdl); como o M da partição não traz essa definição, uma função com a mesma assinatura (data, número, `#duration` de dias inteiros) é tratada como `List.Dates`, e `etl_from_m` emite um aviso dizendo isso.
+- `etl_load_raw` também devolve `sourcePath` (caminho resolvido do arquivo).
+
+### Detalhes do contrato (sem mudar o schema)
+- `addCustomColumn.expression` guarda a fórmula **sem** o `each` (como no diálogo do Power Query); `each …` também é aceito na entrada.
+- `mergeQueries` é emitido como uma única etapa `Table.ExpandTableColumn(Table.NestedJoin(...), ...)`; na leitura também é aceita a forma em duas etapas (NestedJoin + ExpandTableColumn), e o passo recebe o nome da etapa de expansão.
+- Chamadas aninhadas viram etapas separadas: `Table.CombineColumns(Table.TransformColumnTypes(prev, .., "it-IT"), ..)` vira `changeType` (nome `"<etapa> - Changed Type"`) + `mergeColumns`. Sem cultura, o `TransformColumnTypes` para texto das colunas mescladas é absorvido no `mergeColumns` (é o que o `to_m` sempre emite).
+- Fonte `db`: `table` é o caminho da relação no DuckDB; no M ela aparece como `PrismBI.DbTable("...")`, que só o PrismBI entende.
+- Normalizações do round-trip (equivalências semânticas): `eq/neq` com `null` viram `isNull/isNotNull`; `or[isNull c, eq c ""]` vira `isBlank`; `and[isNotNull c, neq c ""]` vira `isNotBlank`; `and/or` de um item só vira o próprio item; `count` sem coluna vira `countRows`; uma fórmula personalizada no formato de coluna condicional vira `addConditionalColumn`.
+- Condições com literais de data (`#date(..)`) não cabem em `Scalar` e ficam como `opaqueM`.
+
+### Semântica no DuckDB
+- Colunas ocultas em toda a cadeia de CTEs: `__row_idx` (ordem das linhas; toda etapa a preserva ou recalcula, e o resultado final é ordenado por ela) e `__err__<coluna>` (célula com erro). Nomes que começam com `__row_idx`, `__err__` e `__etl_s` são reservados.
+- **Erro x nulo** (`changeType` + `removeRowsWithErrors`): as conversões usam `TRY_CAST`/`try_strptime` (dão NULL na falha). `__err__<col>` fica TRUE quando o valor de origem **não era nulo, não era texto vazio/branco e a conversão deu NULL**. Um NULL ou `""` de origem vira NULL com a flag FALSE. Células de erro do Excel (`#N/A`…) entram como NULL com a flag TRUE. As flags seguem renomeações, duplicações e mesclagens, e são descartadas por etapas que remodelam a tabela (agrupar, dinamizar, transpor, acrescentar).
+- Culturas vêm de uma tabela fixa no código (pt, es, it, de, fr, en-US, en-GB…), nunca do SO/ICU. Sem cultura: separador decimal `.`, datas ISO. Excel/inline: números canônicos (`1234.5`) não são relidos com a cultura (senão `pt-BR` leria 12345).
+- Nomes de mês e dia (`Date.MonthName`/`Date.DayOfWeekName`) vêm de tabelas estáticas (pt, en, es). Sem cultura, inglês.
+- Nulos no filtro como no M: `=`/`<>` tratam `null` como valor (`null <> 5` é verdadeiro), operadores relacionais e funções de texto com `null` dão `null`, que descarta a linha (inclusive dentro de `not`).
+- `mergeQueries` casa `null` com `null` (como o M) e lê a tabela **já materializada** da outra consulta; na abertura de `.pbip` as consultas são processadas em ordem de dependência.

@@ -24,10 +24,12 @@ import {
   DaxQueryTab,
   CanvasSizeConfig,
 } from '../types/bi';
+import { EtlQuery, EtlStep, EtlSource } from '../types/etl';
+import { etlApply, etlFromM, etlLoadRaw, setBrowserRawProvider } from '../services/etl/etlClient';
+import { tableToEtlSource } from '../services/etl/etlSource';
 import { getSampleDatasets, generateCalendarTable } from '../data/sampleDatasets';
 import { globalDataEngine } from '../engine/dataEngine';
 import { DaxEngine } from '../engine/daxEngine';
-import { EtlEngine } from '../engine/etlEngine';
 import { saveProjectToStorage, loadProjectFromStorage, ProjectState } from '../engine/storage';
 import { migrateProjectState, syncWhatIfWithModel } from '../engine/migrations';
 import { globalDuckDb } from '../engine/duckdbEngine';
@@ -264,9 +266,21 @@ interface BiState {
   updateGoal: (id: string, partial: Partial<Goal>) => void;
 
   // Power Query / ETL
-  appliedSteps: Record<string, PowerQueryStep[]>;
-  applyQueryStep: (tableId: string, step: PowerQueryStep) => void;
+  appliedSteps: Record<string, EtlQuery>;
+  selectedStepByTable: Record<string, string | undefined>;
+  getOrInitQuery: (tableId: string) => EtlQuery;
+  /** Como getOrInitQuery, mas converte o M de tabelas .pbip em etapas (etl_from_m) e persiste a consulta. */
+  ensureQuery: (tableId: string) => Promise<EtlQuery>;
+  setQuery: (tableId: string, query: EtlQuery) => void;
+  addQueryStep: (tableId: string, step: EtlStep) => void;
+  updateQueryStep: (tableId: string, stepId: string, patch: Partial<EtlStep>) => void;
   removeQueryStep: (tableId: string, stepId: string) => void;
+  moveQueryStepUp: (tableId: string, stepId: string) => void;
+  moveQueryStepDown: (tableId: string, stepId: string) => void;
+  renameQueryStep: (tableId: string, stepId: string, name: string) => void;
+  selectQueryStep: (tableId: string, stepId: string | undefined) => void;
+  closeAndApplyQuery: (tableId: string) => Promise<void>;
+  refreshTableData: (tableId: string) => Promise<void>;
 
   // Governance & RLS
   rlsRoles: RlsRole[];
@@ -381,6 +395,7 @@ interface BiState {
 }
 
 const defaultPageId = 'page_executivo';
+
 
 const initialVisuals: Visual[] = [
   {
@@ -1437,12 +1452,12 @@ export const useBiStore = create<BiState>((set, get) => {
         rows: orig.rows.map(r => ({ ...r })),
       };
       get().addTable(duplicated);
-      const existingSteps = get().appliedSteps[orig.id] || [];
-      if (existingSteps.length > 0) {
+      const existingQuery = get().appliedSteps[orig.id];
+      if (existingQuery) {
         set({
           appliedSteps: {
             ...get().appliedSteps,
-            [newId]: [...existingSteps],
+            [newId]: { ...existingQuery, name: newName, steps: existingQuery.steps.map(s => ({ ...s })) },
           },
         });
       }
@@ -2326,37 +2341,126 @@ export const useBiStore = create<BiState>((set, get) => {
       });
     },
 
-    // Power Query
+    // Power Query / ETL (v0.9.0 — ver docs/ETL_V09.md)
     appliedSteps: {},
+    selectedStepByTable: {},
 
-    applyQueryStep: (tableId, step) => {
-      const targetTable = get().tables.find(t => t.id === tableId);
-      if (!targetTable) return;
+    getOrInitQuery: (tableId) => {
+      const existing = get().appliedSteps[tableId];
+      if (existing) return existing;
+      const table = get().tables.find(t => t.id === tableId);
+      const source: EtlSource = tableToEtlSource(table);
+      return { name: table?.originalName || table?.name || tableId, source, steps: [] };
+    },
 
-      const currentSteps = get().appliedSteps[tableId] || [];
-      const updatedSteps = [...currentSteps, step];
+    ensureQuery: async (tableId) => {
+      const existing = get().appliedSteps[tableId];
+      if (existing) return existing;
+      const table = get().tables.find(t => t.id === tableId);
+      if (!table) return get().getOrInitQuery(tableId);
+      const name = table.originalName || table.name;
+      const m = table.sourceConfig?.mScript;
+      let query: EtlQuery | null = null;
+      if (m && m.trim()) {
+        // Tabela vinda de .pbip: as etapas do M viram etapas editáveis (round-trip).
+        try {
+          const parsed = await etlFromM({ name, m });
+          const src = parsed.query.source;
+          const fileKinds = ['excel', 'csv', 'parquet', 'json'];
+          if (fileKinds.includes(src.kind) && table.sourceConfig?.filePath) {
+            // O caminho do M costuma ser do Windows (\\tsclient\...); usa o já resolvido na importação.
+            query = { ...parsed.query, name, source: { ...src, path: table.sourceConfig.filePath } };
+          } else if (src.kind !== 'opaqueM' && !fileKinds.includes(src.kind)) {
+            query = { ...parsed.query, name };
+          }
+          for (const w of parsed.warnings) console.warn(`[ETL] ${name}: ${w}`);
+        } catch (e) {
+          console.warn(`[ETL] ${name}: M não convertido, usando snapshot da tabela`, e);
+        }
+      }
+      if (!query) query = { name, source: tableToEtlSource(table), steps: [] };
+      // Outra chamada pode ter criado a consulta enquanto o M era convertido.
+      const raced = get().appliedSteps[tableId];
+      if (raced) return raced;
+      get().setQuery(tableId, query);
+      return query;
+    },
 
-      // Execute on initial raw table
-      const res = EtlEngine.executePipeline(targetTable, [step]);
-      get().updateTable(tableId, { columns: res.table.columns, rows: res.table.rows });
+    setQuery: (tableId, query) => {
+      set({ appliedSteps: { ...get().appliedSteps, [tableId]: query } });
+    },
 
-      set({
-        appliedSteps: {
-          ...get().appliedSteps,
-          [tableId]: updatedSteps,
-        },
+    addQueryStep: (tableId, step) => {
+      const query = get().getOrInitQuery(tableId);
+      get().setQuery(tableId, { ...query, steps: [...query.steps, step] });
+      set({ selectedStepByTable: { ...get().selectedStepByTable, [tableId]: step.id } });
+    },
+
+    updateQueryStep: (tableId, stepId, patch) => {
+      const query = get().getOrInitQuery(tableId);
+      get().setQuery(tableId, {
+        ...query,
+        steps: query.steps.map(s => (s.id === stepId ? ({ ...s, ...patch } as EtlStep) : s)),
       });
     },
 
     removeQueryStep: (tableId, stepId) => {
-      const currentSteps = get().appliedSteps[tableId] || [];
-      const filtered = currentSteps.filter(s => s.id !== stepId);
-      set({
-        appliedSteps: {
-          ...get().appliedSteps,
-          [tableId]: filtered,
-        },
+      const query = get().getOrInitQuery(tableId);
+      get().setQuery(tableId, { ...query, steps: query.steps.filter(s => s.id !== stepId) });
+    },
+
+    moveQueryStepUp: (tableId, stepId) => {
+      const query = get().getOrInitQuery(tableId);
+      const idx = query.steps.findIndex(s => s.id === stepId);
+      if (idx <= 0) return;
+      const steps = [...query.steps];
+      [steps[idx - 1], steps[idx]] = [steps[idx], steps[idx - 1]];
+      get().setQuery(tableId, { ...query, steps });
+    },
+
+    moveQueryStepDown: (tableId, stepId) => {
+      const query = get().getOrInitQuery(tableId);
+      const idx = query.steps.findIndex(s => s.id === stepId);
+      if (idx === -1 || idx >= query.steps.length - 1) return;
+      const steps = [...query.steps];
+      [steps[idx], steps[idx + 1]] = [steps[idx + 1], steps[idx]];
+      get().setQuery(tableId, { ...query, steps });
+    },
+
+    renameQueryStep: (tableId, stepId, name) => {
+      get().updateQueryStep(tableId, stepId, { name });
+    },
+
+    selectQueryStep: (tableId, stepId) => {
+      set({ selectedStepByTable: { ...get().selectedStepByTable, [tableId]: stepId } });
+    },
+
+    closeAndApplyQuery: async (tableId) => {
+      const query = get().getOrInitQuery(tableId);
+      const table = get().tables.find(t => t.id === tableId);
+      const payload = await etlApply({ query, targetTable: table?.originalName || table?.name || tableId });
+      // Reaproveita o id da coluna de mesmo nome: medidas, relações e visuais
+      // referenciam ids, e as etapas podem remover/reordenar colunas.
+      const idByName = new Map((table?.columns || []).map(c => [c.name, c.id]));
+      get().updateTable(tableId, {
+        columns: payload.columns.map(c => ({
+          id: idByName.get(c.name) || `c_${Math.random().toString(36).slice(2, 8)}`,
+          name: c.name,
+          originalName: c.originalName,
+          dataType: (c.dataType as any) || 'text',
+        })),
+        rows: payload.rows,
       });
+    },
+
+    refreshTableData: async (tableId) => {
+      const table = get().tables.find(t => t.id === tableId);
+      if (!table) return;
+      const query = get().appliedSteps[tableId];
+      await etlLoadRaw({ query: query?.name || table.originalName || table.name, source: query?.source || tableToEtlSource(table) });
+      if (query) {
+        await get().closeAndApplyQuery(tableId);
+      }
     },
 
     // Governance & RLS
@@ -2703,6 +2807,7 @@ export const useBiStore = create<BiState>((set, get) => {
         snapToGrid: get().snapToGrid,
         language: get().language,
         currency: get().currency,
+        appliedSteps: get().appliedSteps,
         updatedAt: new Date().toISOString(),
       };
     },
@@ -2777,6 +2882,7 @@ export const useBiStore = create<BiState>((set, get) => {
         gridSize: state.gridSize || 20,
         showGrid: state.showGrid !== undefined ? state.showGrid : true,
         snapToGrid: state.snapToGrid !== undefined ? state.snapToGrid : true,
+        appliedSteps: state.appliedSteps || {},
         lastSavedAt: new Date().toLocaleTimeString('pt-BR'),
       }));
       globalDataEngine.setSchema(state.tables || [], state.relationships || [], state.measures || []);
@@ -2794,6 +2900,19 @@ if (typeof window !== 'undefined') {
       applyThemeToDocument('system');
       useBiStore.setState({ isDarkMode: isSystemDark });
     }
+  });
+
+  // Expõe as tabelas atuais do modelo ao fallback de ETL do navegador
+  // (usado quando o app não roda dentro do Tauri).
+  setBrowserRawProvider((name) => {
+    const table = useBiStore
+      .getState()
+      .tables.find(t => t.originalName === name || t.name === name || t.id === name);
+    if (!table) return undefined;
+    return {
+      columns: table.columns.map(c => ({ name: c.name, type: c.dataType })),
+      rows: table.rows,
+    };
   });
 }
 
