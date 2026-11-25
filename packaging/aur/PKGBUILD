@@ -5,7 +5,7 @@
 # é antigo e deixa o canvas visivelmente mais lento em distros atuais.
 # Atualize pkgver/sha256sums com scripts/update-aur-pkgbuild.sh <versão>.
 pkgname=prismbi-bin
-pkgver=0.8.0
+pkgver=0.9.0
 pkgrel=1
 pkgdesc="Business Intelligence nativo para Linux com compatibilidade .pbip/.pbix, Rust e DuckDB"
 arch=('x86_64')
@@ -18,7 +18,7 @@ options=('!strip' '!debug')
 _deb="PrismBI_${pkgver}_amd64.deb"
 source=("${_deb}::${url}/releases/download/v${pkgver}/${_deb}"
         "LICENSE.md::https://raw.githubusercontent.com/ludoviciphilip/PrismBI/v${pkgver}/LICENSE.md")
-sha256sums=('1cb2983ab99327812fcb47a46f774bc4fd89018a5aad1a04a33a2c6137128926'
+sha256sums=('c3aedf97c6bae9edb6ddabe9190f5738a61e17f548076cd2f08ce7332e1a3113'
             'SKIP')
 noextract=("${_deb}")
 
