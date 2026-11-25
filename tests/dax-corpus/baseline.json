@@ -26,6 +26,7 @@
     "core.isblank.no_rows",
     "core.iter.averagex_context_transition",
     "core.iter.countrows_filter",
+    "core.iter.maxx_category",
     "core.iter.maxx_context_transition",
     "core.iter.sumx_context_transition",
     "core.iter.sumx_related",

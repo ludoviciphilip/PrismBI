@@ -189,13 +189,54 @@ fn compare_dax_values(l: &DaxValue, r: &DaxValue) -> i8 {
 }
 
 fn apply_context_transition(ctx: &FilterContext, rc: &RowContext<'_>) -> FilterContext {
+    apply_context_transition_cols(ctx, rc, None)
+}
+
+/// Like `apply_context_transition`, but when `only_cols` is given (e.g. the iterator source
+/// was `VALUES`/`DISTINCT`/`ALL` over a *single* column), only that column's value is used to
+/// narrow the context — not every column of the underlying physical table. Without this,
+/// transitioning on a representative row of `VALUES(d_Produto[Categoria])` would also pin
+/// `d_Produto[ProdutoID]` to that one representative product, collapsing the whole category
+/// down to a single row instead of letting the relationship propagate the category filter.
+fn apply_context_transition_cols(
+    ctx: &FilterContext,
+    rc: &RowContext<'_>,
+    only_cols: Option<&[String]>,
+) -> FilterContext {
     let mut next = ctx.clone();
-    for (idx, cname) in rc.table.columns.iter().enumerate() {
-        let mut set = HashSet::new();
-        set.insert(rc.table.rows[rc.row_idx][idx].canonical_key());
-        next.set_column_filter(&rc.table.name, cname, set);
+    match only_cols {
+        Some(cols) => {
+            for cname in cols {
+                if let Some(idx) = rc.table.get_col_idx(cname) {
+                    let mut set = HashSet::new();
+                    set.insert(rc.table.rows[rc.row_idx][idx].canonical_key());
+                    next.set_column_filter(&rc.table.name, cname, set);
+                }
+            }
+        }
+        None => {
+            for (idx, cname) in rc.table.columns.iter().enumerate() {
+                let mut set = HashSet::new();
+                set.insert(rc.table.rows[rc.row_idx][idx].canonical_key());
+                next.set_column_filter(&rc.table.name, cname, set);
+            }
+        }
     }
     next
+}
+
+/// If `expr` is `VALUES`/`DISTINCT`/`ALL` applied to a single `Table[Column]`, returns that
+/// column name so context transition over the resulting rows narrows only that column.
+fn single_column_transition_scope(expr: &Expr) -> Option<Vec<String>> {
+    if let Expr::Call { name, args } = expr {
+        let upper = name.to_uppercase();
+        if matches!(upper.as_str(), "VALUES" | "DISTINCT" | "ALL" | "ALLSELECTED") {
+            if let Some(Expr::TableColRef { column, .. }) = args.first() {
+                return Some(vec![column.clone()]);
+            }
+        }
+    }
+    None
 }
 
 fn eval_call(
@@ -410,11 +451,12 @@ fn eval_call(
                 Some(Expr::Text(s)) => s.eq_ignore_ascii_case("DENSE"),
                 _ => false,
             };
+            let transition_scope = single_column_transition_scope(&args[0]);
 
             let mut scores = Vec::new();
             for r_idx in row_indices {
                 let row_ctx = RowContext { table: table_data, row_idx: r_idx };
-                let eff_ctx = apply_context_transition(&rank_ctx, &row_ctx);
+                let eff_ctx = apply_context_transition_cols(&rank_ctx, &row_ctx, transition_scope.as_deref());
                 let mut next_stack = row_stack.to_vec();
                 next_stack.push(row_ctx);
                 let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
@@ -516,11 +558,12 @@ fn eval_call(
             }
             let (table_eval, row_indices, iter_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
             let table_data = table_eval.as_ref();
+            let transition_scope = single_column_transition_scope(&args[0]);
             if fname == "COUNTAX" {
                 let mut cnt = 0usize;
                 for r_idx in row_indices {
                     let row_ctx = RowContext { table: table_data, row_idx: r_idx };
-                    let eff_ctx = apply_context_transition(&iter_ctx, &row_ctx);
+                    let eff_ctx = apply_context_transition_cols(&iter_ctx, &row_ctx, transition_scope.as_deref());
                     let mut next_stack = row_stack.to_vec();
                     next_stack.push(row_ctx);
                     let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
@@ -533,7 +576,7 @@ fn eval_call(
             let mut vals = Vec::new();
             for r_idx in row_indices {
                 let row_ctx = RowContext { table: table_data, row_idx: r_idx };
-                let eff_ctx = apply_context_transition(&iter_ctx, &row_ctx);
+                let eff_ctx = apply_context_transition_cols(&iter_ctx, &row_ctx, transition_scope.as_deref());
                 let mut next_stack = row_stack.to_vec();
                 next_stack.push(row_ctx);
                 let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
@@ -855,6 +898,50 @@ fn eval_table_expr_owned<'a>(
     vars: &HashMap<String, DaxValue>,
 ) -> Result<(TableEval<'a>, Vec<usize>, FilterContext), String> {
     if let Expr::Call { name, args } = expr {
+        let upper = name.to_uppercase();
+        if matches!(upper.as_str(), "VALUES" | "DISTINCT" | "ALL" | "ALLSELECTED") {
+            if let Some(Expr::TableColRef { table, column }) = args.first() {
+                // VALUES/DISTINCT/ALL over a *single* column conceptually returns a
+                // one-column table. Materialize it as such (instead of returning the
+                // underlying physical table + representative row indices) so that any
+                // later context transition over its rows only narrows that one column,
+                // letting relationships propagate the rest instead of pinning every
+                // other column of an arbitrary representative row.
+                let tbl = model
+                    .get_table(table)
+                    .ok_or_else(|| format!("Tabela '{}' não encontrada", table))?;
+                let cidx = tbl
+                    .get_col_idx(column)
+                    .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", table, column))?;
+                let (source_indices, base_ctx): (Vec<usize>, FilterContext) =
+                    if upper == "VALUES" || upper == "DISTINCT" {
+                        (model.get_visible_row_indices(table, ctx), ctx.clone())
+                    } else {
+                        let mut cleared = ctx.clone();
+                        cleared.clear_column(&tbl.name, column);
+                        ((0..tbl.rows.len()).collect(), cleared)
+                    };
+                let mut seen = HashSet::new();
+                let mut values = Vec::new();
+                for r_idx in source_indices {
+                    let v = tbl.rows[r_idx][cidx].clone();
+                    if seen.insert(v.canonical_key()) {
+                        values.push(v);
+                    }
+                }
+                let mut col_index = HashMap::new();
+                col_index.insert(column.to_lowercase(), 0);
+                let rows: Vec<Vec<DaxValue>> = values.into_iter().map(|v| vec![v]).collect();
+                let n = rows.len();
+                let synth = DaxTableData {
+                    name: tbl.name.clone(),
+                    columns: vec![column.clone()],
+                    col_index,
+                    rows,
+                };
+                return Ok((TableEval::Owned(synth), (0..n).collect(), base_ctx));
+            }
+        }
         if name.eq_ignore_ascii_case("GENERATESERIES") {
             let start = args
                 .first()
