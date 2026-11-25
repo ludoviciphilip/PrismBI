@@ -671,7 +671,7 @@ impl<'a> Tr<'a> {
             "Date.IsInCurrentYear" => {
                 arity(1, 1)?;
                 let (d, _) = self.date_arg(&args[0])?;
-                Ok((format!("(year({}) = year(current_date))", d), Cat::Bool))
+                Ok((format!("(year({}) = {})", d, local_now().format("%Y")), Cat::Bool))
             }
             "DateTime.Date" => {
                 arity(1, 1)?;
@@ -685,7 +685,7 @@ impl<'a> Tr<'a> {
             }
             "DateTime.LocalNow" => {
                 arity(0, 0)?;
-                Ok(("current_timestamp".to_string(), Cat::Timestamp))
+                Ok((format!("TIMESTAMP '{}'", local_now().format("%Y-%m-%d %H:%M:%S")), Cat::Timestamp))
             }
             "Date.ToText" => {
                 arity(2, 3)?;
@@ -792,4 +792,13 @@ fn translate_inner(expression: &str, chain: &Chain, underscore: Option<(String, 
         _ => &e,
     };
     Tr { chain, underscore }.tr(body)
+}
+
+/// "Agora" no fuso do computador, como o Power Query, embutido na SQL como
+/// literal. `current_timestamp`/`current_date` do DuckDB são TIMESTAMPTZ: a
+/// conversão para data/hora local carrega a extensão ICU, que o DuckDB baixa
+/// da internet na primeira vez (quebra offline e corria entre testes paralelos
+/// no Windows: "No function matches ... '(DATE)'").
+fn local_now() -> chrono::NaiveDateTime {
+    chrono::Local::now().naive_local()
 }

@@ -3650,6 +3650,7 @@ name = "prismbi"
 version = "0.9.1"
 dependencies = [
  "calamine",
+ "chrono",
  "dirs",
  "duckdb",
  "ed25519-dalek",
