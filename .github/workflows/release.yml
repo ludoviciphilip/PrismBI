@@ -83,9 +83,16 @@ jobs:
           openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/pub.pem" -rawin -in release-assets/SHA256SUMS.txt -sigfile release-assets/SHA256SUMS.txt.sig
           rm -f "$key"
 
+      - name: Release notes (docs/release-notes/<tag>.md when present)
+        id: notes
+        run: |
+          f="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$f" ]; then echo "path=$f" >> "$GITHUB_OUTPUT"; else echo "" > "$RUNNER_TEMP/empty.md"; echo "path=$RUNNER_TEMP/empty.md" >> "$GITHUB_OUTPUT"; fi
+
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
+          body_path: ${{ steps.notes.outputs.path }}
           generate_release_notes: true

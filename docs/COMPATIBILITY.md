@@ -1,10 +1,12 @@
-# Matriz de Compatibilidade DAX, Visuais e Fontes (PrismBI `v0.7.0`)
+# Matriz de Compatibilidade DAX, Visuais e Fontes (PrismBI `v0.8.0`)
 
 Este documento resume o nível atual de compatibilidade do **PrismBI** com projetos do Microsoft Power BI (`.pbip` / `.pbix`) e a especificação pública **DAX**.
 
 ---
 
-## 1. Compatibilidade DAX (474 / 484 funções = 98%)
+## 1. Compatibilidade DAX
+
+> **Número de conformidade que vale:** [`DAX_CONFORMANCE.md`](./DAX_CONFORMANCE.md), medido num corpus de 368 casos com resultado esperado verificado de forma independente: **Rust 364/368 (98,9%)**, TS 350/368. A tabela abaixo é o inventário de funções reconhecidas por cada motor (o antigo "474/484 = 98%" contava apenas marcações do catálogo, não resultados conferidos).
 
 | Categoria | Motor Rust Nativo | Motor TypeScript / Fallback | Observações |
 | :--- | :--- | :--- | :--- |

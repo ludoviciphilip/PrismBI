@@ -52,7 +52,7 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 
 ---
 
-## `v0.7.0` — Empacotamento Linux, Auto-Updater, Tela Inicial & 98% DAX (Atual)
+## `v0.7.0` — Empacotamento Linux, Auto-Updater, Tela Inicial & 98% DAX (Concluído)
 - [x] **GitHub Actions CI/CD:** pipeline de validação automática (`ci.yml`) e geração de releases Linux **AppImage**, **`.deb`**, **`.rpm`** com checksums **SHA-256** (`release.yml`), além de manifestos para **AUR (`prismbi-bin`)** e **Flatpak**.
 - [x] **Atualizador Automático Integrado no App (`updater.rs` + `UpdateModal`):** verificação automática via GitHub Releases, download seguro com validação SHA-256, atualização atômica in-place para **AppImage** e download direto para `.deb`/`.rpm`.
 - [x] **Tela Inicial (`WelcomeScreen`) & Navegação:** inicialização com hub de projetos recentes, retomada da última sessão salva e abertura direta de `.pbip`, `.pbix` ou `.insight` (sem forçar template), além de pan livre no canvas e modelo com botão do meio (scroll pressionado) e atalho `Esc` no Modo Apresentação.
@@ -61,11 +61,18 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 
 ---
 
-## `v0.8.0` — Conectores Nativos de Banco de Dados (via DuckDB) & Credenciais Seguras (Concluído parcialmente — ver observações)
+## `v0.8.0` — Conectores Nativos de Banco de Dados (via DuckDB) & Credenciais Seguras (Concluído)
 - [x] Conectores nativos reais em DuckDB para **PostgreSQL**, **SQLite**, **MySQL/MariaDB**, arquivos **`.duckdb`** e **Parquet particionado / HTTP / S3** (sem depender de gateway externo). Implementado via `ATTACH ... (TYPE POSTGRES/SQLITE/MYSQL, READ_ONLY)` e `read_parquet(..., hive_partitioning=true)` com `INSTALL`/`LOAD` das extensões `postgres`/`sqlite`/`mysql`/`httpfs`. **Testado de ponta a ponta** contra um `.duckdb` real (100% offline) e um `.sqlite` real criado neste ambiente (extensão baixada via rede). **PostgreSQL 16 e MariaDB 11 testados contra servidores reais** (containers locais e serviços do CI), incluindo senhas com aspas e espaços, que ficam num `TEMPORARY SECRET` do DuckDB e nunca na connection string. Parquet/S3 remoto ainda não foi exercitado contra um bucket real.
 - [x] Navegador visual de schemas e tabelas com editor SQL nativo e pré-visualização antes da carga. Comandos Rust: `db_connect`, `db_list_schemas`, `db_list_tables`, `db_preview_table`, `db_query_preview`, `db_import_table`, `db_disconnect`. UI: nova aba "PostgreSQL / MySQL / SQLite / DuckDB" no `DataSourceModal`, substituindo o antigo conector simulado (`postgresMockAdapter`, que permanece só com seus próprios testes, fora dos caminhos de produção). A navegação/formulário em si não tem teste de UI automatizado (sem GUI no ambiente); a lógica (construção de config, validação, mapeamento) é testada em `src/adapters/dbConnector.ts`.
 - [x] Integração com o botão **Atualizar Dados** para recarregar diretamente a partir do banco conectado: tabelas de origem `db` guardam um `TableSourceConfig.db` (tipo do conector, config sem senha, `credentialKey`, tabela/SQL de origem) e o refresh chama `db_refresh_import`, que reconecta buscando a senha no keyring.
 - [x] Armazenamento seguro de credenciais utilizando o chaveiro nativo do Linux (`Secret Service` / crate `keyring` v3), evitando senhas em texto puro em arquivos `.insight` ou `.pbip`. Camada abstraída por um trait (`CredentialStore`) testável com um fake em memória (o Secret Service real não está disponível em CI/sandboxes — há um teste `#[ignore]` documentando isso). A chave de API do Gemini (antes em `localStorage`) também migra para o keyring sob Tauri, com fallback de navegador preservado.
+
+---
+
+### Também na `v0.8.0`
+- [x] **Atualizador assinado (Ed25519)** + allowlist de URL + pacote certo por tipo de instalação; **CSP** ativa.
+- [x] **Corpus de conformidade DAX** (368 casos, oráculos em Python, catraca no CI) substituindo o "98%" do catálogo: Rust **364/368**.
+- [x] **Motor Rust 2.0 — etapa 1:** valores tipados (Integer/Decimal/Currency/DateTime), chaves de filtro tipadas, tipos de coluna no sync; ~3,2× mais rápido (200 mil linhas). Funções de tabela (`SUMMARIZE`, `ADDCOLUMNS`, `SELECTCOLUMNS`, `CALCULATETABLE`, `UNION`…), `EARLIER`, `XNPV`/`XIRR` em Rust.
 
 ---
 
