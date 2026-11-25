@@ -132,9 +132,7 @@ export const WelcomeScreen: React.FC = () => {
       {/* Top Bar */}
       <header className="w-full px-8 py-4 flex items-center justify-between border-b border-slate-200 dark:border-slate-800/80 bg-white/80 dark:bg-slate-900/70 backdrop-blur-xs">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center text-slate-950 font-black text-base shadow-sm">
-            P
-          </div>
+          <img src="/icon.png" alt="PrismBI" className="w-9 h-9 rounded-lg shadow-sm" />
           <div>
             <div className="flex items-center gap-2">
               <span className="font-extrabold text-base tracking-tight text-slate-900 dark:text-white">

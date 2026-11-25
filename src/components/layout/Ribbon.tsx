@@ -366,7 +366,7 @@ export const Ribbon: React.FC<{
       <div className="flex items-center justify-between px-3 py-1 bg-slate-900 text-white text-xs">
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1.5 font-bold tracking-wide text-amber-400">
-            <span className="w-2.5 h-2.5 rounded-sm bg-amber-400"></span>
+            <img src="/icon.png" alt="PrismBI" className="w-4 h-4 rounded-xs" />
             <span>PrismBI</span>
             {isTauriRuntime() && (
               <span className="ml-1 px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[9px] font-semibold">

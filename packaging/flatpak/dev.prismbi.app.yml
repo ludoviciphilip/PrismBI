@@ -23,7 +23,8 @@ modules:
       - pnpm install --frozen-lockfile
       - pnpm tauri build --bundles deb
       - install -Dm755 src-tauri/target/release/prismbi /app/bin/prismbi
-      - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/128x128/apps/dev.prismbi.app.png
+      - install -Dm644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/dev.prismbi.app.png
+      - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/dev.prismbi.app.png
     sources:
       - type: git
         url: https://github.com/ludoviciphilip/PrismBI.git

@@ -12,8 +12,10 @@ conflicts=('prismbi')
 options=('!strip')
 _appimage="PrismBI_${pkgver}_amd64.AppImage"
 source=("${_appimage}::${url}/releases/download/v${pkgver}/${_appimage}"
-        "LICENSE.md::https://raw.githubusercontent.com/ludoviciphilip/PrismBI/v${pkgver}/LICENSE.md")
+        "LICENSE.md::https://raw.githubusercontent.com/ludoviciphilip/PrismBI/v${pkgver}/LICENSE.md"
+        "prismbi.png::https://raw.githubusercontent.com/ludoviciphilip/PrismBI/v${pkgver}/src-tauri/icons/128x128.png")
 sha256sums=('SKIP'
+            'SKIP'
             'SKIP')
 
 package() {
@@ -33,5 +35,6 @@ Type=Application
 Categories=Office;Utility;Science;
 EOF
 
+  install -Dm644 "${srcdir}/prismbi.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/prismbi.png"
   install -Dm644 "${srcdir}/LICENSE.md" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE.md"
 }
