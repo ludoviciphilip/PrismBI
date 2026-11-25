@@ -1041,6 +1041,53 @@ fn eval_table_expr<'a>(
             let indices = model.get_visible_row_indices(tname, ctx);
             Ok((tbl, indices, ctx.clone()))
         }
+        Expr::Call { name, args } if name.eq_ignore_ascii_case("RELATEDTABLE") => {
+            let tname = extract_table_name(args.first())?;
+            let tbl = model
+                .get_table(&tname)
+                .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
+            let Some(rc) = row_stack.last() else {
+                let indices = model.get_visible_row_indices(&tname, ctx);
+                return Ok((tbl, indices, ctx.clone()));
+            };
+            // Find the active relationship where the current row's table is the "one"
+            // side (rel.to_table) and the target is the "many" side (rel.from_table).
+            let rel = model.relationships.iter().find(|r| {
+                r.is_active
+                    && r.to_table.eq_ignore_ascii_case(&rc.table.name)
+                    && r.from_table.eq_ignore_ascii_case(&tname)
+            });
+            let indices = if let Some(rel) = rel {
+                match (rc.table.get_col_idx(&rel.to_column), tbl.get_col_idx(&rel.from_column)) {
+                    (Some(to_cidx), Some(from_cidx)) => {
+                        let key = rc.table.rows[rc.row_idx][to_cidx].canonical_key();
+                        model
+                            .get_visible_row_indices(&tname, ctx)
+                            .into_iter()
+                            .filter(|&i| tbl.rows[i][from_cidx].canonical_key() == key)
+                            .collect()
+                    }
+                    _ => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            };
+            Ok((tbl, indices, ctx.clone()))
+        }
+        Expr::Call { name, args } if name.eq_ignore_ascii_case("CALCULATETABLE") => {
+            if args.is_empty() {
+                return Err("CALCULATETABLE requer ao menos 1 argumento".to_string());
+            }
+            let mut next_ctx = if let Some(rc) = row_stack.last() {
+                apply_context_transition(ctx, rc)
+            } else {
+                ctx.clone()
+            };
+            for filter_expr in &args[1..] {
+                apply_calculate_modifier(filter_expr, model, ctx, &mut next_ctx, row_stack, vars)?;
+            }
+            eval_table_expr(&args[0], model, &next_ctx, &[], vars)
+        }
         Expr::Call { name, args } if name.eq_ignore_ascii_case("ALL") || name.eq_ignore_ascii_case("ALLSELECTED") => {
             match args.first() {
                 Some(Expr::TableColRef { table, column }) => {
