@@ -238,7 +238,7 @@
     },
     {
       "id": "stats.rankx.desc.min_value",
-      "expr": "RANKX(ALL(t_Valores), SUM(t_Valores[Valor]))",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])))",
       "filters": [
         {
           "table": "t_Valores",
@@ -249,11 +249,41 @@
         }
       ],
       "expected": 8,
-      "notes": "Valor=5 é o menor; DESC -> última posição. SUM() é a forma exigida pelo motor TS para usar uma coluna fora de contexto de linha (coluna nua dá erro 'sem contexto de linha')."
+      "notes": "Valor=5 é o menor; DESC -> última posição. SUM() é a forma exigida pelo motor TS para usar uma coluna fora de contexto de linha (coluna nua dá erro 'sem contexto de linha'). Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
+    },
+    {
+      "id": "stats.rankx.sum_without_calculate_ties_all",
+      "expr": "RANKX(ALL(t_Valores), SUM(t_Valores[Valor]))",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            4
+          ]
+        }
+      ],
+      "expected": 1,
+      "notes": "Pegadinha clássica (SQLBI, 'RANKX and context transition'): SUM não é medida, então não há transição de contexto; cada linha de ALL(t_Valores) avalia SUM no filtro externo (ID=4 => 5), todos empatam e o resultado é 1."
+    },
+    {
+      "id": "stats.sumx.all_with_plain_sum_uses_outer_filter",
+      "expr": "SUMX(ALL(t_Valores), SUM(t_Valores[Valor]))",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            4
+          ]
+        }
+      ],
+      "expected": 50,
+      "notes": "ALL(t_Valores) só define as linhas iteradas; o filtro externo (ID=4) continua valendo para a expressão. SUM sem CALCULATE não transiciona: 10 linhas x 5 = 50."
     },
     {
       "id": "stats.rankx.desc.mid_value",
-      "expr": "RANKX(ALL(t_Valores), SUM(t_Valores[Valor]))",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])))",
       "filters": [
         {
           "table": "t_Valores",
@@ -264,11 +294,11 @@
         }
       ],
       "expected": 7,
-      "notes": "Valor=10."
+      "notes": "Valor=10. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
     },
     {
       "id": "stats.rankx.desc.value_15",
-      "expr": "RANKX(ALL(t_Valores), SUM(t_Valores[Valor]))",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])))",
       "filters": [
         {
           "table": "t_Valores",
@@ -279,11 +309,11 @@
         }
       ],
       "expected": 6,
-      "notes": "Valor=15."
+      "notes": "Valor=15. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
     },
     {
       "id": "stats.rankx.desc.tie_20",
-      "expr": "RANKX(ALL(t_Valores), SUM(t_Valores[Valor]))",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])))",
       "filters": [
         {
           "table": "t_Valores",
@@ -294,11 +324,11 @@
         }
       ],
       "expected": 4,
-      "notes": "Empate 20/20 (IDs 2 e 3): ambos rank 4 (SKIP), 3 valores (30,30,30) acima."
+      "notes": "Empate 20/20 (IDs 2 e 3): ambos rank 4 (SKIP), 3 valores (30,30,30) acima. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
     },
     {
       "id": "stats.rankx.desc.tie_30",
-      "expr": "RANKX(ALL(t_Valores), SUM(t_Valores[Valor]))",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])))",
       "filters": [
         {
           "table": "t_Valores",
@@ -309,11 +339,11 @@
         }
       ],
       "expected": 1,
-      "notes": "Empate triplo 30/30/30 (IDs 7,8,9): todos rank 1."
+      "notes": "Empate triplo 30/30/30 (IDs 7,8,9): todos rank 1. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
     },
     {
       "id": "stats.rankx.asc.min_value",
-      "expr": "RANKX(ALL(t_Valores), SUM(t_Valores[Valor]), , ASC)",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])), , ASC)",
       "filters": [
         {
           "table": "t_Valores",
@@ -325,11 +355,11 @@
       ],
       "expected": 3,
       "source": "learn.microsoft.com/dax/rankx-function-dax",
-      "notes": "BLANK é tratado como 0 na comparação (doc oficial): as 2 linhas com Valor=BLANK (IDs 5,10) contam como 0 < 5, então o valor 5 fica em rank 3, não rank 1."
+      "notes": "BLANK é tratado como 0 na comparação (doc oficial): as 2 linhas com Valor=BLANK (IDs 5,10) contam como 0 < 5, então o valor 5 fica em rank 3, não rank 1. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
     },
     {
       "id": "stats.rankx.asc.tie_30",
-      "expr": "RANKX(ALL(t_Valores), SUM(t_Valores[Valor]), , ASC)",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])), , ASC)",
       "filters": [
         {
           "table": "t_Valores",
@@ -341,11 +371,11 @@
       ],
       "expected": 8,
       "source": "learn.microsoft.com/dax/rankx-function-dax",
-      "notes": "ASC, SKIP, BLANK=0: 7 valores menores que 30 (5,10,15,20,20 e os 2 BLANKs=0) -> rank 8."
+      "notes": "ASC, SKIP, BLANK=0: 7 valores menores que 30 (5,10,15,20,20 e os 2 BLANKs=0) -> rank 8. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
     },
     {
-      "id": "stats.rankx.blank_target_is_blank",
-      "expr": "RANKX(ALL(t_Valores), SUM(t_Valores[Valor]))",
+      "id": "stats.rankx.blank_target_ranks_as_zero",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])))",
       "filters": [
         {
           "table": "t_Valores",
@@ -355,12 +385,12 @@
           ]
         }
       ],
-      "expected": null,
-      "notes": "Linha ID=5 tem Valor BLANK; RANKX de um valor BLANK é BLANK."
+      "expected": 9,
+      "notes": "Valor BLANK é comparado como 0 (dax.guide/RANKX): 8 valores > 0 (10,20,20,5,15,30,30,30) => posição 9; os dois BLANKs empatam. RANKX não devolve BLANK sozinho; medidas reais usam IF(ISBLANK(...), BLANK(), RANKX(...))."
     },
     {
       "id": "stats.rankx.dense.desc.tie_20",
-      "expr": "RANKX(ALL(t_Valores), SUM(t_Valores[Valor]), , DESC, DENSE)",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])), , DESC, DENSE)",
       "filters": [
         {
           "table": "t_Valores",
@@ -372,11 +402,11 @@
       ],
       "expected": 2,
       "source": "learn.microsoft.com/dax/rankx-function-dax",
-      "notes": "DENSE: apenas 1 valor distinto (30) acima de 20, então rank 2. Esperado conferido via dax.guide/Microsoft Learn; mecanismo de empate DENSE provavelmente não suportado no Rust."
+      "notes": "DENSE: apenas 1 valor distinto (30) acima de 20, então rank 2. Esperado conferido via dax.guide/Microsoft Learn; mecanismo de empate DENSE provavelmente não suportado no Rust. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
     },
     {
       "id": "stats.rankx.dense.desc.tie_30",
-      "expr": "RANKX(ALL(t_Valores), SUM(t_Valores[Valor]), , DESC, DENSE)",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])), , DESC, DENSE)",
       "filters": [
         {
           "table": "t_Valores",
@@ -387,7 +417,7 @@
         }
       ],
       "expected": 1,
-      "notes": "Grupo mais alto, DENSE ou SKIP dão rank 1 igualmente."
+      "notes": "Grupo mais alto, DENSE ou SKIP dão rank 1 igualmente. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
     },
     {
       "id": "stats.topn.sumx_desc_tie_boundary",

@@ -18,7 +18,7 @@ pub(super) fn eval_rankx(
     if args.len() < 2 {
         return Err("RANKX requer (tabela, expressão)".to_string());
     }
-    let (table_eval, row_indices, rank_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+    let (table_eval, row_indices, _table_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
     let table_data = table_eval.as_ref();
     // 3rd arg (value) is optional / can be an omitted placeholder (Expr::Blank);
     // when absent, the expression itself (2nd arg) supplies the value to rank.
@@ -27,9 +27,8 @@ pub(super) fn eval_rankx(
         Some(e) => e,
     };
     let target_val = evaluate_ast(value_expr, model, ctx, row_stack, vars)?;
-    let Some(target_num) = (if target_val.is_blank() { None } else { target_val.as_f64() }) else {
-        return Ok(DaxValue::Blank);
-    };
+    // BLANK compara como 0 (dax.guide/RANKX); RANKX nunca devolve BLANK sozinho.
+    let target_num = if target_val.is_blank() { 0.0 } else { target_val.as_f64().unwrap_or(0.0) };
     let ascending = match args.get(3) {
         Some(Expr::Ident(s)) => s.eq_ignore_ascii_case("ASC"),
         Some(Expr::Blank) | None => false,
@@ -40,17 +39,15 @@ pub(super) fn eval_rankx(
         Some(Expr::Text(s)) => s.eq_ignore_ascii_case("DENSE"),
         _ => false,
     };
-    // Unlike the X-aggregators, RANKX evaluates its expression with a per-row context
-    // transition even for non-measure expressions (e.g. RANKX(ALL(T), SUM(T[v]))),
-    // which is what the corpus oracle (stats.rankx.*) encodes. Only columns with model
-    // lineage become filters.
+    // Como os demais iteradores, RANKX só cria contexto de linha: a transição
+    // acontece quando a expressão é uma medida ou usa CALCULATE. Assim
+    // RANKX(ALL(T), SUM(T[v])) empata tudo em 1, como no DAX real.
     let mut scores = Vec::new();
     for r_idx in row_indices {
         let row_ctx = RowContext { table: table_data, row_idx: r_idx };
-        let eff_ctx = apply_lineage_transition(model, &rank_ctx, &row_ctx);
         let mut next_stack = row_stack.to_vec();
         next_stack.push(row_ctx);
-        let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
+        let v = evaluate_ast(&args[1], model, ctx, &next_stack, vars)?;
         // BLANK is treated as 0 in RANKX comparisons (per dax.guide), not skipped.
         scores.push(if v.is_blank() { 0.0 } else { v.as_f64().unwrap_or(0.0) });
     }
@@ -195,17 +192,20 @@ pub(super) fn eval_x_aggregate(
     if args.len() < 2 {
         return Err(format!("{} requer (tabela, expressão)", fname));
     }
-    let (table_eval, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+    let (table_eval, row_indices, _table_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
     let table_data = table_eval.as_ref();
     // Row context only, no implicit context transition: a nested FILTER(T, ...) must
     // still see every row of T (EARLIER pattern); measure references / CALCULATE
-    // transition explicitly.
+    // transition explicitly. The expression runs in the OUTER filter context:
+    // ALL(T)/FILTER(...) in the first argument only decide which rows are iterated
+    // (SUMX(ALL(T), SUM(T[v])) = rows x SUM in the outer filter).
+    let iter_ctx = ctx;
     if fname == "COUNTAX" {
         let mut cnt = 0usize;
         for r_idx in row_indices {
             let mut next_stack = row_stack.to_vec();
             next_stack.push(RowContext { table: table_data, row_idx: r_idx });
-            let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
+            let v = evaluate_ast(&args[1], model, iter_ctx, &next_stack, vars)?;
             if !v.is_blank() {
                 cnt += 1;
             }
@@ -216,7 +216,7 @@ pub(super) fn eval_x_aggregate(
     for r_idx in row_indices {
         let mut next_stack = row_stack.to_vec();
         next_stack.push(RowContext { table: table_data, row_idx: r_idx });
-        let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
+        let v = evaluate_ast(&args[1], model, iter_ctx, &next_stack, vars)?;
         if !v.is_blank() {
             if let Some(n) = v.as_f64() {
                 vals.push(n);
@@ -256,14 +256,15 @@ pub(super) fn eval_percentilex(
     if args.len() < 3 {
         return Err(format!("{} requer (tabela, expressão, k)", fname));
     }
-    let (table_eval, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+    let (table_eval, row_indices, _table_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+    let iter_ctx = ctx; // expressão roda no contexto externo (ver eval_x_aggregate)
     let table_data = table_eval.as_ref();
     let k = evaluate_ast(&args[2], model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.5);
     let mut vals = Vec::new();
     for r_idx in row_indices {
         let mut next_stack = row_stack.to_vec();
         next_stack.push(RowContext { table: table_data, row_idx: r_idx });
-        let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
+        let v = evaluate_ast(&args[1], model, iter_ctx, &next_stack, vars)?;
         if !v.is_blank() {
             if let Some(n) = v.as_f64() {
                 vals.push(n);
@@ -286,7 +287,8 @@ pub(super) fn eval_concatenatex(
     if args.len() < 2 {
         return Err("CONCATENATEX requer (tabela, expressão, [delimitador])".to_string());
     }
-    let (table_eval, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+    let (table_eval, row_indices, _table_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+    let iter_ctx = ctx; // expressão roda no contexto externo (ver eval_x_aggregate)
     let table_data = table_eval.as_ref();
     let delim = if args.len() >= 3 {
         evaluate_ast(&args[2], model, ctx, row_stack, vars)?.as_display_string()
@@ -298,7 +300,7 @@ pub(super) fn eval_concatenatex(
     for r_idx in row_indices {
         let mut next_stack = row_stack.to_vec();
         next_stack.push(RowContext { table: table_data, row_idx: r_idx });
-        let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
+        let v = evaluate_ast(&args[1], model, iter_ctx, &next_stack, vars)?;
         if !v.is_blank() {
             let text = v.as_display_string();
             let sort_k = if let Some(ord_e) = args.get(3) {
@@ -364,13 +366,14 @@ pub(super) fn eval_dated_flows(
     row_stack: &[RowContext<'_>],
     vars: &HashMap<String, DaxValue>,
 ) -> Result<Vec<DatedFlow>, String> {
-    let (table_eval, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+    let (table_eval, row_indices, _table_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+    let iter_ctx = ctx; // expressão roda no contexto externo (ver eval_x_aggregate)
     let table_data = table_eval.as_ref();
     let mut flows = Vec::with_capacity(row_indices.len());
     for r_idx in row_indices {
         let mut next_stack = row_stack.to_vec();
         next_stack.push(RowContext { table: table_data, row_idx: r_idx });
-        let value = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
+        let value = evaluate_ast(&args[1], model, iter_ctx, &next_stack, vars)?;
         if value.is_blank() {
             continue;
         }

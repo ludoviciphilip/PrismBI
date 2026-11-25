@@ -509,6 +509,14 @@ mod tests {
                 DaxMeasureInput {
                     name: "Rank Data".into(),
                     table_name: "fVendas".into(),
+                    formula: "RANKX(ALL(dCal[Data]), [Receita])".into(),
+                },
+                DaxMeasureInput {
+                    // ALL(fVendas) só define as linhas iteradas; o filtro externo em
+                    // dCal continua ativo durante a transição, então as outras datas
+                    // ficam BLANK e o valor do dia é o maior => 1 (como no DAX real).
+                    name: "Rank Fato".into(),
+                    table_name: "fVendas".into(),
                     formula: "RANKX(ALL(fVendas), [Receita])".into(),
                 },
             ],
@@ -537,6 +545,9 @@ mod tests {
 
         let rank = model.evaluate_dax("[Rank Data]", &ctx_feb_2026).unwrap().as_f64().unwrap();
         assert!((rank - 2.0).abs() < 1e-6);
+
+        let rank_fact = model.evaluate_dax("[Rank Fato]", &ctx_feb_2026).unwrap().as_f64().unwrap();
+        assert!((rank_fact - 1.0).abs() < 1e-6, "rank_fact = {}", rank_fact);
     }
 
     #[test]

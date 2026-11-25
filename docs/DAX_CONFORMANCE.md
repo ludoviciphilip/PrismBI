@@ -3,17 +3,17 @@
 > Gerado por `scripts/dax-conformance-report.mjs` a partir de `tests/dax-corpus/`. Não edite à mão.
 > Cada caso tem resultado esperado conferido de forma independente dos motores.
 
-**Casos:** 366 · **Rust (principal):** 362/366 (98.9%) · **TypeScript (legado):** 350/366 (95.6%)
+**Casos:** 368 · **Rust (principal):** 364/368 (98.9%) · **TypeScript (legado):** 350/368 (95.1%)
 
 | Categoria | Casos | Rust | TS |
 | :--- | ---: | ---: | ---: |
 | core | 49 | 49 (100.0%) | 48 (98.0%) |
 | filter | 67 | 63 (94.0%) | 56 (83.6%) |
 | scalar | 110 | 110 (100.0%) | 106 (96.4%) |
-| stats | 71 | 71 (100.0%) | 71 (100.0%) |
+| stats | 73 | 73 (100.0%) | 71 (97.3%) |
 | time | 69 | 69 (100.0%) | 69 (100.0%) |
 
-## Casos com falha (16)
+## Casos com falha (18)
 
 | Caso | Rust | TS |
 | :--- | :--- | :--- |
@@ -33,3 +33,5 @@
 | `scalar.info.isblank.empty_string_is_false` | ✅ | ❌ true |
 | `scalar.text.format.month_abbrev` | ✅ | ❌ "2024-03-05" |
 | `scalar.text.format.thousands_pattern` | ✅ | ❌ "1.234.567" |
+| `stats.rankx.blank_target_ranks_as_zero` | ✅ | ❌ null |
+| `stats.rankx.sum_without_calculate_ties_all` | ✅ | ❌ 8 |
