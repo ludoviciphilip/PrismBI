@@ -266,6 +266,7 @@ fn format_dax_value(val: &DaxValue, pattern: &str) -> String {
             out = out.replace("MMM", MONTHS_SHORT_PT[m_idx]);
             out = out.replace("mmm", MONTHS_SHORT_PT[m_idx]);
             out = out.replace("MM", &format!("{:02}", m));
+            out = out.replace("mm", &format!("{:02}", m));
             out = out.replace("dd", &format!("{:02}", d));
             out = out.replace("DD", &format!("{:02}", d));
             return out;
@@ -284,11 +285,17 @@ fn format_dax_value(val: &DaxValue, pattern: &str) -> String {
         return format!("$ {}", format_number_grouped(num, 2));
     }
     if lower == "percent" || p_trimmed.contains('%') {
-        let decimals = p_trimmed
-            .split('.')
-            .nth(1)
-            .map(|s| s.chars().filter(|&c| c == '0' || c == '#').count())
-            .unwrap_or(2);
+        let decimals = if p_trimmed.contains('.') {
+            p_trimmed
+                .split('.')
+                .nth(1)
+                .map(|s| s.chars().filter(|&c| c == '0' || c == '#').count())
+                .unwrap_or(0)
+        } else if lower == "percent" {
+            2
+        } else {
+            0
+        };
         return format!("{:.prec$}%", num * 100.0, prec = decimals);
     }
     if lower == "standard" || lower == "fixed" || p_trimmed.contains('#') || p_trimmed.contains('0') {
