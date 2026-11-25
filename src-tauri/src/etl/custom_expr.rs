@@ -379,7 +379,7 @@ impl<'a> Tr<'a> {
                 arity(1, 2)?;
                 let (d, _) = self.date_arg(&args[0])?;
                 let k = first_day_index(args.get(1))?;
-                Ok((format!("CAST(((dayofweek({}) - {} + 7) % 7) AS BIGINT)", d, k), Cat::Int))
+                Ok((format!("CAST(((date_part('dow', {}) - {} + 7) % 7) AS BIGINT)", d, k), Cat::Int))
             }
             "Date.WeekOfMonth" => {
                 arity(1, 2)?;
@@ -388,7 +388,7 @@ impl<'a> Tr<'a> {
                 // Week 1 contains the 1st; weeks start on `k` (Sunday by default).
                 Ok((
                     format!(
-                        "CAST((day({d}) - 1 + ((dayofweek(date_trunc('month', {d})) - {k} + 7) % 7)) // 7 + 1 AS BIGINT)",
+                        "CAST((day({d}) - 1 + ((date_part('dow', date_trunc('month', {d})) - {k} + 7) % 7)) // 7 + 1 AS BIGINT)",
                         d = d,
                         k = k
                     ),
@@ -403,7 +403,7 @@ impl<'a> Tr<'a> {
                 Ok(if f == "Date.MonthName" {
                     (format!("list_extract({}, month({}))", list_lit(months), d), Cat::Text)
                 } else {
-                    (format!("list_extract({}, dayofweek({}) + 1)", list_lit(days), d), Cat::Text)
+                    (format!("list_extract({}, date_part('dow', {}) + 1)", list_lit(days), d), Cat::Text)
                 })
             }
             "Date.AddDays" | "Date.AddMonths" => {
@@ -581,7 +581,7 @@ impl<'a> Tr<'a> {
                 let k = first_day_index(args.get(1))?;
                 Ok((
                     format!(
-                        "CAST((dayofyear({d}) - 1 + ((dayofweek(date_trunc('year', {d})) - {k} + 7) % 7)) // 7 + 1 AS BIGINT)",
+                        "CAST((date_part('doy', {d}) - 1 + ((date_part('dow', date_trunc('year', {d})) - {k} + 7) % 7)) // 7 + 1 AS BIGINT)",
                         d = d,
                         k = k
                     ),
@@ -591,7 +591,7 @@ impl<'a> Tr<'a> {
             "Date.DayOfYear" => {
                 arity(1, 1)?;
                 let (d, _) = self.date_arg(&args[0])?;
-                Ok((format!("CAST(dayofyear({}) AS BIGINT)", d), Cat::Int))
+                Ok((format!("CAST(date_part('doy', {}) AS BIGINT)", d), Cat::Int))
             }
             "Date.DaysInMonth" => {
                 arity(1, 1)?;
@@ -633,7 +633,7 @@ impl<'a> Tr<'a> {
                 let k = first_day_index(args.get(1))?;
                 let cast = if c == Cat::Timestamp { "DATE" } else { "" };
                 let base = if cast.is_empty() { d.clone() } else { format!("CAST({} AS DATE)", d) };
-                let expr = format!("({} - to_days(CAST((dayofweek({}) - {} + 7) % 7 AS INTEGER)))", base, d, k);
+                let expr = format!("({} - to_days(CAST((date_part('dow', {}) - {} + 7) % 7 AS INTEGER)))", base, d, k);
                 Ok(if c == Cat::Timestamp {
                     (format!("CAST({} AS TIMESTAMP)", expr), Cat::Timestamp)
                 } else {
@@ -645,7 +645,7 @@ impl<'a> Tr<'a> {
                 let (d, c) = self.date_arg(&args[0])?;
                 let k = first_day_index(args.get(1))?;
                 let base = if c == Cat::Timestamp { format!("CAST({} AS DATE)", d) } else { d.clone() };
-                let start = format!("({} - to_days(CAST((dayofweek({}) - {} + 7) % 7 AS INTEGER)))", base, d, k);
+                let start = format!("({} - to_days(CAST((date_part('dow', {}) - {} + 7) % 7 AS INTEGER)))", base, d, k);
                 let expr = format!("({} + to_days(6))", start);
                 Ok(if c == Cat::Timestamp {
                     (format!("CAST({} AS TIMESTAMP)", expr), Cat::Timestamp)
