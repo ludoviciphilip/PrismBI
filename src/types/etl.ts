@@ -77,6 +77,16 @@ export type EtlStep = EtlStepBase &
       }
     | { op: 'appendQueries'; queries: string[] }
     | { op: 'opaqueM'; m: string }
+    | { op: 'transformColumns'; columns: string[]; expression: string; type?: EtlType }
+    | { op: 'reorderColumns'; columns: string[] }
+    | { op: 'demoteHeaders' }
+    | { op: 'transpose' }
+    | { op: 'reverseRows' }
+    | { op: 'keepRange'; offset: number; count: number }
+    | { op: 'removeAlternateRows'; offset: number; remove: number; keep: number }
+    | { op: 'keepDuplicates'; columns?: string[] }
+    | { op: 'replaceErrors'; replacements: { column: string; value: Scalar }[] }
+    | { op: 'keepRowsWithErrors'; columns?: string[] }
   );
 
 export type EtlStepOp = EtlStep['op'];
