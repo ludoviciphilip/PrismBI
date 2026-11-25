@@ -129,6 +129,31 @@ pub fn evaluate_ast(
 }
 
 fn eval_binary(op: &BinaryOp, l: &DaxValue, r: &DaxValue) -> Result<DaxValue, String> {
+    // Date ± number arithmetic yields a date (DAX stores dates as a serial day count
+    // internally; here dates are ISO text, so shift the civil date directly).
+    if matches!(op, BinaryOp::Add | BinaryOp::Sub) {
+        let l_date = match l {
+            DaxValue::Text(s) => parse_iso_ymd(s),
+            _ => None,
+        };
+        let r_date = match r {
+            DaxValue::Text(s) => parse_iso_ymd(s),
+            _ => None,
+        };
+        if let (Some((y, m, d)), None) = (l_date, r_date) {
+            let delta = r.as_f64().unwrap_or(0.0).round() as i32;
+            let signed = if matches!(op, BinaryOp::Sub) { -delta } else { delta };
+            let (ny, nm, nd) = add_days(y, m, d, signed);
+            return Ok(DaxValue::Text(format!("{:04}-{:02}-{:02}", ny, nm, nd)));
+        }
+        if let (None, Some((y, m, d))) = (l_date, r_date) {
+            if matches!(op, BinaryOp::Add) {
+                let delta = l.as_f64().unwrap_or(0.0).round() as i32;
+                let (ny, nm, nd) = add_days(y, m, d, delta);
+                return Ok(DaxValue::Text(format!("{:04}-{:02}-{:02}", ny, nm, nd)));
+            }
+        }
+    }
     match op {
         BinaryOp::Add => Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) + r.as_f64().unwrap_or(0.0))),
         BinaryOp::Sub => Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) - r.as_f64().unwrap_or(0.0))),
@@ -269,7 +294,7 @@ fn eval_call(
             let b = eval_arg(args, 1, model, ctx, row_stack, vars)?;
             Ok(DaxValue::Boolean(a.as_bool() || b.as_bool()))
         }
-        "IF" => {
+        "IF" | "IF.EAGER" => {
             let cond = eval_arg(args, 0, model, ctx, row_stack, vars)?;
             if cond.as_bool() {
                 eval_arg(args, 1, model, ctx, row_stack, vars)
