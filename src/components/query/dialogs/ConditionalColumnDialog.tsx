@@ -3,6 +3,15 @@ import { Plus, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
 import { DialogShell, FieldLabel, inputCls, selectCls } from './DialogShell';
 import { Cond, EtlType, Scalar } from '../../../types/etl';
 
+// inputCls/selectCls já trazem `w-full`. Tailwind resolve classes de largura
+// conflitantes pela ORDEM EM QUE FORAM GERADAS no stylesheet, não pela ordem
+// no atributo className — então `${inputCls} w-20` pode continuar com w-full
+// vencendo e colapsar o campo (foi exatamente o bug relatado). Para qualquer
+// campo que precise de uma largura própria (fixa ou flex), parte-se de uma
+// base SEM `w-full` em vez de tentar sobrepor.
+const fieldBase = inputCls.replace(/\bw-full\b\s*/, '');
+const selectBase = selectCls.replace(/\bw-full\b\s*/, '');
+
 export interface ConditionalColumnDialogColumn {
   name: string;
   type?: string;
@@ -90,7 +99,7 @@ const ValueOrColumnField: React.FC<{
         const kind = e.target.value as 'value' | 'column';
         onChange(kind === 'value' ? { kind: 'value', value: '' } : { kind: 'column', column: columns[0]?.name ?? '' });
       }}
-      className={`${selectCls} w-20 shrink-0 px-1`}
+      className={`${selectBase} w-20 shrink-0 px-1`}
     >
       <option value="value">Valor</option>
       <option value="column">Coluna</option>
@@ -100,7 +109,7 @@ const ValueOrColumnField: React.FC<{
         aria-label={`${testId}-value`}
         value={value.value}
         onChange={e => onChange({ kind: 'value', value: e.target.value })}
-        className={`${inputCls} min-w-0 flex-1`}
+        className={`${fieldBase} min-w-0 flex-1`}
         placeholder={placeholder}
       />
     ) : (
@@ -108,7 +117,7 @@ const ValueOrColumnField: React.FC<{
         aria-label={`${testId}-column`}
         value={value.column}
         onChange={e => onChange({ kind: 'column', column: e.target.value })}
-        className={`${selectCls} min-w-0 flex-1`}
+        className={`${selectBase} min-w-0 flex-1`}
       >
         {columns.map(c => (
           <option key={c.name} value={c.name}>
