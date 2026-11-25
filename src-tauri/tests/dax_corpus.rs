@@ -21,6 +21,8 @@ const ENGINE: &str = "rust";
 #[derive(Deserialize)]
 struct CorpusColumn {
     name: String,
+    #[serde(default, rename = "type")]
+    col_type: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -124,8 +126,21 @@ fn build_model(m: &CorpusModel) -> DaxModel {
         .iter()
         .map(|t| {
             let columns: Vec<String> = t.columns.iter().map(|c| c.name.clone()).collect();
+            let mut column_types: Vec<Option<String>> = t.columns.iter().map(|c| c.col_type.clone()).collect();
             let rows = match &t.calendar {
-                Some(spec) => calendar_rows(spec),
+                Some(spec) => {
+                    // Generated calendar columns (Data, Ano, MesNum, Trimestre, AnoMes) carry
+                    // their own implicit types regardless of what the model json declares.
+                    column_types = columns
+                        .iter()
+                        .map(|c| match c.as_str() {
+                            "Data" => Some("date".to_string()),
+                            "Ano" | "MesNum" | "Trimestre" => Some("number".to_string()),
+                            _ => Some("text".to_string()),
+                        })
+                        .collect();
+                    calendar_rows(spec)
+                }
                 None => t
                     .rows
                     .iter()
@@ -138,7 +153,7 @@ fn build_model(m: &CorpusModel) -> DaxModel {
                     })
                     .collect(),
             };
-            DaxTableInput { name: t.name.clone(), columns, rows }
+            DaxTableInput { name: t.name.clone(), columns, rows, column_types }
         })
         .collect();
     let relationships = m
@@ -177,12 +192,16 @@ fn value_matches(expected: &Value, actual: &DaxValue, tol: f64) -> bool {
         Value::Bool(b) => matches!(actual, DaxValue::Boolean(a) if a == b),
         Value::Number(n) => {
             let want = n.as_f64().unwrap();
-            matches!(actual, DaxValue::Number(a) if a.is_finite() && (a - want).abs() <= tol * want.abs().max(1.0))
+            matches!(actual, DaxValue::Integer(_) | DaxValue::Decimal(_) | DaxValue::Currency(_))
+                && actual
+                    .as_f64()
+                    .is_some_and(|a| a.is_finite() && (a - want).abs() <= tol * want.abs().max(1.0))
         }
         Value::String(s) => matches!(actual, DaxValue::Text(a) if a == s),
         Value::Object(o) => {
             if let Some(Value::String(d)) = o.get("date") {
-                matches!(actual, DaxValue::Text(a) if a.get(..10) == Some(d.as_str()))
+                matches!(actual, DaxValue::Text(_) | DaxValue::DateTime(_))
+                    && actual.as_display_string().get(..10) == Some(d.as_str())
             } else {
                 false
             }
@@ -236,7 +255,7 @@ fn dax_corpus_rust_engine() {
                     values: f.values.clone(),
                 })
                 .collect();
-            let ctx = build_filter_context(&filters);
+            let ctx = build_filter_context(&filters, model);
             let expect_error = c.expected.get("error").is_some();
             // panics no motor contam como falha do caso, não do harness
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
