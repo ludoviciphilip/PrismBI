@@ -114,31 +114,41 @@ fn duckdb_type_mapping_covers_importer_types() {
 }
 
 /// A second sync with the same DuckDB table version must not re-run
-/// `SELECT *` (cache hit), driven through the same path `lib.rs` uses.
+/// `SELECT *` (cache hit); a new version (CREATE OR REPLACE through an
+/// importer/etl_apply bumps it) must reload. Drives the exact function
+/// `sync_model_to_rust` calls.
 #[test]
 fn version_cache_skips_reload_when_table_unchanged() {
+    use crate::dax::duckdb_load::load_changed_tables;
+    use crate::engine::duckdb_store::bump_table_version;
     let conn = open_mem();
-    conn.execute_batch("CREATE OR REPLACE TABLE cached_tbl AS SELECT 1 AS x").unwrap();
+    // Unique name: the version maps are process-wide and tests run in parallel.
+    let name = "cache_probe_tbl_7f3a";
+    conn.execute_batch(&format!("CREATE OR REPLACE TABLE {name} AS SELECT 1 AS x")).unwrap();
+    bump_table_version(name);
+    let input = vec![DaxTableInput {
+        name: "Cache".into(),
+        columns: vec!["x".into()],
+        rows: vec![],
+        column_types: vec![],
+        duckdb_table: Some(name.into()),
+    }];
 
     let before = load_count_for_test();
-    let v1 = 42u64;
-    set_last_sync_version("cached_tbl_test_hook", 0); // ensure clean starting state for this key
-    // First "sync": version differs from whatever was last recorded -> loads.
-    assert_ne!(get_last_sync_version("cached_tbl_test_hook"), Some(v1));
-    let _data1 = load_table_from_duckdb(&conn, "cached_tbl", &[]).expect("first load");
-    set_last_sync_version("cached_tbl_test_hook", v1);
-    let after_first = load_count_for_test();
-    assert_eq!(after_first, before + 1, "first sync must load once");
+    let first = load_changed_tables(&conn, &input);
+    assert!(first.contains_key(name), "first sync must load the table");
+    assert_eq!(load_count_for_test(), before + 1);
 
-    // Simulate the lib.rs skip check: version unchanged -> do not call
-    // load_table_from_duckdb again.
-    if get_last_sync_version("cached_tbl_test_hook") == Some(v1) {
-        // skip: this is exactly the branch sync_model_to_rust takes.
-    } else {
-        let _data2 = load_table_from_duckdb(&conn, "cached_tbl", &[]).expect("second load");
-    }
-    let after_second = load_count_for_test();
-    assert_eq!(after_second, after_first, "unchanged version must not trigger a reload");
+    let second = load_changed_tables(&conn, &input);
+    assert!(second.is_empty(), "unchanged version must be skipped");
+    assert_eq!(load_count_for_test(), before + 1, "no SELECT * on a cache hit");
+
+    conn.execute_batch(&format!("CREATE OR REPLACE TABLE {name} AS SELECT 2 AS x")).unwrap();
+    bump_table_version(name);
+    let third = load_changed_tables(&conn, &input);
+    assert!(third.contains_key(name), "a new version must reload");
+    assert_eq!(load_count_for_test(), before + 2);
+    let _ = (get_last_sync_version, set_last_sync_version); // still exported for lib.rs-level tooling
 }
 
 /// Missing DuckDB table (e.g. right after reopening a project, since DuckDB

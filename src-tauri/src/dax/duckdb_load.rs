@@ -11,11 +11,14 @@ use super::{functions, ColumnType, DaxValue};
 use duckdb::types::ValueRef;
 use duckdb::Connection;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 static LAST_SYNC_VERSIONS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
-static LOAD_COUNT: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    // Per thread: cargo runs tests in parallel threads, and a process-wide
+    // counter made the cache test flaky. Loads run on the calling thread.
+    static LOAD_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 fn last_sync_versions() -> &'static Mutex<HashMap<String, u64>> {
     LAST_SYNC_VERSIONS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -41,7 +44,7 @@ pub fn set_last_sync_version(table_name: &str, version: u64) {
 /// cache). Not reset automatically between tests; each test that relies on
 /// it should read the counter before and after its own operations.
 pub fn load_count_for_test() -> u64 {
-    LOAD_COUNT.load(Ordering::SeqCst)
+    LOAD_COUNT.with(|c| c.get())
 }
 
 fn quote_ident(ident: &str) -> String {
@@ -251,7 +254,7 @@ pub fn load_table_from_duckdb(
         col_index.insert(c.to_lowercase(), idx);
     }
 
-    LOAD_COUNT.fetch_add(1, Ordering::SeqCst);
+    LOAD_COUNT.with(|c| c.set(c.get() + 1));
 
     Ok(super::DaxTableData {
         name: table_name.to_string(),
@@ -260,4 +263,33 @@ pub fn load_table_from_duckdb(
         col_types,
         rows,
     })
+}
+
+/// Step 1 of `sync_model_to_rust`: loads every DuckDB-backed table whose
+/// DuckDB version changed since the last sync (unchanged ones are skipped and
+/// reused from the DaxModel cache). Keys are lowercase DuckDB table names.
+pub fn load_changed_tables(
+    conn: &Connection,
+    tables: &[super::DaxTableInput],
+) -> HashMap<String, (u64, super::DaxTableData)> {
+    let mut out = HashMap::new();
+    for t in tables {
+        let Some(duckdb_name) = &t.duckdb_table else { continue };
+        let current_version = crate::engine::duckdb_store::get_table_version(duckdb_name);
+        if get_last_sync_version(duckdb_name) == Some(current_version) {
+            continue; // unchanged since the last sync: DaxModel reuses its cache.
+        }
+        match load_table_from_duckdb(conn, duckdb_name, &t.column_types) {
+            Ok(data) => {
+                set_last_sync_version(duckdb_name, current_version);
+                out.insert(duckdb_name.to_lowercase(), (current_version, data));
+            }
+            Err(e) => {
+                // Left out: sync_from_payload_with_duckdb falls back to the
+                // cached table (if any) or the JSON rows.
+                eprintln!("aviso: não foi possível carregar a tabela DuckDB '{}': {}", duckdb_name, e);
+            }
+        }
+    }
+    out
 }

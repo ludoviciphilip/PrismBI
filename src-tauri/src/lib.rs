@@ -212,36 +212,14 @@ fn sync_model_to_rust(
     // duckdb_table-backed table, then release the lock before ever touching
     // dax_model. Never hold both locks at once, and never acquire them in
     // the reverse order anywhere else (see docs/RUST_ENGINE_2.md §3 step 2).
-    let mut freshly_loaded: HashMap<String, (u64, dax::DaxTableData)> = HashMap::new();
+    let freshly_loaded: HashMap<String, (u64, dax::DaxTableData)>;
     {
         let conn_guard = state
             .db
             .connection()
             .lock()
             .map_err(|_| "Lock DuckDB corrompido".to_string())?;
-        for t in &payload.tables {
-            let Some(duckdb_name) = &t.duckdb_table else { continue };
-            let dkey = duckdb_name.to_lowercase();
-            let current_version = engine::duckdb_store::get_table_version(duckdb_name);
-            let last_synced = dax::duckdb_load::get_last_sync_version(duckdb_name);
-            if last_synced == Some(current_version) {
-                continue; // unchanged since the last sync: DaxModel reuses its cache.
-            }
-            match dax::duckdb_load::load_table_from_duckdb(&conn_guard, duckdb_name, &t.column_types) {
-                Ok(data) => {
-                    dax::duckdb_load::set_last_sync_version(duckdb_name, current_version);
-                    freshly_loaded.insert(dkey, (current_version, data));
-                }
-                Err(e) => {
-                    eprintln!(
-                        "aviso: não foi possível carregar a tabela DuckDB '{}': {}",
-                        duckdb_name, e
-                    );
-                    // Leave it out of freshly_loaded; sync_from_payload_with_duckdb
-                    // falls back to the cached table (if any) or the JSON rows.
-                }
-            }
-        }
+        freshly_loaded = dax::duckdb_load::load_changed_tables(&conn_guard, &payload.tables);
         drop(conn_guard);
     }
 
