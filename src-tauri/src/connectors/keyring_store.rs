@@ -1,7 +1,9 @@
-//! Armazenamento seguro de credenciais via chaveiro nativo do Linux
-//! (Secret Service, D-Bus) usando a crate `keyring` v3. A camada é um
-//! trait (`CredentialStore`) para ser testável com um fake em memória,
-//! já que o Secret Service real não está disponível em CI/sandboxes.
+//! Armazenamento seguro de credenciais via chaveiro nativo do SO (Secret
+//! Service/D-Bus no Linux, Credential Manager no Windows, Keychain no macOS)
+//! usando a crate `keyring` v3 — o backend é escolhido em tempo de build por
+//! `Cargo.toml` (`target.'cfg(target_os = "...")'`.dependencies`). A camada é
+//! um trait (`CredentialStore`) para ser testável com um fake em memória, já
+//! que o chaveiro real não está disponível em CI/sandboxes headless.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -19,10 +21,12 @@ pub trait CredentialStore: Send + Sync {
     fn delete(&self, key: &str) -> Result<(), String>;
 }
 
-/// Implementação real: Linux Secret Service via D-Bus (`keyring` crate).
-pub struct LinuxKeyringStore;
+/// Implementação real: chaveiro nativo do SO via a crate `keyring`
+/// (Secret Service no Linux, Credential Manager no Windows, Keychain no
+/// macOS — selecionado em tempo de build).
+pub struct NativeKeyringStore;
 
-impl LinuxKeyringStore {
+impl NativeKeyringStore {
     pub fn new() -> Self {
         Self
     }
@@ -33,13 +37,13 @@ impl LinuxKeyringStore {
     }
 }
 
-impl Default for LinuxKeyringStore {
+impl Default for NativeKeyringStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl CredentialStore for LinuxKeyringStore {
+impl CredentialStore for NativeKeyringStore {
     fn set(&self, key: &str, secret: &str) -> Result<(), String> {
         self.entry(key)?
             .set_password(secret)
@@ -61,6 +65,7 @@ impl CredentialStore for LinuxKeyringStore {
         }
     }
 }
+
 
 /// Fake em memória usado nos testes unitários e, opcionalmente, como
 /// fallback quando o Secret Service não está disponível no ambiente.
@@ -141,12 +146,13 @@ mod tests {
         assert!(store.delete("never-set").is_ok());
     }
 
-    /// Requer D-Bus Secret Service real (gnome-keyring/kwallet rodando);
-    /// não disponível em CI headless, por isso ignorado por padrão.
+    /// Requer um chaveiro real do SO (Secret Service/D-Bus no Linux,
+    /// Credential Manager no Windows, Keychain no macOS); não disponível em
+    /// CI headless, por isso ignorado por padrão.
     #[test]
-    #[ignore = "requer Secret Service real via D-Bus, indisponível em CI headless"]
-    fn linux_keyring_store_roundtrip_against_real_secret_service() {
-        let store = LinuxKeyringStore::new();
+    #[ignore = "requer chaveiro nativo do SO, indisponível em CI headless"]
+    fn native_keyring_store_roundtrip_against_real_os_keyring() {
+        let store = NativeKeyringStore::new();
         let key = "prismbi-test-key-connectors-v080";
         store.set(key, "integration-secret").unwrap();
         assert_eq!(store.get(key).unwrap().as_deref(), Some("integration-secret"));

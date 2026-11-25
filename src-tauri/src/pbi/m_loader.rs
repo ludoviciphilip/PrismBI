@@ -681,14 +681,28 @@ pub fn resolve_source_path(raw_path: &str, pbip_root: &Path) -> Option<PathBuf> 
         return Some(direct);
     }
 
+    // No Windows, um caminho Windows vindo do .pbip deve "simplesmente
+    // funcionar" antes de qualquer heurística de remapeamento Linux/RDP.
+    #[cfg(windows)]
+    {
+        let win_native = raw_path.replace('/', "\\");
+        let win_buf = PathBuf::from(&win_native);
+        if win_buf.is_file() {
+            return Some(win_buf);
+        }
+    }
+
     let normalized = raw_path.replace('\\', "/");
     let norm_buf = PathBuf::from(&normalized);
     if norm_buf.is_file() {
         return Some(norm_buf);
     }
 
-    // Handle Windows / RDP \\tsclient\Linux\... paths -> $HOME/...
+    // Handle Windows / RDP \\tsclient\Linux\... paths -> $HOME/... (only
+    // meaningful when PrismBI itself is running on Linux/RDP).
+    #[cfg(unix)]
     let lower_norm = normalized.to_lowercase();
+    #[cfg(unix)]
     if let Ok(home) = std::env::var("HOME") {
         let home_path = PathBuf::from(&home);
         if let Some(idx) = lower_norm.find("/linux/") {
