@@ -587,3 +587,170 @@ export async function credentialsGet(key: string): Promise<string | null> {
 export async function credentialsDelete(key: string): Promise<void> {
   await invoke<void>('credentials_delete', { key });
 }
+
+// ---------------------------------------------------------------------
+// ETL v0.9 (Power Query no Rust/DuckDB): contrato em docs/ETL_V09.md.
+// Tipos espelham src-tauri/src/etl/model.rs (serde tag "op", camelCase).
+// ---------------------------------------------------------------------
+
+export type NativeEtlType = 'text' | 'integer' | 'decimal' | 'currency' | 'date' | 'datetime' | 'boolean';
+export type NativeEtlScalar = string | number | boolean | null;
+
+export type NativeEtlCond =
+  | {
+      column: string;
+      op: 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains' | 'notContains' | 'startsWith' | 'endsWith';
+      value: NativeEtlScalar;
+    }
+  | { column: string; op: 'isNull' | 'isNotNull' | 'isBlank' | 'isNotBlank' }
+  | { column: string; op: 'in' | 'notIn'; values: NativeEtlScalar[] }
+  | { and: NativeEtlCond[] }
+  | { or: NativeEtlCond[] }
+  | { not: NativeEtlCond };
+
+export type NativeEtlAggOp = 'sum' | 'avg' | 'min' | 'max' | 'count' | 'countDistinct' | 'countRows' | 'median';
+export interface NativeEtlAgg {
+  name: string;
+  op: NativeEtlAggOp;
+  column?: string;
+}
+export type NativeEtlValueOrColumn = NativeEtlScalar | { column: string };
+
+export type NativeEtlStep = { id: string; name: string } & (
+  | { op: 'promoteHeaders' }
+  | { op: 'changeType'; columns: { column: string; type: NativeEtlType }[]; culture?: string }
+  | { op: 'renameColumns'; renames: [string, string][] }
+  | { op: 'removeColumns'; columns: string[] }
+  | { op: 'selectColumns'; columns: string[] }
+  | { op: 'duplicateColumn'; column: string; newColumn: string }
+  | { op: 'filterRows'; condition: NativeEtlCond }
+  | { op: 'removeBlankRows' }
+  | { op: 'removeRowsWithErrors'; columns?: string[] }
+  | { op: 'keepTopRows' | 'removeTopRows' | 'keepBottomRows' | 'removeBottomRows'; count: number }
+  | { op: 'removeDuplicates'; columns?: string[] }
+  | { op: 'sort'; by: { column: string; descending: boolean }[] }
+  | {
+      op: 'replaceValues';
+      columns: string[];
+      find: NativeEtlScalar;
+      replace: NativeEtlScalar;
+      matchEntireCell: boolean;
+    }
+  | { op: 'fillDown' | 'fillUp'; columns: string[] }
+  | {
+      op: 'splitColumn';
+      column: string;
+      mode: 'delimiterEach' | 'delimiterLeftmost' | 'delimiterRightmost' | 'positions' | 'fixedLength';
+      delimiter?: string;
+      positions?: number[];
+      length?: number;
+      into: string[];
+    }
+  | { op: 'mergeColumns'; columns: string[]; separator: string; newColumn: string }
+  | { op: 'textTransform'; columns: string[]; fn: 'upper' | 'lower' | 'proper' | 'trim' | 'clean' }
+  | { op: 'unpivotOtherColumns'; keep: string[]; attributeColumn: string; valueColumn: string }
+  | { op: 'unpivotColumns'; columns: string[]; attributeColumn: string; valueColumn: string }
+  | { op: 'pivot'; column: string; valuesColumn: string; aggregation: NativeEtlAggOp }
+  | { op: 'groupBy'; keys: string[]; aggregations: NativeEtlAgg[] }
+  | {
+      op: 'addConditionalColumn';
+      newColumn: string;
+      rules: { when: NativeEtlCond; then: NativeEtlValueOrColumn }[];
+      otherwise: NativeEtlValueOrColumn;
+      type?: NativeEtlType;
+    }
+  | { op: 'addCustomColumn'; newColumn: string; expression: string; type?: NativeEtlType }
+  | { op: 'addIndexColumn'; newColumn: string; start: number; step: number }
+  | {
+      op: 'mergeQueries';
+      rightQuery: string;
+      leftKeys: string[];
+      rightKeys: string[];
+      joinKind: 'leftOuter' | 'inner' | 'rightOuter' | 'fullOuter' | 'leftAnti' | 'rightAnti';
+      expand: { column: string; as: string }[];
+    }
+  | { op: 'appendQueries'; queries: string[] }
+  | { op: 'opaqueM'; m: string }
+);
+
+export interface NativeEtlSource {
+  kind: 'excel' | 'csv' | 'parquet' | 'json' | 'db' | 'table' | 'inline' | 'listDates' | 'opaqueM';
+  path?: string;
+  sheet?: string;
+  table?: string;
+  m?: string;
+  columns?: string[];
+  rows?: NativeEtlScalar[][];
+  start?: string;
+  count?: number;
+  stepDays?: number;
+  function?: string;
+}
+
+export interface NativeEtlQuery {
+  name: string;
+  source: NativeEtlSource;
+  steps: NativeEtlStep[];
+}
+
+export interface NativeEtlColumn {
+  name: string;
+  type: NativeEtlType;
+}
+
+export interface NativeEtlRawLoadResult {
+  rawTable: string;
+  columns: NativeEtlColumn[];
+  rowCount: number;
+  sourcePath?: string;
+}
+
+export interface NativeEtlPreviewResult {
+  columns: NativeEtlColumn[];
+  rows: Record<string, any>[];
+  rowCount: number;
+  warnings: string[];
+  failedStep?: { index: number; message: string };
+}
+
+export interface NativeEtlFromMResult {
+  query: NativeEtlQuery;
+  warnings: string[];
+}
+
+/** (Re)carrega a fonte bruta em `raw__<query>`. */
+export async function etlLoadRaw(
+  query: string,
+  source: NativeEtlSource,
+  pbipRoot?: string
+): Promise<NativeEtlRawLoadResult> {
+  return await invoke<NativeEtlRawLoadResult>('etl_load_raw', { query, source, pbipRoot: pbipRoot ?? null });
+}
+
+/** Preview até o passo `uptoStep` (inclusivo; negativo = só a fonte; omitido = todos). */
+export async function etlPreview(
+  query: NativeEtlQuery,
+  uptoStep?: number,
+  limit?: number
+): Promise<NativeEtlPreviewResult> {
+  return await invoke<NativeEtlPreviewResult>('etl_preview', {
+    query,
+    uptoStep: uptoStep ?? null,
+    limit: limit ?? null,
+  });
+}
+
+/** "Fechar e Aplicar": materializa a consulta em `targetTable`. */
+export async function etlApply(query: NativeEtlQuery, targetTable: string): Promise<NativeImportedTable> {
+  return await invoke<NativeImportedTable>('etl_apply', { query, targetTable });
+}
+
+/** Script M completo (`let … in`) da consulta. */
+export async function etlToM(query: NativeEtlQuery): Promise<string> {
+  return await invoke<string>('etl_to_m', { query });
+}
+
+/** Converte um script M em consulta (passos não suportados viram `opaqueM` + aviso). */
+export async function etlFromM(name: string, m: string): Promise<NativeEtlFromMResult> {
+  return await invoke<NativeEtlFromMResult>('etl_from_m', { name, m });
+}
