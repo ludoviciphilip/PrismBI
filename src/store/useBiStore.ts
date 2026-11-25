@@ -2532,6 +2532,11 @@ export const useBiStore = create<BiState>((set, get) => {
           dataType: (c.dataType as any) || 'text',
         })),
         rows: payload.rows,
+        // Resultado materializado no DuckDB: o modelo Rust lê todas as linhas
+        // dali (payload.rows é só a prévia de até 5.000).
+        ...(payload.tableName ? { duckdbTable: payload.tableName } : {}),
+        rowsTruncated: !!payload.truncated,
+        totalRows: payload.totalRows ?? payload.rows.length,
       });
       set({ appliedQuerySnapshot: { ...get().appliedQuerySnapshot, [tableId]: query } });
     },
@@ -2607,6 +2612,9 @@ export const useBiStore = create<BiState>((set, get) => {
               dataType: (c.dataType as any) || 'text',
             })),
             rows: payload.rows,
+            ...(payload.tableName ? { duckdbTable: payload.tableName } : {}),
+            rowsTruncated: !!payload.truncated,
+            totalRows: payload.totalRows ?? payload.rows.length,
           });
           set({ appliedQuerySnapshot: { ...get().appliedQuerySnapshot, [tableId]: query } });
           applied.push({

@@ -62,8 +62,11 @@ describe('refresh with Power Query queries', () => {
     [loadRaw, apply, refreshNative, refreshPbip, syncModel].forEach(f => f.mockReset());
     loadRaw.mockResolvedValue({ rawTable: 'raw__dCalendario', columns: [], rowCount: 2 });
     apply.mockResolvedValue({
+      tableName: 'dCalendario',
       columns: [{ name: 'Data', originalName: 'Data', dataType: 'date' }],
       rows: [{ Data: '2026-04-01' }, { Data: '2026-04-02' }],
+      totalRows: 7000,
+      truncated: true,
     });
     refreshNative.mockResolvedValue({ tableName: 'dCategorias', originalName: 'dCategorias', columns: [{ name: 'Categoria', originalName: 'Categoria', dataType: 'text' }], rows: [{ Categoria: 'B' }], totalRows: 1 });
     // O .pbip devolve a dCalendario ORIGINAL (todas as colunas): não pode sobrescrever a consulta editada.
@@ -89,6 +92,8 @@ describe('refresh with Power Query queries', () => {
     const cal = useBiStore.getState().tables.find(t => t.id === 't_cal')!;
     expect(cal.columns.map(c => c.name)).toEqual(['Data']);
     expect(cal.rows).toHaveLength(2);
+    // O modelo Rust lê o resultado do DuckDB (todas as 7.000 linhas), não a prévia.
+    expect(cal).toMatchObject({ duckdbTable: 'dCalendario', rowsTruncated: true, totalRows: 7000 });
     expect(res.refreshedTables).toEqual(expect.arrayContaining(['dCalendario', 'dCategorias']));
     expect(useBiStore.getState().isRefreshingData).toBe(false);
   });
