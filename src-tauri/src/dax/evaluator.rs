@@ -409,12 +409,11 @@ fn eval_call(
 
             let mut scores = Vec::new();
             for r_idx in row_indices {
+                let row_ctx = RowContext { table: table_data, row_idx: r_idx };
+                let eff_ctx = apply_context_transition(&rank_ctx, &row_ctx);
                 let mut next_stack = row_stack.to_vec();
-                next_stack.push(RowContext {
-                    table: table_data,
-                    row_idx: r_idx,
-                });
-                let v = evaluate_ast(&args[1], model, &rank_ctx, &next_stack, vars)?;
+                next_stack.push(row_ctx);
+                let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
                 if !v.is_blank() {
                     if let Some(n) = v.as_f64() {
                         scores.push(n);
@@ -507,9 +506,11 @@ fn eval_call(
             if fname == "COUNTAX" {
                 let mut cnt = 0usize;
                 for r_idx in row_indices {
+                    let row_ctx = RowContext { table: table_data, row_idx: r_idx };
+                    let eff_ctx = apply_context_transition(&iter_ctx, &row_ctx);
                     let mut next_stack = row_stack.to_vec();
-                    next_stack.push(RowContext { table: table_data, row_idx: r_idx });
-                    let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
+                    next_stack.push(row_ctx);
+                    let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
                     if !v.is_blank() {
                         cnt += 1;
                     }
@@ -518,12 +519,11 @@ fn eval_call(
             }
             let mut vals = Vec::new();
             for r_idx in row_indices {
+                let row_ctx = RowContext { table: table_data, row_idx: r_idx };
+                let eff_ctx = apply_context_transition(&iter_ctx, &row_ctx);
                 let mut next_stack = row_stack.to_vec();
-                next_stack.push(RowContext {
-                    table: table_data,
-                    row_idx: r_idx,
-                });
-                let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
+                next_stack.push(row_ctx);
+                let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
                 if !v.is_blank() {
                     if let Some(n) = v.as_f64() {
                         vals.push(n);
