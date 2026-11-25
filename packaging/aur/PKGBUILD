@@ -1,40 +1,33 @@
 # Maintainer: Luis Felipe de Almeida Vieira
+#
+# Usa o binário do .deb oficial ligado ao webkit2gtk-4.1 do sistema, em vez
+# de reempacotar o AppImage: o WebKitGTK embutido no AppImage (Ubuntu 22.04)
+# é antigo e deixa o canvas visivelmente mais lento em distros atuais.
+# Atualize pkgver/sha256sums com scripts/update-aur-pkgbuild.sh <versão>.
 pkgname=prismbi-bin
-pkgver=0.8.1
+pkgver=0.8.0
 pkgrel=1
 pkgdesc="Business Intelligence nativo para Linux com compatibilidade .pbip/.pbix, Rust e DuckDB"
 arch=('x86_64')
 url="https://github.com/ludoviciphilip/PrismBI"
 license=('custom:Mutualist-v1.3')
-depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'librsvg' 'fuse2')
+depends=('webkit2gtk-4.1' 'gtk3' 'libsecret' 'hicolor-icon-theme')
 provides=('prismbi')
 conflicts=('prismbi')
-options=('!strip')
-_appimage="PrismBI_${pkgver}_amd64.AppImage"
-source=("${_appimage}::${url}/releases/download/v${pkgver}/${_appimage}"
-        "LICENSE.md::https://raw.githubusercontent.com/ludoviciphilip/PrismBI/v${pkgver}/LICENSE.md"
-        "prismbi.png::https://raw.githubusercontent.com/ludoviciphilip/PrismBI/v${pkgver}/src-tauri/icons/128x128.png")
-sha256sums=('SKIP'
-            'SKIP'
+options=('!strip' '!debug')
+_deb="PrismBI_${pkgver}_amd64.deb"
+source=("${_deb}::${url}/releases/download/v${pkgver}/${_deb}"
+        "LICENSE.md::https://raw.githubusercontent.com/ludoviciphilip/PrismBI/v${pkgver}/LICENSE.md")
+sha256sums=('1cb2983ab99327812fcb47a46f774bc4fd89018a5aad1a04a33a2c6137128926'
             'SKIP')
+noextract=("${_deb}")
 
 package() {
-  install -Dm755 "${srcdir}/${_appimage}" "${pkgdir}/opt/${pkgname}/${_appimage}"
-  install -dm755 "${pkgdir}/usr/bin"
-  ln -s "/opt/${pkgname}/${_appimage}" "${pkgdir}/usr/bin/prismbi"
-
-  install -dm755 "${pkgdir}/usr/share/applications"
-  cat > "${pkgdir}/usr/share/applications/prismbi.desktop" <<EOF
-[Desktop Entry]
-Name=PrismBI
-Comment=Business Intelligence nativo para Linux (.pbip / .pbix)
-Exec=/usr/bin/prismbi %U
-Icon=prismbi
-Terminal=false
-Type=Application
-Categories=Office;Utility;Science;
-EOF
-
-  install -Dm644 "${srcdir}/prismbi.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/prismbi.png"
+  cd "${srcdir}"
+  bsdtar -xf "${_deb}" data.tar.gz
+  bsdtar -xf data.tar.gz -C "${pkgdir}"
+  chmod 755 "${pkgdir}/usr/bin/prismbi"
+  find "${pkgdir}/usr/share" -type d -exec chmod 755 {} +
+  find "${pkgdir}/usr/share" -type f -exec chmod 644 {} +
   install -Dm644 "${srcdir}/LICENSE.md" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE.md"
 }
