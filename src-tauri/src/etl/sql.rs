@@ -800,8 +800,9 @@ fn compile_step(ctx: &mut CompileCtx<'_>, chain: &Chain, kind: &StepKind) -> Res
             let mut used: HashSet<String> = HashSet::new();
             let mut new_names = Vec::new();
             for (i, old) in vis.iter().enumerate() {
+                // Null/empty or reserved header values keep the current name.
                 let h = match first.get(&format!("h{}", i)) {
-                    Some(JsonValue::String(s)) if !s.is_empty() => s.clone(),
+                    Some(JsonValue::String(s)) if check_user_name(s).is_ok() => s.clone(),
                     _ => old.clone(),
                 };
                 let mut name = h.clone();
