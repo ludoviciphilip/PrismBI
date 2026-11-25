@@ -1,9 +1,123 @@
-import React, { useState } from 'react';
-import { Filter as FilterIcon, X, Trash2, Plus, Check } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Filter as FilterIcon, X, Trash2, Plus, Check, ArrowDownAZ, ArrowDownZA, ArrowDownWideNarrow } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
-import { Filter } from '../../types/bi';
+import { Filter, Table } from '../../types/bi';
 import { useTranslation } from '../../i18n';
+import { buildSortByLookup, sortValueList, ValueListSortMode } from '../../engine/visualSort';
+
+const MAX_LIST_VALUES = 200;
+
+/** Basic filters (equals / in) get a Power BI-style checklist of the column's values. */
+export const isBasicFilter = (f: Filter) => f.operator === 'equals' || f.operator === 'in';
+
+function resolveFilterColumn(filter: Filter, tables: Table[]): { table?: Table; column: string } {
+  let tableKey = filter.tableId;
+  let column = filter.column;
+  if (column.includes('.') && !tables.some(t => (t.id === tableKey || t.name === tableKey) && t.columns.some(c => c.name === column))) {
+    const [tPrefix, cName] = column.split('.', 2);
+    if (tables.some(t => t.id === tPrefix || t.name === tPrefix)) {
+      tableKey = tPrefix;
+      column = cName;
+    }
+  }
+  let table = tables.find(t => t.id === tableKey || t.name === tableKey);
+  if (table && !table.columns.some(c => c.name.toLowerCase() === column.toLowerCase())) {
+    table = tables.find(t => t.columns.some(c => c.name.toLowerCase() === column.toLowerCase())) ?? table;
+  }
+  const realCol = table?.columns.find(c => c.name.toLowerCase() === column.toLowerCase())?.name ?? column;
+  return { table, column: realCol };
+}
+
+const SORT_MODES: { mode: ValueListSortMode; icon: React.ElementType }[] = [
+  { mode: 'asc', icon: ArrowDownAZ },
+  { mode: 'desc', icon: ArrowDownZA },
+  { mode: 'count', icon: ArrowDownWideNarrow },
+];
+
+export const FilterValueList: React.FC<{
+  filter: Filter;
+  tables: Table[];
+  onChange: (values: string[]) => void;
+}> = ({ filter, tables, onChange }) => {
+  const { t } = useTranslation();
+  const [mode, setMode] = useState<ValueListSortMode>('asc');
+  const { table, column } = resolveFilterColumn(filter, tables);
+
+  const items = useMemo(() => {
+    if (!table) return [];
+    const counts = new Map<string, number>();
+    for (const r of table.rows) {
+      const v = r[column];
+      if (v === null || v === undefined || v === '') continue;
+      const k = String(v);
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+    return Array.from(counts, ([value, count]) => ({ value, count }));
+  }, [table, column]);
+
+  const sortKeys = useMemo(() => {
+    const meta = table?.columns.find(c => c.name === column);
+    return table && meta?.sortByColumn ? buildSortByLookup(table.rows, column, meta.sortByColumn) : undefined;
+  }, [table, column]);
+
+  const sorted = useMemo(() => sortValueList(items, mode, sortKeys).slice(0, MAX_LIST_VALUES), [items, mode, sortKeys]);
+  const selected = new Set((Array.isArray(filter.value) ? filter.value : [filter.value]).map(v => String(v)));
+  const modeLabel = (m: ValueListSortMode) =>
+    m === 'asc' ? t.panes.filters.sortAZ : m === 'desc' ? t.panes.filters.sortZA : t.panes.filters.sortByCount;
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-1 mt-0.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] text-slate-500 dark:text-slate-400">{t.panes.filters.sortValues}</span>
+        <div role="group" aria-label={t.panes.filters.sortValues} className="flex items-center rounded border border-slate-300 dark:border-slate-700 overflow-hidden">
+          {SORT_MODES.map(({ mode: m, icon: Icon }) => (
+            <button
+              key={m}
+              type="button"
+              aria-pressed={mode === m}
+              title={modeLabel(m)}
+              onClick={() => setMode(m)}
+              className={`flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-semibold ${
+                mode === m
+                  ? 'bg-amber-500 text-slate-950'
+                  : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-amber-50 dark:hover:bg-slate-700'
+              }`}
+            >
+              <Icon className="w-3 h-3" />
+              <span>{m === 'count' ? '#' : modeLabel(m)}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <ul className="max-h-40 overflow-y-auto rounded border border-amber-200/70 dark:border-amber-900/50 bg-white/70 dark:bg-slate-900/50 divide-y divide-slate-100 dark:divide-slate-800" aria-label={filter.column}>
+        {sorted.map(it => {
+          const key = String(it.value);
+          const checked = selected.has(key);
+          return (
+            <li key={key}>
+              <label className="flex items-center gap-1.5 px-1.5 py-0.5 cursor-pointer hover:bg-amber-50 dark:hover:bg-slate-800">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => {
+                    const next = checked ? [...selected].filter(v => v !== key) : [...selected, key];
+                    if (next.length > 0) onChange(next);
+                  }}
+                  className="accent-amber-500 w-3 h-3"
+                />
+                <span className={`flex-1 truncate ${checked ? 'font-semibold text-amber-900 dark:text-amber-300' : ''}`}>{key}</span>
+                <span className="text-[9px] text-slate-400 tabular-nums">{it.count}</span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+};
 
 export const FiltersPane: React.FC = React.memo(() => {
   const { filters, removeFilter, clearFilters, tables, addFilter } = useBiStore(useShallow(s => ({
@@ -173,8 +287,23 @@ export const FiltersPane: React.FC = React.memo(() => {
                 </span>
               </div>
               <div className="text-[11px] font-bold text-amber-800 dark:text-amber-400 bg-amber-100/70 dark:bg-amber-950/70 px-1.5 py-0.5 rounded truncate">
-                {String(filter.value)}
+                {Array.isArray(filter.value) ? filter.value.join(', ') : String(filter.value)}
               </div>
+              {isBasicFilter(filter) && (
+                <FilterValueList
+                  filter={filter}
+                  tables={tables}
+                  onChange={values => {
+                    const updated: Filter = {
+                      ...filter,
+                      operator: values.length === 1 ? 'equals' : 'in',
+                      value: values.length === 1 ? values[0] : values,
+                    };
+                    // Replace in place so the card keeps its position in the pane.
+                    useBiStore.setState(st => ({ filters: st.filters.map(f => (f.id === filter.id ? updated : f)) }));
+                  }}
+                />
+              )}
             </div>
           ))
         )}

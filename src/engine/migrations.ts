@@ -1,7 +1,213 @@
 import { ProjectState } from './storage';
-import { Table, Relationship, Measure, WhatIfParameter, RlsRole, CalculationGroup } from '../types/bi';
+import { Table, Relationship, Measure, WhatIfParameter, RlsRole, CalculationGroup, PowerQueryStep, DataType, TableSourceConfig } from '../types/bi';
+import { EtlQuery, EtlStep, EtlType, Cond } from '../types/etl';
+import { fileEtlSource, inlineEtlSource } from '../services/etl/etlSource';
 
 export const CURRENT_ENGINE_VERSION = '2.2.0';
+
+function mapDataTypeToEtlType(dt: DataType | undefined): EtlType {
+  switch (dt) {
+    case 'number':
+      return 'decimal';
+    case 'percentage':
+      return 'decimal';
+    case 'currency':
+      return 'currency';
+    case 'date':
+      return 'date';
+    case 'boolean':
+      return 'boolean';
+    case 'text':
+    default:
+      return 'text';
+  }
+}
+
+function filterOperatorToCond(step: PowerQueryStep): Cond | null {
+  const { column, operator, value } = step.params || {};
+  if (!column) return null;
+  const map: Record<string, any> = {
+    equals: 'eq',
+    notEquals: 'neq',
+    greaterThan: 'gt',
+    lessThan: 'lt',
+    contains: 'contains',
+  };
+  const op = map[operator];
+  if (!op) return null;
+  return { column, op, value } as Cond;
+}
+
+
+/**
+ * Converte um único PowerQueryStep (schema legado, destrutivo) para um EtlStep
+ * do novo contrato (docs/ETL_V09.md). Retorna null quando não há equivalente,
+ * emitindo console.warn para que o passo seja descartado (e não execute mais).
+ */
+export function migratePowerQueryStep(step: PowerQueryStep): EtlStep | null {
+  const id = step.id;
+  const name = step.description || step.type;
+  switch (step.type) {
+    case 'source':
+      return null; // vira EtlSource, não é um EtlStep
+    case 'rename':
+      return { id, name, op: 'renameColumns', renames: [[step.params.oldName, step.params.newName]] };
+    case 'changeType':
+      return {
+        id,
+        name,
+        op: 'changeType',
+        columns: [{ column: step.params.columnName, type: mapDataTypeToEtlType(step.params.newType) }],
+      };
+    case 'filter': {
+      const cond = filterOperatorToCond(step);
+      if (!cond) break;
+      return { id, name, op: 'filterRows', condition: cond };
+    }
+    case 'removeColumn':
+    case 'removeColumns': {
+      const columns: string[] = step.params.columnNames || (step.params.columnName ? [step.params.columnName] : [step.params.column]);
+      if (!columns || !columns.length) break;
+      return { id, name, op: 'removeColumns', columns };
+    }
+    case 'removeOtherColumns': {
+      const columns: string[] = step.params.keepColumns || (step.params.column ? [step.params.column] : []);
+      if (!columns.length) break;
+      return { id, name, op: 'selectColumns', columns };
+    }
+    case 'removeTopRows':
+      return { id, name, op: 'removeTopRows', count: Number(step.params.count) || 1 };
+    case 'removeBottomRows':
+      return { id, name, op: 'removeBottomRows', count: Number(step.params.count) || 1 };
+    case 'keepTopRows':
+      return { id, name, op: 'keepTopRows', count: Number(step.params.count) || 10 };
+    case 'keepBottomRows':
+      return { id, name, op: 'keepBottomRows', count: Number(step.params.count) || 10 };
+    case 'removeBlankRows':
+      return { id, name, op: 'removeBlankRows' };
+    case 'useFirstRowAsHeaders':
+      return { id, name, op: 'promoteHeaders' };
+    case 'duplicateColumn':
+      return {
+        id,
+        name,
+        op: 'duplicateColumn',
+        column: step.params.column,
+        newColumn: step.params.newColumnName || `${step.params.column} - Cópia`,
+      };
+    case 'replaceValues':
+      return {
+        id,
+        name,
+        op: 'replaceValues',
+        columns: [step.params.column],
+        find: step.params.oldValue ?? null,
+        replace: step.params.newValue ?? null,
+        matchEntireCell: step.params.matchExact !== false,
+      };
+    case 'splitColumn':
+      return {
+        id,
+        name,
+        op: 'splitColumn',
+        column: step.params.column,
+        mode: 'delimiterEach',
+        delimiter: step.params.delimiter,
+        into: [`${step.params.column}.1`, `${step.params.column}.2`],
+      };
+    case 'sort':
+      return { id, name, op: 'sort', by: [{ column: step.params.column, descending: step.params.order === 'desc' }] };
+    case 'deduplicate':
+      return { id, name, op: 'removeDuplicates' };
+    case 'fillDown':
+      return { id, name, op: 'fillDown', columns: [step.params.column] };
+    case 'fillUp':
+      return { id, name, op: 'fillUp', columns: [step.params.column] };
+    case 'addIndexColumn':
+      return {
+        id,
+        name,
+        op: 'addIndexColumn',
+        newColumn: step.params.newColumnName || 'Índice',
+        start: Number(step.params.startIndex) || 0,
+        step: 1,
+      };
+    case 'textTransform': {
+      const fnMap: Record<string, 'upper' | 'lower' | 'proper' | 'trim'> = {
+        uppercase: 'upper',
+        lowercase: 'lower',
+        capitalize: 'proper',
+        trim: 'trim',
+      };
+      const fn = fnMap[step.params.mode];
+      if (!fn) break;
+      return { id, name, op: 'textTransform', columns: [step.params.column], fn };
+    }
+    case 'addCustomColumn':
+      return {
+        id,
+        name,
+        op: 'addCustomColumn',
+        newColumn: step.params.newColumnName,
+        expression: `each ${step.params.expression}`,
+      };
+    case 'detectDataTypes':
+    case 'useHeadersAsFirstRow':
+    case 'textExtract':
+    case 'dateExtract':
+    case 'conditionalColumn':
+    case 'groupBy':
+    case 'pivot':
+    case 'unpivot':
+      break;
+    default:
+      break;
+  }
+  console.warn(`[migração ETL] Passo "${step.type}" (${step.id}) não tem equivalente no novo contrato e foi descartado.`);
+  return null;
+}
+
+/**
+ * Migra o mapa legado tableId -> PowerQueryStep[] para tableId -> EtlQuery.
+ * Projetos já no novo formato (objetos com `source`/`steps`) passam direto.
+ */
+export function migrateAppliedSteps(
+  raw: Record<string, any> | undefined,
+  tables: Table[]
+): Record<string, EtlQuery> {
+  if (!raw || typeof raw !== 'object') return {};
+  const result: Record<string, EtlQuery> = {};
+  for (const [tableId, value] of Object.entries(raw)) {
+    if (!value) continue;
+    // Já no formato novo (EtlQuery)
+    if (!Array.isArray(value) && typeof value === 'object' && 'steps' in value && 'source' in value) {
+      result[tableId] = value as EtlQuery;
+      continue;
+    }
+    if (!Array.isArray(value)) continue;
+    const table = tables.find(t => t.id === tableId);
+    const legacySteps = value as PowerQueryStep[];
+    const steps: EtlStep[] = [];
+    for (const step of legacySteps) {
+      const mapped = migratePowerQueryStep(step);
+      if (mapped) steps.push(mapped);
+    }
+    // Os passos legados já foram aplicados (de forma destrutiva) às linhas
+    // salvas. Com fonte em arquivo, reexecutá-los a partir do arquivo bruto
+    // reproduz o resultado; sem ela, as linhas atuais viram o snapshot e os
+    // passos são descartados para não serem aplicados duas vezes.
+    const fileSource = fileEtlSource(table);
+    if (!fileSource && steps.length) {
+      console.warn(`[migração] ${table?.name || tableId}: etapas legadas já aplicadas aos dados; consulta recomeça do estado atual.`);
+    }
+    result[tableId] = {
+      name: table?.originalName || table?.name || tableId,
+      source: fileSource ?? inlineEtlSource(table),
+      steps: fileSource ? steps : [],
+    };
+  }
+  return result;
+}
 
 /**
  * Migrates legacy RLS filter expressions (e.g. "Regiao = 'Sudeste'") to standard DAX syntax ("[Regiao] = \"Sudeste\"").
@@ -202,6 +408,8 @@ export function migrateProjectState(rawState: any): ProjectState {
     gridSize: typeof rawState.gridSize === 'number' ? rawState.gridSize : 20,
     showGrid: rawState.showGrid !== undefined ? Boolean(rawState.showGrid) : true,
     snapToGrid: rawState.snapToGrid !== undefined ? Boolean(rawState.snapToGrid) : true,
+    appliedSteps: migrateAppliedSteps(rawState.appliedSteps, synced.tables),
+    appliedQuerySnapshot: migrateAppliedSteps(rawState.appliedQuerySnapshot, synced.tables),
     updatedAt: rawState.updatedAt || new Date().toISOString(),
   };
 }

@@ -24,10 +24,17 @@ import {
   DaxQueryTab,
   CanvasSizeConfig,
 } from '../types/bi';
+import { EtlQuery, EtlStep, EtlSource } from '../types/etl';
+import { etlApply, etlFromM, etlLoadRaw, setBrowserRawProvider } from '../services/etl/etlClient';
+
+export interface ApplyAllQueriesResult {
+  applied: { tableId: string; name: string; rowCount: number; truncated: boolean; measuresOnly?: boolean }[];
+  errors: { tableId: string; name: string; stepIndex?: number; message: string } | null;
+}
+import { tableToEtlSource } from '../services/etl/etlSource';
 import { getSampleDatasets, generateCalendarTable } from '../data/sampleDatasets';
 import { globalDataEngine } from '../engine/dataEngine';
 import { DaxEngine } from '../engine/daxEngine';
-import { EtlEngine } from '../engine/etlEngine';
 import { saveProjectToStorage, loadProjectFromStorage, ProjectState } from '../engine/storage';
 import { migrateProjectState, syncWhatIfWithModel } from '../engine/migrations';
 import { globalDuckDb } from '../engine/duckdbEngine';
@@ -185,7 +192,8 @@ interface BiState {
     targetTableId: string,
     newColumns: Column[],
     newRows: Record<string, any>[],
-    newSourceConfig?: TableSourceConfig
+    newSourceConfig?: TableSourceConfig,
+    meta?: { duckdbTable?: string; rowsTruncated?: boolean; totalRows?: number }
   ) => boolean;
   refreshTable: (tableId: string) => Promise<{ ok: boolean; message: string }>;
   refreshAllData: () => Promise<{ refreshedTables: string[]; warnings: string[]; error?: string }>;
@@ -264,9 +272,35 @@ interface BiState {
   updateGoal: (id: string, partial: Partial<Goal>) => void;
 
   // Power Query / ETL
-  appliedSteps: Record<string, PowerQueryStep[]>;
-  applyQueryStep: (tableId: string, step: PowerQueryStep) => void;
+  appliedSteps: Record<string, EtlQuery>;
+  /** Snapshot da última EtlQuery efetivamente aplicada por tabela — usado para detectar "consultas sujas". */
+  appliedQuerySnapshot: Record<string, EtlQuery>;
+  selectedStepByTable: Record<string, string | undefined>;
+  getOrInitQuery: (tableId: string) => EtlQuery;
+  /** Como getOrInitQuery, mas converte o M de tabelas .pbip em etapas (etl_from_m) e persiste a consulta. */
+  ensureQuery: (tableId: string) => Promise<EtlQuery>;
+  /** "Atualizar" de uma tabela com consulta ETL: relê a fonte bruta e reaplica as etapas. */
+  refreshEtlTable: (tableId: string) => Promise<void>;
+  setQuery: (tableId: string, query: EtlQuery) => void;
+  addQueryStep: (tableId: string, step: EtlStep) => void;
+  updateQueryStep: (tableId: string, stepId: string, patch: Partial<EtlStep>) => void;
   removeQueryStep: (tableId: string, stepId: string) => void;
+  moveQueryStepUp: (tableId: string, stepId: string) => void;
+  moveQueryStepDown: (tableId: string, stepId: string) => void;
+  renameQueryStep: (tableId: string, stepId: string, name: string) => void;
+  selectQueryStep: (tableId: string, stepId: string | undefined) => void;
+  closeAndApplyQuery: (tableId: string) => Promise<{ rowCount: number; truncated: boolean; measuresOnly: boolean }>;
+  refreshTableData: (tableId: string) => Promise<void>;
+  /** true se as etapas da tabela mudaram desde a última aplicação bem-sucedida. */
+  isQueryDirty: (tableId: string) => boolean;
+  /** true se QUALQUER tabela com consulta Power Query tem alterações pendentes. */
+  hasPendingQueryChanges: () => boolean;
+  /**
+   * Aplica TODAS as consultas sujas, em ordem de dependência (mergeQueries/appendQueries
+   * primeiro), reportando progresso via onProgress. Para no primeiro erro — mantém as
+   * tabelas já aplicadas com sucesso e devolve qual consulta/etapa falhou.
+   */
+  applyAllDirtyQueries: (onProgress?: (info: { name: string; index: number; total: number }) => void) => Promise<ApplyAllQueriesResult>;
 
   // Governance & RLS
   rlsRoles: RlsRole[];
@@ -381,6 +415,32 @@ interface BiState {
 }
 
 const defaultPageId = 'page_executivo';
+
+/** "Linhas Filtradas" -> "Linhas Filtradas1" se já existir (como o Power BI). */
+export function uniqueStepName(name: string, existing: string[]): string {
+  const taken = new Set(existing.map(n => n.toLowerCase()));
+  if (!taken.has(name.toLowerCase()) && name.toLowerCase() !== 'source') return name;
+  for (let i = 1; ; i++) {
+    const candidate = `${name}${i}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
+/** Nenhuma chamada ao backend pode deixar "Atualizando..." preso para sempre. */
+const REFRESH_STEP_TIMEOUT_MS = 120_000;
+function withTimeout<T>(p: Promise<T>, label: string, ms = REFRESH_STEP_TIMEOUT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}: sem resposta em ${Math.round(ms / 1000)}s`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
+
+/** A tabela tem uma consulta ETL que precisa ser reexecutada na atualização. */
+function hasEtlQuery(q: EtlQuery | undefined): q is EtlQuery {
+  return !!q && (q.steps.length > 0 || q.source.kind !== 'inline');
+}
+
 
 const initialVisuals: Visual[] = [
   {
@@ -681,8 +741,14 @@ async function pushModelToRustAsync(
       tables: tables.map(t => ({
         name: t.name,
         columns: t.columns.map(c => c.name),
+        // DuckDB-backed tables (duckdbTable set): Rust loads every row
+        // straight from DuckDB and ignores `rows`. The preview rows still go
+        // along as the fallback for when the DuckDB table does not exist
+        // (DuckDB is in-memory: right after reopening a project). Sending []
+        // there would leave the table EMPTY in the model.
         rows: t.rows || [],
         columnTypes: t.columns.map(c => c.dataType ?? null),
+        duckdbTable: t.duckdbTable,
       })),
       relationships: relationships.map(r => ({
         fromTable: r.fromTable,
@@ -1062,7 +1128,7 @@ export const useBiStore = create<BiState>((set, get) => {
       return { ok: true };
     },
 
-    replaceTableData: (targetTableId, newColumns, newRows, newSourceConfig) => {
+    replaceTableData: (targetTableId, newColumns, newRows, newSourceConfig, meta) => {
       const target = get().tables.find(
         t =>
           t.id === targetTableId ||
@@ -1093,6 +1159,9 @@ export const useBiStore = create<BiState>((set, get) => {
               columns: mergedColumns,
               rows: newRows,
               sourceConfig: updatedSourceConfig,
+              duckdbTable: meta?.duckdbTable ?? t.duckdbTable,
+              rowsTruncated: meta?.rowsTruncated ?? t.rowsTruncated,
+              totalRows: meta?.totalRows ?? t.totalRows,
             }
           : t
       );
@@ -1117,25 +1186,40 @@ export const useBiStore = create<BiState>((set, get) => {
       const nowTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
       try {
         const sc = target.sourceConfig;
+        // Tabela com consulta do Power Query: as etapas editadas mandam. O
+        // interpretador M antigo e o recarregamento do .pbip as descartariam.
+        if (hasEtlQuery(get().appliedSteps[target.id])) {
+          await get().refreshEtlTable(target.id);
+          await withTimeout(pushModelToRustAsync(get().tables, get().relationships, get().measures), 'Sincronizar modelo');
+          set(s => ({
+            dataVersion: s.dataVersion + 1,
+            refreshStatus: { type: 'success', message: `Tabela "${target.name}" atualizada pela consulta do Power Query.`, timestamp: nowTime },
+          }));
+          return { ok: true, message: `Tabela "${target.name}" atualizada.` };
+        }
         if (sc?.type === 'db' && sc.db && isTauriRuntime()) {
           const dbConfig = sc.db;
-          const payload = await dbRefreshImport(
+          const payload = await withTimeout(dbRefreshImport(
             dbConfig.config as any,
             dbConfig.credentialKey,
             dbConfig.source,
             target.name
-          );
+          ), 'Banco de dados');
           const cols = nativePayloadToColumns(payload, target.id);
           get().replaceTableData(target.id, cols, payload.rows, {
             ...sc,
             lastRefreshedAt: new Date().toISOString(),
+          }, {
+            duckdbTable: payload.tableName,
+            rowsTruncated: payload.truncated,
+            totalRows: payload.totalRows,
           });
-          await pushModelToRustAsync(get().tables, get().relationships, get().measures);
+          await withTimeout(pushModelToRustAsync(get().tables, get().relationships, get().measures), 'Sincronizar modelo');
           set(s => ({
             dataVersion: s.dataVersion + 1,
             refreshStatus: {
               type: 'success',
-              message: `Tabela "${target.name}" atualizada via banco de dados (${payload.totalRows.toLocaleString('pt-BR')} linhas).`,
+              message: `Tabela "${target.name}" atualizada via banco de dados (${payload.totalRows.toLocaleString('pt-BR')} linhas no modelo).`,
               timestamp: nowTime,
             },
           }));
@@ -1156,7 +1240,7 @@ export const useBiStore = create<BiState>((set, get) => {
             ...sc,
             lastRefreshedAt: new Date().toISOString(),
           });
-          await pushModelToRustAsync(get().tables, get().relationships, get().measures);
+          await withTimeout(pushModelToRustAsync(get().tables, get().relationships, get().measures), 'Sincronizar modelo');
           set(s => ({
             dataVersion: s.dataVersion + 1,
             refreshStatus: {
@@ -1169,27 +1253,31 @@ export const useBiStore = create<BiState>((set, get) => {
         }
 
         if (isTauriRuntime() && sc?.filePath && sc.type !== 'sample') {
-          const payload = await refreshTableNative({
+          const payload = await withTimeout(refreshTableNative({
             tableName: target.name,
             sourceType: sc.type,
             filePath: sc.filePath,
             sheetName: sc.sheetName,
             mScript: sc.mScript,
             pbipRoot: sc.pbipRoot || get().sourcePbipPath || undefined,
-          });
+          }), 'Arquivo fonte');
           const cols = nativePayloadToColumns(payload, target.id);
           get().replaceTableData(target.id, cols, payload.rows, {
             ...sc,
             filePath: payload.sourcePath || sc.filePath,
             sheetName: payload.sheetName || sc.sheetName,
             lastRefreshedAt: new Date().toISOString(),
+          }, {
+            duckdbTable: payload.tableName,
+            rowsTruncated: payload.truncated,
+            totalRows: payload.totalRows,
           });
-          await pushModelToRustAsync(get().tables, get().relationships, get().measures);
+          await withTimeout(pushModelToRustAsync(get().tables, get().relationships, get().measures), 'Sincronizar modelo');
           set(s => ({
             dataVersion: s.dataVersion + 1,
             refreshStatus: {
               type: 'success',
-              message: `Tabela "${target.name}" atualizada (${payload.totalRows.toLocaleString('pt-BR')} linhas).`,
+              message: `Tabela "${target.name}" atualizada (${payload.totalRows.toLocaleString('pt-BR')} linhas no modelo).`,
               timestamp: nowTime,
             },
           }));
@@ -1197,7 +1285,7 @@ export const useBiStore = create<BiState>((set, get) => {
         }
 
         if (isTauriRuntime() && get().sourcePbipPath) {
-          const pbipRes = await refreshPbipTables(get().sourcePbipPath!);
+          const pbipRes = await withTimeout(refreshPbipTables(get().sourcePbipPath!), 'Projeto .pbip');
           const matched = pbipRes.loadedTables.find(
             lt =>
               lt.tableName.toLowerCase() === target.name.toLowerCase() ||
@@ -1211,13 +1299,17 @@ export const useBiStore = create<BiState>((set, get) => {
               sheetName: matched.sheetName || sc?.sheetName,
               mScript: sc?.mScript,
               pbipRoot: sc?.pbipRoot || get().sourcePbipPath || undefined,
+            }, {
+              duckdbTable: matched.tableName,
+              rowsTruncated: matched.truncated,
+              totalRows: matched.totalRows,
             });
-            await pushModelToRustAsync(get().tables, get().relationships, get().measures);
+            await withTimeout(pushModelToRustAsync(get().tables, get().relationships, get().measures), 'Sincronizar modelo');
             set(s => ({
               dataVersion: s.dataVersion + 1,
               refreshStatus: {
                 type: 'success',
-                message: `Tabela "${target.name}" atualizada do projeto .pbip (${matched.totalRows.toLocaleString('pt-BR')} linhas).`,
+                message: `Tabela "${target.name}" atualizada do projeto .pbip (${matched.totalRows.toLocaleString('pt-BR')} linhas no modelo).`,
                 timestamp: nowTime,
               },
             }));
@@ -1259,19 +1351,33 @@ export const useBiStore = create<BiState>((set, get) => {
         const currentTables = get().tables;
         const pbipPath = get().sourcePbipPath;
 
+        // 1. Tabelas com consulta do Power Query: fonte bruta + etapas (ordem do
+        //    modelo; consultas que mesclam/acrescentam leem as já aplicadas).
+        const etlTableIds = new Set<string>();
+        for (const tbl of currentTables) {
+          if (!hasEtlQuery(get().appliedSteps[tbl.id])) continue;
+          etlTableIds.add(tbl.id);
+          try {
+            await get().refreshEtlTable(tbl.id);
+            refreshedTables.push(tbl.name);
+          } catch (err: any) {
+            warnings.push(`${tbl.name}: ${err?.message || String(err)}`);
+          }
+        }
+
         for (const tbl of currentTables) {
           const sc = tbl.sourceConfig;
-          if (!sc) continue;
+          if (!sc || etlTableIds.has(tbl.id)) continue;
 
           if (sc.type === 'db' && sc.db && isTauriRuntime()) {
             try {
               const dbConfig = sc.db;
-              const payload = await dbRefreshImport(
+              const payload = await withTimeout(dbRefreshImport(
                 dbConfig.config as any,
                 dbConfig.credentialKey,
                 dbConfig.source,
                 tbl.name
-              );
+              ), 'Banco de dados');
               const cols = nativePayloadToColumns(payload, tbl.id);
               get().replaceTableData(tbl.id, cols, payload.rows, {
                 ...sc,
@@ -1299,14 +1405,14 @@ export const useBiStore = create<BiState>((set, get) => {
             }
           } else if (isTauriRuntime() && sc.filePath && sc.type !== 'sample') {
             try {
-              const payload = await refreshTableNative({
+              const payload = await withTimeout(refreshTableNative({
                 tableName: tbl.name,
                 sourceType: sc.type,
                 filePath: sc.filePath,
                 sheetName: sc.sheetName,
                 mScript: sc.mScript,
                 pbipRoot: sc.pbipRoot || pbipPath || undefined,
-              });
+              }), 'Arquivo fonte');
               const cols = nativePayloadToColumns(payload, tbl.id);
               get().replaceTableData(tbl.id, cols, payload.rows, {
                 ...sc,
@@ -1323,7 +1429,7 @@ export const useBiStore = create<BiState>((set, get) => {
         // Refresh remaining PBIP tables if project came from a .pbip file
         if (isTauriRuntime() && pbipPath) {
           try {
-            const pbipRes = await refreshPbipTables(pbipPath);
+            const pbipRes = await withTimeout(refreshPbipTables(pbipPath), 'Projeto .pbip');
             for (const warn of pbipRes.warnings) {
               warnings.push(warn);
             }
@@ -1367,7 +1473,7 @@ export const useBiStore = create<BiState>((set, get) => {
         const latestMeasures = get().measures;
         globalDataEngine.setSchema(latestTables, latestRels, latestMeasures);
         latestTables.forEach(t => globalDuckDb.registerTable(t));
-        await pushModelToRustAsync(latestTables, latestRels, latestMeasures);
+        await withTimeout(pushModelToRustAsync(latestTables, latestRels, latestMeasures), 'Sincronizar modelo');
         set(s => ({ dataVersion: s.dataVersion + 1 }));
 
         if (refreshedTables.length > 0 && warnings.length === 0) {
@@ -1437,12 +1543,12 @@ export const useBiStore = create<BiState>((set, get) => {
         rows: orig.rows.map(r => ({ ...r })),
       };
       get().addTable(duplicated);
-      const existingSteps = get().appliedSteps[orig.id] || [];
-      if (existingSteps.length > 0) {
+      const existingQuery = get().appliedSteps[orig.id];
+      if (existingQuery) {
         set({
           appliedSteps: {
             ...get().appliedSteps,
-            [newId]: [...existingSteps],
+            [newId]: { ...existingQuery, name: newName, steps: existingQuery.steps.map(s => ({ ...s })) },
           },
         });
       }
@@ -2326,37 +2432,227 @@ export const useBiStore = create<BiState>((set, get) => {
       });
     },
 
-    // Power Query
+    // Power Query / ETL (v0.9.0 — ver docs/ETL_V09.md)
     appliedSteps: {},
+    appliedQuerySnapshot: {},
+    selectedStepByTable: {},
 
-    applyQueryStep: (tableId, step) => {
-      const targetTable = get().tables.find(t => t.id === tableId);
-      if (!targetTable) return;
+    getOrInitQuery: (tableId) => {
+      const existing = get().appliedSteps[tableId];
+      if (existing) return existing;
+      const table = get().tables.find(t => t.id === tableId);
+      const source: EtlSource = tableToEtlSource(table);
+      return { name: table?.originalName || table?.name || tableId, source, steps: [] };
+    },
 
-      const currentSteps = get().appliedSteps[tableId] || [];
-      const updatedSteps = [...currentSteps, step];
+    ensureQuery: async (tableId) => {
+      const existing = get().appliedSteps[tableId];
+      if (existing) return existing;
+      const table = get().tables.find(t => t.id === tableId);
+      if (!table) return get().getOrInitQuery(tableId);
+      const name = table.originalName || table.name;
+      const m = table.sourceConfig?.mScript;
+      let query: EtlQuery | null = null;
+      if (m && m.trim()) {
+        // Tabela vinda de .pbip: as etapas do M viram etapas editáveis (round-trip).
+        try {
+          const parsed = await etlFromM({ name, m });
+          const src = parsed.query.source;
+          const fileKinds = ['excel', 'csv', 'parquet', 'json'];
+          if (fileKinds.includes(src.kind) && table.sourceConfig?.filePath) {
+            // O caminho do M costuma ser do Windows (\\tsclient\...); usa o já resolvido na importação.
+            query = { ...parsed.query, name, source: { ...src, path: table.sourceConfig.filePath } };
+          } else if (src.kind !== 'opaqueM' && !fileKinds.includes(src.kind)) {
+            query = { ...parsed.query, name };
+          }
+          for (const w of parsed.warnings) console.warn(`[ETL] ${name}: ${w}`);
+        } catch (e) {
+          console.warn(`[ETL] ${name}: M não convertido, usando snapshot da tabela`, e);
+        }
+      }
+      if (!query) query = { name, source: tableToEtlSource(table), steps: [] };
+      // Outra chamada pode ter criado a consulta enquanto o M era convertido.
+      const raced = get().appliedSteps[tableId];
+      if (raced) return raced;
+      get().setQuery(tableId, query);
+      return query;
+    },
 
-      // Execute on initial raw table
-      const res = EtlEngine.executePipeline(targetTable, [step]);
-      get().updateTable(tableId, { columns: res.table.columns, rows: res.table.rows });
+    setQuery: (tableId, query) => {
+      set({ appliedSteps: { ...get().appliedSteps, [tableId]: query } });
+    },
 
-      set({
-        appliedSteps: {
-          ...get().appliedSteps,
-          [tableId]: updatedSteps,
-        },
+    addQueryStep: (tableId, step) => {
+      const query = get().getOrInitQuery(tableId);
+      // Nomes de etapa são identificadores no M (#"Linhas Filtradas"): repetir
+      // um nome faz a etapa referenciar a si mesma. Igual ao Power BI: sufixo 1, 2…
+      step = { ...step, name: uniqueStepName(step.name, query.steps.map(s => s.name)) };
+      get().setQuery(tableId, { ...query, steps: [...query.steps, step] });
+      set({ selectedStepByTable: { ...get().selectedStepByTable, [tableId]: step.id } });
+    },
+
+    updateQueryStep: (tableId, stepId, patch) => {
+      const query = get().getOrInitQuery(tableId);
+      get().setQuery(tableId, {
+        ...query,
+        steps: query.steps.map(s => (s.id === stepId ? ({ ...s, ...patch } as EtlStep) : s)),
       });
     },
 
     removeQueryStep: (tableId, stepId) => {
-      const currentSteps = get().appliedSteps[tableId] || [];
-      const filtered = currentSteps.filter(s => s.id !== stepId);
-      set({
-        appliedSteps: {
-          ...get().appliedSteps,
-          [tableId]: filtered,
-        },
+      const query = get().getOrInitQuery(tableId);
+      get().setQuery(tableId, { ...query, steps: query.steps.filter(s => s.id !== stepId) });
+    },
+
+    moveQueryStepUp: (tableId, stepId) => {
+      const query = get().getOrInitQuery(tableId);
+      const idx = query.steps.findIndex(s => s.id === stepId);
+      if (idx <= 0) return;
+      const steps = [...query.steps];
+      [steps[idx - 1], steps[idx]] = [steps[idx], steps[idx - 1]];
+      get().setQuery(tableId, { ...query, steps });
+    },
+
+    moveQueryStepDown: (tableId, stepId) => {
+      const query = get().getOrInitQuery(tableId);
+      const idx = query.steps.findIndex(s => s.id === stepId);
+      if (idx === -1 || idx >= query.steps.length - 1) return;
+      const steps = [...query.steps];
+      [steps[idx], steps[idx + 1]] = [steps[idx + 1], steps[idx]];
+      get().setQuery(tableId, { ...query, steps });
+    },
+
+    renameQueryStep: (tableId, stepId, name) => {
+      const others = get().getOrInitQuery(tableId).steps.filter(s => s.id !== stepId).map(s => s.name);
+      get().updateQueryStep(tableId, stepId, { name: uniqueStepName(name.trim() || 'Etapa', others) });
+    },
+
+    selectQueryStep: (tableId, stepId) => {
+      set({ selectedStepByTable: { ...get().selectedStepByTable, [tableId]: stepId } });
+    },
+
+    closeAndApplyQuery: async (tableId) => {
+      const query = get().getOrInitQuery(tableId);
+      const table = get().tables.find(t => t.id === tableId);
+      const payload = await etlApply({ query, targetTable: table?.originalName || table?.name || tableId });
+      if (!payload) {
+        // Consulta sem colunas: tabela que só hospeda medidas (como "Medidas"
+        // no Power BI). Não há dados para carregar, mas a consulta está aplicada.
+        set({ appliedQuerySnapshot: { ...get().appliedQuerySnapshot, [tableId]: query } });
+        return { rowCount: 0, truncated: false, measuresOnly: true };
+      }
+      // Reaproveita o id da coluna de mesmo nome: medidas, relações e visuais
+      // referenciam ids, e as etapas podem remover/reordenar colunas.
+      const idByName = new Map((table?.columns || []).map(c => [c.name, c.id]));
+      get().updateTable(tableId, {
+        columns: payload.columns.map(c => ({
+          id: idByName.get(c.name) || `c_${Math.random().toString(36).slice(2, 8)}`,
+          name: c.name,
+          originalName: c.originalName,
+          dataType: (c.dataType as any) || 'text',
+        })),
+        rows: payload.rows,
+        // Resultado materializado no DuckDB: o modelo Rust lê todas as linhas
+        // dali (payload.rows é só a prévia de até 5.000).
+        ...(payload.tableName ? { duckdbTable: payload.tableName } : {}),
+        rowsTruncated: !!payload.truncated,
+        totalRows: payload.totalRows ?? payload.rows.length,
       });
+      set({ appliedQuerySnapshot: { ...get().appliedQuerySnapshot, [tableId]: query } });
+      return { rowCount: payload.totalRows ?? payload.rows.length, truncated: !!payload.truncated, measuresOnly: false };
+    },
+
+    isQueryDirty: (tableId) => {
+      const current = get().appliedSteps[tableId];
+      if (!current) return false;
+      const snapshot = get().appliedQuerySnapshot[tableId];
+      // Nunca aplicada: só é "suja" se já tem etapas (consulta vazia = ainda nada a aplicar).
+      if (!snapshot) return current.steps.length > 0;
+      return JSON.stringify(current) !== JSON.stringify(snapshot);
+    },
+
+    hasPendingQueryChanges: () => {
+      return get().tables.some(t => get().isQueryDirty(t.id));
+    },
+
+    applyAllDirtyQueries: async (onProgress) => {
+      const dirtyIds = get().tables.map(t => t.id).filter(id => get().isQueryDirty(id));
+      if (!dirtyIds.length) return { applied: [], errors: null };
+
+      // Ordena por dependência: se a consulta de A referencia B (mergeQueries/appendQueries),
+      // B deve ser aplicada primeiro — senão A lê um B ainda não atualizado.
+      const nameToId = new Map(get().tables.map(t => [t.originalName || t.name, t.id] as const));
+      const depsOf: Record<string, string[]> = {};
+      dirtyIds.forEach(id => {
+        const q = get().appliedSteps[id];
+        const ds = new Set<string>();
+        (q?.steps || []).forEach(s => {
+          if (s.op === 'mergeQueries') {
+            const depId = nameToId.get(s.rightQuery);
+            if (depId && depId !== id) ds.add(depId);
+          }
+          if (s.op === 'appendQueries') {
+            s.queries.forEach(n => {
+              const depId = nameToId.get(n);
+              if (depId && depId !== id) ds.add(depId);
+            });
+          }
+        });
+        depsOf[id] = Array.from(ds);
+      });
+      const ordered: string[] = [];
+      const visiting = new Set<string>();
+      const visited = new Set<string>();
+      const visit = (id: string) => {
+        if (visited.has(id) || visiting.has(id)) return; // guarda contra ciclos
+        visiting.add(id);
+        (depsOf[id] || []).forEach(d => {
+          if (dirtyIds.includes(d)) visit(d);
+        });
+        visiting.delete(id);
+        visited.add(id);
+        ordered.push(id);
+      };
+      dirtyIds.forEach(visit);
+
+      const applied: ApplyAllQueriesResult['applied'] = [];
+      for (let i = 0; i < ordered.length; i++) {
+        const tableId = ordered[i];
+        const table = get().tables.find(t => t.id === tableId);
+        const name = table?.originalName || table?.name || tableId;
+        onProgress?.({ name, index: i + 1, total: ordered.length });
+        try {
+          const res = await get().closeAndApplyQuery(tableId);
+          applied.push({ tableId, name, rowCount: res.rowCount, truncated: res.truncated, measuresOnly: res.measuresOnly });
+        } catch (e: any) {
+          const idx = get().appliedSteps[tableId]?.steps.length;
+          return {
+            applied,
+            errors: { tableId, name, stepIndex: e?.stepIndex ?? idx, message: e?.message || String(e) },
+          };
+        }
+      }
+      return { applied, errors: null };
+    },
+
+    refreshEtlTable: async (tableId) => {
+      const table = get().tables.find(t => t.id === tableId);
+      const query = get().appliedSteps[tableId];
+      if (!table || !query) return;
+      const pbipRoot = table.sourceConfig?.pbipRoot || get().sourcePbipPath || undefined;
+      await withTimeout(etlLoadRaw({ query: query.name, source: query.source, pbipRoot }), `Fonte de "${table.name}"`);
+      await withTimeout(get().closeAndApplyQuery(tableId), `Consulta de "${table.name}"`);
+    },
+
+    refreshTableData: async (tableId) => {
+      const table = get().tables.find(t => t.id === tableId);
+      if (!table) return;
+      const query = get().appliedSteps[tableId];
+      if (query) {
+        await get().refreshEtlTable(tableId);
+      } else {
+        await etlLoadRaw({ query: table.originalName || table.name, source: tableToEtlSource(table) });
+      }
     },
 
     // Governance & RLS
@@ -2628,6 +2924,7 @@ export const useBiStore = create<BiState>((set, get) => {
         dashboardTiles: [],
         goals: [],
         appliedSteps: {},
+        appliedQuerySnapshot: {},
         performanceMetrics: [],
         lastSavedAt: null,
       };
@@ -2703,6 +3000,8 @@ export const useBiStore = create<BiState>((set, get) => {
         snapToGrid: get().snapToGrid,
         language: get().language,
         currency: get().currency,
+        appliedSteps: get().appliedSteps,
+        appliedQuerySnapshot: get().appliedQuerySnapshot,
         updatedAt: new Date().toISOString(),
       };
     },
@@ -2777,6 +3076,8 @@ export const useBiStore = create<BiState>((set, get) => {
         gridSize: state.gridSize || 20,
         showGrid: state.showGrid !== undefined ? state.showGrid : true,
         snapToGrid: state.snapToGrid !== undefined ? state.snapToGrid : true,
+        appliedSteps: state.appliedSteps || {},
+        appliedQuerySnapshot: state.appliedQuerySnapshot || {},
         lastSavedAt: new Date().toLocaleTimeString('pt-BR'),
       }));
       globalDataEngine.setSchema(state.tables || [], state.relationships || [], state.measures || []);
@@ -2784,6 +3085,14 @@ export const useBiStore = create<BiState>((set, get) => {
       pushModelToRustAsync(state.tables || [], state.relationships || [], state.measures || [], () =>
         set(s => ({ dataVersion: s.dataVersion + 1 }))
       );
+      // DuckDB é em memória: ao reabrir, tabelas maiores que a amostra
+      // (5.000 linhas) só existem como prévia. Recarrega das fontes em segundo
+      // plano para o modelo voltar a ter todas as linhas.
+      if (isTauriRuntime() && (state.tables || []).some(t => t.rowsTruncated)) {
+        setTimeout(() => {
+          void get().refreshAllData();
+        }, 0);
+      }
     },
   };
 });
@@ -2794,6 +3103,19 @@ if (typeof window !== 'undefined') {
       applyThemeToDocument('system');
       useBiStore.setState({ isDarkMode: isSystemDark });
     }
+  });
+
+  // Expõe as tabelas atuais do modelo ao fallback de ETL do navegador
+  // (usado quando o app não roda dentro do Tauri).
+  setBrowserRawProvider((name) => {
+    const table = useBiStore
+      .getState()
+      .tables.find(t => t.originalName === name || t.name === name || t.id === name);
+    if (!table) return undefined;
+    return {
+      columns: table.columns.map(c => ({ name: c.name, type: c.dataType })),
+      rows: table.rows,
+    };
   });
 }
 

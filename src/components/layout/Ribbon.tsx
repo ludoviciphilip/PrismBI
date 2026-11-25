@@ -44,6 +44,7 @@ import { exportProjectToFile } from '../../engine/storage';
 import { useTranslation } from '../../i18n';
 import { getEffectiveCanvasSize } from '../../engine/shared/canvasPresets';
 import { PowerBiImportModal } from '../modals/PowerBiImportModal';
+import { etlToM } from '../../services/etl/etlClient';
 import {
   isTauriRuntime,
   pickFolderDialog,
@@ -242,8 +243,28 @@ export const Ribbon: React.FC<{
     if (!folder) return;
 
     const state = getProjectState();
+    // Round-trip M: tabelas com consulta ETL exportam o M gerado das etapas.
+    // Snapshot inline sem etapas mantém o M original (não vira um #table gigante).
+    const mByTable = new Map<string, string>();
+    for (const t of state.tables) {
+      const q = state.appliedSteps?.[t.id];
+      if (!q || (q.source.kind === 'inline' && q.steps.length === 0)) continue;
+      try {
+        mByTable.set(t.id, await etlToM({ query: q }));
+      } catch (e) {
+        console.warn(`[pbip] ${t.name}: M não gerado, mantendo o original`, e);
+      }
+    }
     const resolveTableName = (tableId: string) =>
       state.tables.find(t => t.id === tableId || t.name === tableId)?.name || tableId;
+    // "tableId.Coluna" -> "NomeDaTabela.Coluna" (PBIR entities are table names).
+    const qualifyExportField = (field: string) => {
+      const dot = field.indexOf('.');
+      if (dot <= 0) return field;
+      const prefix = field.slice(0, dot);
+      const known = state.tables.some(t => t.id === prefix || t.name === prefix);
+      return known ? `${resolveTableName(prefix)}.${field.slice(dot + 1)}` : field;
+    };
     const toExportFilters = (list: typeof state.filters) =>
       list.map(f => ({
         table: resolveTableName(f.tableId),
@@ -257,7 +278,7 @@ export const Ribbon: React.FC<{
         tables: state.tables.map(t => ({
           name: t.name,
           isHidden: t.isHidden,
-          mScript: t.sourceConfig?.mScript ?? null,
+          mScript: mByTable.get(t.id) ?? t.sourceConfig?.mScript ?? null,
           columns: t.columns.map(c => ({
             name: c.name,
             dataType: c.dataType,
@@ -311,6 +332,9 @@ export const Ribbon: React.FC<{
             backgroundColor: v.formatConfig.backgroundColor ?? null,
             borderColor: v.formatConfig.borderColor ?? null,
             filters: toExportFilters(state.filters.filter(f => f.level === 'visual' && f.visualId === v.id)),
+            // Mapped to PBIR query.sortDefinition by the Rust writer.
+            sortField: v.dataConfig.sortField ? qualifyExportField(v.dataConfig.sortField) : null,
+            sortOrder: v.dataConfig.sortOrder ?? null,
           })),
         })),
         themeName: state.activeThemeId || theme || 'PrismTheme',

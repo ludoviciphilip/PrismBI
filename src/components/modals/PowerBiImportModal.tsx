@@ -169,6 +169,9 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({
         y: 80 + Math.floor(idx / 3) * 240,
         columns: cols,
         rows,
+        duckdbTable: loaded?.tableName,
+        rowsTruncated: loaded?.truncated,
+        totalRows: loaded?.totalRows,
       };
     });
 
@@ -234,6 +237,8 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({
                   legendField: v.legendField || undefined,
                   yAxisFields: v.valueFields.length > 0 ? v.valueFields : undefined,
                   aggregation: 'SUM',
+                  ...(v.sortField && vType !== 'slicer' ? { sortField: v.sortField } : {}),
+                  ...(v.sortOrder ? { sortOrder: v.sortOrder } : {}),
                   ...(vType === 'slicer'
                     ? {
                         slicerConfig: {
@@ -473,7 +478,7 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({
                           {t.columns.length} colunas • {t.measures.length} medidas
                           {(() => {
                             const lt = summary.loadedTables?.find(x => x.tableName.toLowerCase() === t.name.toLowerCase());
-                            return lt ? ` • ${lt.totalRows.toLocaleString('pt-BR')} linhas carregadas` : '';
+                            return lt ? ` • ${lt.totalRows.toLocaleString('pt-BR')} linhas no modelo` : '';
                           })()}
                         </span>
                       </div>

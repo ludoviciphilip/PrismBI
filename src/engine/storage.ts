@@ -16,6 +16,7 @@ import {
   UserDefinedFunction,
   DaxQueryTab,
 } from '../types/bi';
+import { EtlQuery } from '../types/etl';
 import { migrateProjectState, CURRENT_ENGINE_VERSION } from './migrations';
 import { APP_VERSION } from '../version';
 
@@ -46,6 +47,10 @@ export interface ProjectState {
   snapToGrid?: boolean;
   language?: string;
   currency?: string;
+  /** Consultas de ETL por tabela (v0.9.0+). Chave = tableId. */
+  appliedSteps?: Record<string, EtlQuery>;
+  /** Snapshot da última consulta aplicada com sucesso por tabela — usado para "consultas sujas". */
+  appliedQuerySnapshot?: Record<string, EtlQuery>;
   updatedAt: string;
 }
 
@@ -69,6 +74,17 @@ export interface ChunkedTableRecord {
   y?: number;
   totalRows: number;
   chunks: Record<string, any>[][];
+  /** DuckDB table name backing this table (see Table.duckdbTable). DuckDB
+   * is in-memory, so right after a project reopens this table may not
+   * exist yet; sync_model_to_rust falls back to the full `rows` restored
+   * from `chunks` below (NOT just a 5000-row preview — unlike the native
+   * import payload, IndexedDB stores every row) until something (refresh,
+   * .pbip reopen) recreates the DuckDB table and the fast path resumes. */
+  duckdbTable?: string;
+  rowsTruncated?: boolean;
+  /** Full row count in the backing DuckDB table (distinct from `totalRows`
+   * above, which is this record's own restored-row count). */
+  duckdbTotalRows?: number;
 }
 
 const DB_NAME = 'InsightHubDB';
@@ -165,6 +181,9 @@ export async function saveProjectToStorage(state: ProjectState): Promise<SaveRes
           y: table.y,
           totalRows: table.rows ? table.rows.length : 0,
           chunks,
+          duckdbTable: table.duckdbTable,
+          rowsTruncated: table.rowsTruncated,
+          duckdbTotalRows: table.totalRows,
         };
         tablesStore.put(record);
       });
@@ -243,6 +262,9 @@ export async function loadProjectFromStorage(): Promise<ProjectState | null> {
           isDim: rec.isDim,
           x: rec.x,
           y: rec.y,
+          duckdbTable: rec.duckdbTable,
+          rowsTruncated: rec.rowsTruncated,
+          totalRows: rec.duckdbTotalRows,
         };
       });
 

@@ -4,6 +4,7 @@ import { ModelAccess } from './model/modelAccess';
 import { globalColumnStore } from './model/columnStore';
 import { filterContextFromUIFilters } from './model/filterContext';
 import { QueryPlanner } from './query/planner';
+import { VisualSortSpec } from './visualSort';
 import {
   formatValue,
   formatCurrency,
@@ -321,6 +322,14 @@ export class DataEngine implements ModelAccess {
     }
     this.visualQueryCache.set(cacheKey, result);
     return result;
+  }
+
+  /**
+   * Sort spec (sortField/sortOrder/limit + sortByColumn lookup) for a visual,
+   * used to sort native (Rust) query results with the shared visualSort rules.
+   */
+  public getVisualSortSpec(visual: Visual): VisualSortSpec | null {
+    return new QueryPlanner(this).buildSortSpec(visual);
   }
 
   /**

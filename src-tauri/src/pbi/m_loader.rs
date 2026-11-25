@@ -22,6 +22,11 @@ pub struct RefreshTableRequest {
 }
 
 /// Materializes `.pbip` model tables into DuckDB by interpreting Power Query M and DAX `DATATABLE` partitions.
+///
+/// M partitions go through the v0.9 ETL engine first (`m_parse` → `m_from` →
+/// SQL chain on DuckDB, see `crate::etl`). Only when that path fails (an
+/// unsupported step/source, a missing file, …) the legacy text-search
+/// interpreter below is used, and a warning says so.
 pub fn materialize_pbip_tables(
     tables: &[PbiTableMeta],
     pbip_root: &Path,
@@ -29,6 +34,7 @@ pub fn materialize_pbip_tables(
     warnings: &mut Vec<String>,
 ) -> Vec<ImportedTablePayload> {
     let mut loaded = Vec::new();
+    let mut m_tables: Vec<(&PbiTableMeta, &str)> = Vec::new();
 
     for table in tables {
         if table.name.starts_with("DateTableTemplate_") || table.name.starts_with("LocalDateTable_")
@@ -44,7 +50,7 @@ pub fn materialize_pbip_tables(
             continue;
         }
 
-        // 1. Calculated DATATABLE(...) partition (e.g. dEstrutura)
+        // 1. Calculated DATATABLE(...) partition (e.g. dEstrutura): DAX, not M.
         if part.source_type.eq_ignore_ascii_case("calculated") || expr.to_uppercase().contains("DATATABLE") {
             match parse_and_load_datatable(table, expr, db) {
                 Ok(Some(payload)) => loaded.push(payload),
@@ -53,53 +59,147 @@ pub fn materialize_pbip_tables(
             }
             continue;
         }
+        m_tables.push((table, expr));
+    }
 
-        // 2. Empty Measures Host Table (#table(1, ...) + Table.RemoveColumns)
-        if expr.contains("Table.RemoveColumns") && expr.contains("#table(") {
-            continue;
-        }
-
-        // 3. Calendar M partition (Query1(#date(Y, M, D), count, #duration(...)) or List.Dates)
-        if (expr.contains("#date(") && expr.contains("#duration(")) || expr.contains("List.Dates") {
-            match generate_and_load_calendar(table, expr, db) {
-                Ok(payload) => loaded.push(payload),
-                Err(e) => warnings.push(format!("Calendário '{}': {}", table.name, e)),
+    // Queries that merge/append/reference other queries need those model
+    // tables first: process in dependency order (stable otherwise).
+    for (table, expr) in order_by_etl_dependencies(&m_tables) {
+        match materialize_via_etl(table, expr, pbip_root, db) {
+            Ok(Some(payload)) => {
+                loaded.push(payload);
+                continue;
             }
-            continue;
+            // Query without columns (e.g. the measures host table): nothing to load.
+            Ok(None) => continue,
+            Err(e) => warnings.push(format!(
+                "ETL: '{}' carregada pelo interpretador M legado ({})",
+                table.name, e
+            )),
         }
-
-        // 4. Excel.Workbook(File.Contents("..."))
-        if expr.contains("Excel.Workbook") && expr.contains("File.Contents") {
-            match load_excel_partition(table, expr, pbip_root, db, None, None) {
-                Ok(payload) => loaded.push(payload),
-                Err(e) => warnings.push(format!("Excel '{}': {}", table.name, e)),
-            }
-            continue;
-        }
-
-        // 5. Csv.Document(File.Contents("..."))
-        if expr.contains("Csv.Document") && expr.contains("File.Contents") {
-            if let Some(raw_path) = extract_quoted_arg_after(expr, "File.Contents(") {
-                if let Some(resolved) = resolve_source_path(&raw_path, pbip_root) {
-                    match db.import_csv(&resolved, Some(&table.name)) {
-                        Ok(mut payload) => {
-                            payload.table_name = table.name.clone();
-                            payload.source_path = Some(resolved.to_string_lossy().to_string());
-                            loaded.push(payload);
-                        }
-                        Err(e) => warnings.push(format!("CSV '{}': {}", table.name, e)),
-                    }
-                } else {
-                    warnings.push(format!(
-                        "Arquivo CSV '{}' referenciado em '{}' não encontrado localmente.",
-                        raw_path, table.name
-                    ));
-                }
-            }
-        }
+        materialize_m_partition_legacy(table, expr, pbip_root, db, warnings, &mut loaded);
     }
 
     loaded
+}
+
+/// v0.9 path for one M partition. `Ok(None)`: the query yields no columns.
+pub fn materialize_via_etl(
+    table: &PbiTableMeta,
+    expr: &str,
+    pbip_root: &Path,
+    db: &DuckDbStore,
+) -> Result<Option<ImportedTablePayload>, String> {
+    use crate::etl::model::{SourceKind, StepKind};
+    let parsed = crate::etl::m_from::query_from_m(&table.name, expr)?;
+    let q = parsed.query;
+    if q.source.kind == SourceKind::OpaqueM {
+        return Err("fonte M não suportada".into());
+    }
+    if let Some(s) = q.steps.iter().find(|s| matches!(s.kind, StepKind::OpaqueM { .. })) {
+        return Err(format!("etapa '{}' não suportada", s.name));
+    }
+    let raw = crate::etl::commands::etl_load_raw_impl(db, &q.name, &q.source, Some(pbip_root))?;
+    let payload = crate::etl::commands::etl_apply_inner(db, &q, &table.name)?;
+    Ok(payload.map(|mut p| {
+        if raw.source_path.is_some() {
+            p.source_path = raw.source_path.clone();
+        }
+        p
+    }))
+}
+
+fn order_by_etl_dependencies<'a>(items: &[(&'a PbiTableMeta, &'a str)]) -> Vec<(&'a PbiTableMeta, &'a str)> {
+    let names: HashSet<String> = items.iter().map(|(t, _)| t.name.clone()).collect();
+    let deps: Vec<Vec<String>> = items
+        .iter()
+        .map(|(t, e)| {
+            crate::etl::m_from::query_from_m(&t.name, e)
+                .map(|r| {
+                    r.query
+                        .referenced_queries()
+                        .into_iter()
+                        .filter(|d| names.contains(d) && *d != t.name)
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .collect();
+    let mut done: HashSet<String> = HashSet::new();
+    let mut out = Vec::with_capacity(items.len());
+    let mut remaining: Vec<usize> = (0..items.len()).collect();
+    while !remaining.is_empty() {
+        let before = remaining.len();
+        remaining.retain(|&i| {
+            if deps[i].iter().all(|d| done.contains(d)) {
+                done.insert(items[i].0.name.clone());
+                out.push(items[i]);
+                false
+            } else {
+                true
+            }
+        });
+        if remaining.len() == before {
+            // cycle: keep original order for the rest
+            out.extend(remaining.iter().map(|&i| items[i]));
+            break;
+        }
+    }
+    out
+}
+
+/// Legacy text-search interpreter for one M partition (fallback only).
+pub(crate) fn materialize_m_partition_legacy(
+    table: &PbiTableMeta,
+    expr: &str,
+    pbip_root: &Path,
+    db: &DuckDbStore,
+    warnings: &mut Vec<String>,
+    loaded: &mut Vec<ImportedTablePayload>,
+) {
+    // 2. Empty Measures Host Table (#table(1, ...) + Table.RemoveColumns)
+    if expr.contains("Table.RemoveColumns") && expr.contains("#table(") {
+        return;
+    }
+
+    // 3. Calendar M partition (Query1(#date(Y, M, D), count, #duration(...)) or List.Dates)
+    if (expr.contains("#date(") && expr.contains("#duration(")) || expr.contains("List.Dates") {
+        match generate_and_load_calendar(table, expr, db) {
+            Ok(payload) => loaded.push(payload),
+            Err(e) => warnings.push(format!("Calendário '{}': {}", table.name, e)),
+        }
+        return;
+    }
+
+    // 4. Excel.Workbook(File.Contents("..."))
+    if expr.contains("Excel.Workbook") && expr.contains("File.Contents") {
+        match load_excel_partition(table, expr, pbip_root, db, None, None) {
+            Ok(payload) => loaded.push(payload),
+            Err(e) => warnings.push(format!("Excel '{}': {}", table.name, e)),
+        }
+        return;
+    }
+
+    // 5. Csv.Document(File.Contents("..."))
+    if expr.contains("Csv.Document") && expr.contains("File.Contents") {
+        if let Some(raw_path) = extract_quoted_arg_after(expr, "File.Contents(") {
+            if let Some(resolved) = resolve_source_path(&raw_path, pbip_root) {
+                match db.import_csv(&resolved, Some(&table.name)) {
+                    Ok(mut payload) => {
+                        payload.table_name = table.name.clone();
+                        payload.source_path = Some(resolved.to_string_lossy().to_string());
+                        loaded.push(payload);
+                    }
+                    Err(e) => warnings.push(format!("CSV '{}': {}", table.name, e)),
+                }
+            } else {
+                warnings.push(format!(
+                    "Arquivo CSV '{}' referenciado em '{}' não encontrado localmente.",
+                    raw_path, table.name
+                ));
+            }
+        }
+    }
 }
 
 pub fn refresh_single_table(
