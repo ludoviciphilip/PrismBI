@@ -13,6 +13,7 @@ import {
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { APP_VERSION } from '../../version';
+import { SimpleMarkdown } from '../shared/SimpleMarkdown';
 import {
   isTauriRuntime,
   checkForUpdatesNative,
@@ -157,9 +158,10 @@ export const UpdateModal: React.FC = () => {
                   </div>
                 )}
                 {availableUpdate.releaseNotes && (
-                  <pre className="mt-2 p-2.5 rounded-lg bg-white/80 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 text-[11px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap max-h-40 overflow-y-auto font-sans">
-                    {availableUpdate.releaseNotes}
-                  </pre>
+                  <SimpleMarkdown
+                    source={availableUpdate.releaseNotes}
+                    className="mt-2 p-2.5 rounded-lg bg-white/80 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 text-[11px] text-slate-700 dark:text-slate-300 max-h-56 overflow-y-auto"
+                  />
                 )}
               </div>
             ) : (
