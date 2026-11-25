@@ -714,11 +714,12 @@ async function pushModelToRustAsync(
       tables: tables.map(t => ({
         name: t.name,
         columns: t.columns.map(c => c.name),
-        // DuckDB-backed tables (duckdbTable set) send no rows: Rust loads
-        // every row straight from DuckDB instead of this 5000-row preview.
-        // Tables without a backing DuckDB table (sample data, manual entry,
-        // inline REST, calculated tables) still send their full `rows`.
-        rows: t.duckdbTable ? [] : (t.rows || []),
+        // DuckDB-backed tables (duckdbTable set): Rust loads every row
+        // straight from DuckDB and ignores `rows`. The preview rows still go
+        // along as the fallback for when the DuckDB table does not exist
+        // (DuckDB is in-memory: right after reopening a project). Sending []
+        // there would leave the table EMPTY in the model.
+        rows: t.rows || [],
         columnTypes: t.columns.map(c => c.dataType ?? null),
         duckdbTable: t.duckdbTable,
       })),
@@ -2963,6 +2964,14 @@ export const useBiStore = create<BiState>((set, get) => {
       pushModelToRustAsync(state.tables || [], state.relationships || [], state.measures || [], () =>
         set(s => ({ dataVersion: s.dataVersion + 1 }))
       );
+      // DuckDB é em memória: ao reabrir, tabelas maiores que a amostra
+      // (5.000 linhas) só existem como prévia. Recarrega das fontes em segundo
+      // plano para o modelo voltar a ter todas as linhas.
+      if (isTauriRuntime() && (state.tables || []).some(t => t.rowsTruncated)) {
+        setTimeout(() => {
+          void get().refreshAllData();
+        }, 0);
+      }
     },
   };
 });
