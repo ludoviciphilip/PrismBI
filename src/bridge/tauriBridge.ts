@@ -671,6 +671,17 @@ export type NativeEtlStep = { id: string; name: string } & (
     }
   | { op: 'appendQueries'; queries: string[] }
   | { op: 'opaqueM'; m: string }
+  // ---- Rodada 2 (docs/ETL_V09.md §"Rodada 2") ----
+  | { op: 'transformColumns'; columns: string[]; expression: string; type?: NativeEtlType }
+  | { op: 'reorderColumns'; columns: string[] }
+  | { op: 'demoteHeaders' }
+  | { op: 'transpose' }
+  | { op: 'reverseRows' }
+  | { op: 'keepRange'; offset: number; count: number }
+  | { op: 'removeAlternateRows'; offset: number; remove: number; keep: number }
+  | { op: 'keepDuplicates'; columns?: string[] }
+  | { op: 'replaceErrors'; replacements: { column: string; value: NativeEtlScalar }[] }
+  | { op: 'keepRowsWithErrors'; columns?: string[] }
 );
 
 export interface NativeEtlSource {
@@ -753,4 +764,9 @@ export async function etlToM(query: NativeEtlQuery): Promise<string> {
 /** Converte um script M em consulta (passos não suportados viram `opaqueM` + aviso). */
 export async function etlFromM(name: string, m: string): Promise<NativeEtlFromMResult> {
   return await invoke<NativeEtlFromMResult>('etl_from_m', { name, m });
+}
+
+/** Expressão da barra de fórmulas de uma única etapa (`"= Table.AddColumn(...)"`). */
+export async function etlStepM(query: NativeEtlQuery, index: number): Promise<string> {
+  return await invoke<string>('etl_step_m', { query, index });
 }
