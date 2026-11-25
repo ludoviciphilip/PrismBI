@@ -45,7 +45,8 @@ export async function etlPreview(args: { query: EtlQuery; uptoStep?: number; lim
   return browserPreview(args.query, args.uptoStep, args.limit ?? 200);
 }
 
-export async function etlApply(args: { query: EtlQuery; targetTable: string }): Promise<ImportedTablePayload> {
+/** `null`: a consulta não produz colunas (tabela que só hospeda medidas). */
+export async function etlApply(args: { query: EtlQuery; targetTable: string }): Promise<ImportedTablePayload | null> {
   if (isTauriRuntime()) return invoke('etl_apply', args);
   return browserApply(args.query, args.targetTable);
 }
@@ -586,8 +587,9 @@ function browserPreview(query: EtlQuery, uptoStep: number | undefined, limit: nu
   };
 }
 
-function browserApply(query: EtlQuery, targetTable: string): ImportedTablePayload {
+function browserApply(query: EtlQuery, targetTable: string): ImportedTablePayload | null {
   const result = runPipeline(query);
+  if (result.columns.length === 0) return null;
   return {
     tableName: targetTable,
     originalName: targetTable,

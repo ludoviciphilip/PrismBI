@@ -130,13 +130,11 @@ export const PowerQueryView: React.FC = () => {
     setRefreshing(false);
   };
 
-  const buildAppliedToast = (applied: { name: string; rowCount: number; truncated: boolean }[]) => {
-    const lines = applied.map(a => `${a.name}: ${a.rowCount.toLocaleString('pt-BR')} linhas`);
-    const truncatedLines = applied
-      .filter(a => a.truncated)
-      .map(a => `Tabela ${a.name}: apenas as primeiras 5.000 de ${a.rowCount.toLocaleString('pt-BR')} linhas foram carregadas no modelo.`);
-    return [...lines, ...truncatedLines].join(' · ');
-  };
+  const buildAppliedToast = (applied: { name: string; rowCount: number; truncated: boolean; measuresOnly?: boolean }[]) =>
+    applied
+      // O modelo lê todas as linhas do DuckDB; só as grades usam a prévia de 5.000.
+      .map(a => (a.measuresOnly ? `${a.name}: só medidas` : `${a.name}: ${a.rowCount.toLocaleString('pt-BR')} linhas no modelo`))
+      .join(' · ');
 
   // "Aplicar": aplica todas as consultas sujas (em ordem de dependência) e fica no editor.
   const handleApply = async () => {

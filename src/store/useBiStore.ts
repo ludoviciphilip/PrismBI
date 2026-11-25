@@ -28,7 +28,7 @@ import { EtlQuery, EtlStep, EtlSource } from '../types/etl';
 import { etlApply, etlFromM, etlLoadRaw, setBrowserRawProvider } from '../services/etl/etlClient';
 
 export interface ApplyAllQueriesResult {
-  applied: { tableId: string; name: string; rowCount: number; truncated: boolean }[];
+  applied: { tableId: string; name: string; rowCount: number; truncated: boolean; measuresOnly?: boolean }[];
   errors: { tableId: string; name: string; stepIndex?: number; message: string } | null;
 }
 import { tableToEtlSource } from '../services/etl/etlSource';
@@ -289,7 +289,7 @@ interface BiState {
   moveQueryStepDown: (tableId: string, stepId: string) => void;
   renameQueryStep: (tableId: string, stepId: string, name: string) => void;
   selectQueryStep: (tableId: string, stepId: string | undefined) => void;
-  closeAndApplyQuery: (tableId: string) => Promise<void>;
+  closeAndApplyQuery: (tableId: string) => Promise<{ rowCount: number; truncated: boolean; measuresOnly: boolean }>;
   refreshTableData: (tableId: string) => Promise<void>;
   /** true se as etapas da tabela mudaram desde a última aplicação bem-sucedida. */
   isQueryDirty: (tableId: string) => boolean;
@@ -2535,6 +2535,12 @@ export const useBiStore = create<BiState>((set, get) => {
       const query = get().getOrInitQuery(tableId);
       const table = get().tables.find(t => t.id === tableId);
       const payload = await etlApply({ query, targetTable: table?.originalName || table?.name || tableId });
+      if (!payload) {
+        // Consulta sem colunas: tabela que só hospeda medidas (como "Medidas"
+        // no Power BI). Não há dados para carregar, mas a consulta está aplicada.
+        set({ appliedQuerySnapshot: { ...get().appliedQuerySnapshot, [tableId]: query } });
+        return { rowCount: 0, truncated: false, measuresOnly: true };
+      }
       // Reaproveita o id da coluna de mesmo nome: medidas, relações e visuais
       // referenciam ids, e as etapas podem remover/reordenar colunas.
       const idByName = new Map((table?.columns || []).map(c => [c.name, c.id]));
@@ -2553,6 +2559,7 @@ export const useBiStore = create<BiState>((set, get) => {
         totalRows: payload.totalRows ?? payload.rows.length,
       });
       set({ appliedQuerySnapshot: { ...get().appliedQuerySnapshot, [tableId]: query } });
+      return { rowCount: payload.totalRows ?? payload.rows.length, truncated: !!payload.truncated, measuresOnly: false };
     },
 
     isQueryDirty: (tableId) => {
@@ -2615,28 +2622,8 @@ export const useBiStore = create<BiState>((set, get) => {
         const name = table?.originalName || table?.name || tableId;
         onProgress?.({ name, index: i + 1, total: ordered.length });
         try {
-          const query = get().getOrInitQuery(tableId);
-          const payload = await etlApply({ query, targetTable: name });
-          const idByName = new Map((table?.columns || []).map(c => [c.name, c.id]));
-          get().updateTable(tableId, {
-            columns: payload.columns.map(c => ({
-              id: idByName.get(c.name) || `c_${Math.random().toString(36).slice(2, 8)}`,
-              name: c.name,
-              originalName: c.originalName,
-              dataType: (c.dataType as any) || 'text',
-            })),
-            rows: payload.rows,
-            ...(payload.tableName ? { duckdbTable: payload.tableName } : {}),
-            rowsTruncated: !!payload.truncated,
-            totalRows: payload.totalRows ?? payload.rows.length,
-          });
-          set({ appliedQuerySnapshot: { ...get().appliedQuerySnapshot, [tableId]: query } });
-          applied.push({
-            tableId,
-            name,
-            rowCount: payload.totalRows ?? payload.rows.length,
-            truncated: !!payload.truncated,
-          });
+          const res = await get().closeAndApplyQuery(tableId);
+          applied.push({ tableId, name, rowCount: res.rowCount, truncated: res.truncated, measuresOnly: res.measuresOnly });
         } catch (e: any) {
           const idx = get().appliedSteps[tableId]?.steps.length;
           return {

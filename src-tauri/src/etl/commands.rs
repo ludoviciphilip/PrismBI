@@ -253,8 +253,9 @@ pub fn etl_preview(
 }
 
 #[tauri::command]
-pub fn etl_apply(state: State<'_, AppState>, query: EtlQuery, target_table: String) -> Result<ImportedTablePayload, String> {
-    etl_apply_impl(&state.db, &query, &target_table)
+/// `None` (JSON null): the query yields no columns, e.g. the measures host table.
+pub fn etl_apply(state: State<'_, AppState>, query: EtlQuery, target_table: String) -> Result<Option<ImportedTablePayload>, String> {
+    etl_apply_inner(&state.db, &query, &target_table)
 }
 
 #[tauri::command]

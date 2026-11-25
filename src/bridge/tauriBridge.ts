@@ -758,8 +758,9 @@ export async function etlPreview(
 }
 
 /** "Fechar e Aplicar": materializa a consulta em `targetTable`. */
-export async function etlApply(query: NativeEtlQuery, targetTable: string): Promise<NativeImportedTable> {
-  return await invoke<NativeImportedTable>('etl_apply', { query, targetTable });
+/** `null`: the query yields no columns (measures host table). */
+export async function etlApply(query: NativeEtlQuery, targetTable: string): Promise<NativeImportedTable | null> {
+  return await invoke<NativeImportedTable | null>('etl_apply', { query, targetTable });
 }
 
 /** Script M completo (`let … in`) da consulta. */

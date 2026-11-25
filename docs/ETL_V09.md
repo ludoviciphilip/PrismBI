@@ -95,7 +95,7 @@ Expressões `each …` com: `[Coluna]`, literais, `+ - * /`, `&`, comparações,
 | :--- | :--- | :--- |
 | `etl_load_raw` | `{ query: string, source: EtlSource, pbipRoot?: string }` | `{ rawTable, columns: {name,type}[], rowCount, sourcePath? }`: (re)carrega a fonte bruta em `raw__<query>` |
 | `etl_preview` | `{ query: EtlQuery, uptoStep?: number, limit?: number }` | `{ columns: {name,type}[], rows: object[], rowCount: number, warnings: string[], failedStep?: { index, message } }` |
-| `etl_apply` | `{ query: EtlQuery, targetTable: string }` | `ImportedTablePayload` (mesmo formato dos importadores atuais) |
+| `etl_apply` | `{ query: EtlQuery, targetTable: string }` | `ImportedTablePayload \| null` (mesmo formato dos importadores atuais; `null` quando a consulta não produz colunas, como a tabela de medidas, que conta como aplicada) |
 | `etl_to_m` | `{ query: EtlQuery }` | `string` (script `let … in` completo) |
 | `etl_from_m` | `{ name: string, m: string }` | `{ query: EtlQuery, warnings: string[] }` |
 
