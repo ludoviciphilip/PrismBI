@@ -373,8 +373,8 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
         }
         "CEILING" | "ISO.CEILING" => {
             let n = arg_f64(0, 0.0);
-            let sig = arg_f64(1, 1.0).abs();
-            if sig < 1e-12 {
+            let sig = arg_f64(1, 1.0);
+            if sig.abs() < 1e-12 {
                 DaxValue::Number(0.0)
             } else {
                 DaxValue::Number((n / sig).ceil() * sig)
@@ -382,8 +382,8 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
         }
         "FLOOR" => {
             let n = arg_f64(0, 0.0);
-            let sig = arg_f64(1, 1.0).abs();
-            if sig < 1e-12 {
+            let sig = arg_f64(1, 1.0);
+            if sig.abs() < 1e-12 {
                 DaxValue::Number(0.0)
             } else {
                 DaxValue::Number((n / sig).floor() * sig)
