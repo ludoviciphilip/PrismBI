@@ -1,0 +1,51 @@
+{
+  "description": "Modelo pequeno com relacionamento bidirecional (crossFilter both) entre f_Vendas e d_Cliente, para testar propagação de filtro de d_Produto -> f_Vendas -> d_Cliente (que só ocorre com both) e a função CROSSFILTER().",
+  "tables": [
+    {
+      "name": "d_Cliente",
+      "columns": [
+        { "name": "ClienteID", "type": "number" },
+        { "name": "Cliente", "type": "text" }
+      ],
+      "rows": [
+        [1, "Ana"],
+        [2, "Bruno"],
+        [3, "Carla"],
+        [4, "Diego"]
+      ]
+    },
+    {
+      "name": "d_Produto",
+      "columns": [
+        { "name": "ProdutoID", "type": "number" },
+        { "name": "Produto", "type": "text" },
+        { "name": "Categoria", "type": "text" }
+      ],
+      "rows": [
+        [1, "Caneta", "Papelaria"],
+        [2, "Mouse", "Informatica"]
+      ]
+    },
+    {
+      "name": "f_Vendas",
+      "columns": [
+        { "name": "VendaID", "type": "number" },
+        { "name": "ClienteID", "type": "number" },
+        { "name": "ProdutoID", "type": "number" },
+        { "name": "Valor", "type": "number" }
+      ],
+      "rows": [
+        [1, 1, 1, 10],
+        [2, 2, 2, 20],
+        [3, 3, 1, 30]
+      ]
+    }
+  ],
+  "relationships": [
+    { "from": "f_Vendas[ClienteID]", "to": "d_Cliente[ClienteID]", "crossFilter": "both", "active": true },
+    { "from": "f_Vendas[ProdutoID]", "to": "d_Produto[ProdutoID]", "crossFilter": "single", "active": true }
+  ],
+  "measures": [
+    { "table": "f_Vendas", "name": "Total Vendas", "formula": "SUM(f_Vendas[Valor])" }
+  ]
+}

@@ -1,0 +1,661 @@
+{
+  "model": "vendas",
+  "category": "scalar",
+  "description": "Scalar built-in functions (text, math/trig/rounding, logical, information, conversion, date/time). Mostly literal inputs so the shared 'vendas' model is not exercised beyond being a valid reference model. Expected values derived independently in oracles/scalar.py: either computed with plain Python mirroring the documented DAX semantic, or copied verbatim from an official worked example (dax.guide / learn.microsoft.com), never copied from either engine's output.",
+  "cases": [
+    {
+      "id": "scalar.text.len",
+      "expr": "LEN(\"Power BI\")",
+      "expected": 8,
+      "source": "oracles/scalar.py:text_len"
+    },
+    {
+      "id": "scalar.text.left",
+      "expr": "LEFT(\"Power BI\", 5)",
+      "expected": "Power",
+      "source": "oracles/scalar.py:text_left"
+    },
+    {
+      "id": "scalar.text.right",
+      "expr": "RIGHT(\"Power BI\", 2)",
+      "expected": "BI",
+      "source": "oracles/scalar.py:text_right"
+    },
+    {
+      "id": "scalar.text.mid",
+      "expr": "MID(\"Power BI\", 7, 2)",
+      "expected": "BI",
+      "source": "oracles/scalar.py:text_mid"
+    },
+    {
+      "id": "scalar.text.trim.collapses_inner_spaces",
+      "expr": "TRIM(\"  DAX   is  awesome !!!  \")",
+      "expected": "DAX is awesome !!!",
+      "source": "dax.guide/trim/",
+      "notes": "DAX TRIM, unlike a plain strip, also collapses runs of inner spaces to one."
+    },
+    {
+      "id": "scalar.text.substitute.all_instances",
+      "expr": "SUBSTITUTE(\"abcabc\", \"a\", \"X\")",
+      "expected": "XbcXbc",
+      "source": "dax.guide/substitute/"
+    },
+    {
+      "id": "scalar.text.substitute.instance_arg",
+      "expr": "SUBSTITUTE(\"abcabc\", \"a\", \"X\", 2)",
+      "expected": "abcXbc",
+      "source": "dax.guide/substitute/",
+      "notes": "4th arg selects only the 2nd occurrence of 'a' to replace."
+    },
+    {
+      "id": "scalar.text.replace.basic",
+      "expr": "REPLACE(\"abcdef\", 2, 3, \"XYZ\")",
+      "expected": "aXYZef",
+      "source": "dax.guide/replace/"
+    },
+    {
+      "id": "scalar.text.find.found",
+      "expr": "FIND(\"B\", \"abcBdef\")",
+      "expected": 4,
+      "source": "dax.guide/find/"
+    },
+    {
+      "id": "scalar.text.find.not_found_error",
+      "expr": "FIND(\"Z\", \"abc\")",
+      "expected": {
+        "error": true
+      },
+      "source": "dax.guide/find/",
+      "notes": "No NotFoundValue supplied and no match -> error, per docs."
+    },
+    {
+      "id": "scalar.text.find.not_found_value_arg",
+      "expr": "FIND(\"Z\", \"abc\", 1, 0)",
+      "expected": 0,
+      "source": "dax.guide/find/"
+    },
+    {
+      "id": "scalar.text.find.case_sensitive",
+      "expr": "FIND(\"A\", \"abcA\")",
+      "expected": 4,
+      "source": "dax.guide/find/",
+      "notes": "FIND is case-sensitive: lowercase 'a' at position 1 does not match."
+    },
+    {
+      "id": "scalar.text.search.case_insensitive",
+      "expr": "SEARCH(\"b\", \"ABC\")",
+      "expected": 2,
+      "source": "dax.guide/search/"
+    },
+    {
+      "id": "scalar.text.search.wildcard",
+      "expr": "SEARCH(\"b*d\", \"abcd\")",
+      "expected": 2,
+      "source": "learn.microsoft.com/en-us/dax/search-function-dax",
+      "notes": "'*' wildcard matches any run of characters."
+    },
+    {
+      "id": "scalar.text.concatenate.basic",
+      "expr": "CONCATENATE(\"Power\", \" BI\")",
+      "expected": "Power BI"
+    },
+    {
+      "id": "scalar.text.ampersand_operator",
+      "expr": "\"Power\" & \" \" & \"BI\"",
+      "expected": "Power BI"
+    },
+    {
+      "id": "scalar.text.rept.basic",
+      "expr": "REPT(\"ab\", 3)",
+      "expected": "ababab"
+    },
+    {
+      "id": "scalar.text.exact.case_sensitive_false",
+      "expr": "EXACT(\"abc\", \"ABC\")",
+      "expected": false,
+      "source": "dax.guide/exact/",
+      "notes": "EXACT is case-sensitive."
+    },
+    {
+      "id": "scalar.text.containsstring.case_insensitive",
+      "expr": "CONTAINSSTRING(\"Power BI\", \"bi\")",
+      "expected": true,
+      "source": "learn.microsoft.com/en-us/dax/containsstring-function-dax",
+      "notes": "CONTAINSSTRING is case-insensitive."
+    },
+    {
+      "id": "scalar.text.containsstringexact.case_sensitive_false",
+      "expr": "CONTAINSSTRINGEXACT(\"Power BI\", \"bi\")",
+      "expected": false,
+      "source": "dax.guide/containsstringexact/",
+      "notes": "CONTAINSSTRINGEXACT is case-sensitive; \"bi\" is not a byte-exact substring of \"Power BI\"."
+    },
+    {
+      "id": "scalar.text.value.decimal_text",
+      "expr": "VALUE(\"1.5\")",
+      "expected": 1.5
+    },
+    {
+      "id": "scalar.text.fixed.rounds_and_commas",
+      "expr": "FIXED(1234.5678, 2)",
+      "expected": "1,234.57",
+      "source": "dax.guide/fixed/",
+      "notes": "FIXED rounds half away from zero to the given decimals and includes thousands separators by default."
+    },
+    {
+      "id": "scalar.text.unichar.basic",
+      "expr": "UNICHAR(65)",
+      "expected": "A"
+    },
+    {
+      "id": "scalar.text.unicode.basic",
+      "expr": "UNICODE(\"A\")",
+      "expected": 65
+    },
+    {
+      "id": "scalar.text.format.thousands_pattern",
+      "expr": "FORMAT(1234567, \"#,##0\")",
+      "expected": "1,234,567",
+      "source": "en-US invariant numeric format."
+    },
+    {
+      "id": "scalar.text.format.percent_pattern",
+      "expr": "FORMAT(0.25, \"0%\")",
+      "expected": "25%",
+      "source": "en-US invariant numeric format."
+    },
+    {
+      "id": "scalar.text.format.iso_date_pattern",
+      "expr": "FORMAT(DATE(2024,3,5), \"yyyy-mm-dd\")",
+      "expected": "2024-03-05",
+      "source": "en-US invariant date format."
+    },
+    {
+      "id": "scalar.text.format.month_abbrev",
+      "expr": "FORMAT(DATE(2024,3,5), \"mmm\")",
+      "expected": "Mar",
+      "source": "en-US invariant month abbreviation."
+    },
+    {
+      "id": "scalar.math.round.half_away_from_zero_positive",
+      "expr": "ROUND(2.5, 0)",
+      "expected": 3,
+      "source": "dax.guide/round/",
+      "notes": "ROUND rounds halves away from zero, not banker's rounding."
+    },
+    {
+      "id": "scalar.math.round.half_away_from_zero_negative",
+      "expr": "ROUND(-2.5, 0)",
+      "expected": -3,
+      "source": "dax.guide/round/"
+    },
+    {
+      "id": "scalar.math.round.negative_digits",
+      "expr": "ROUND(1234, -2)",
+      "expected": 1200,
+      "source": "dax.guide/round/",
+      "notes": "Negative num_digits rounds to the left of the decimal point."
+    },
+    {
+      "id": "scalar.math.roundup.negative_away_from_zero",
+      "expr": "ROUNDUP(-1.1, 0)",
+      "expected": -2
+    },
+    {
+      "id": "scalar.math.rounddown.negative_toward_zero",
+      "expr": "ROUNDDOWN(-1.9, 0)",
+      "expected": -1
+    },
+    {
+      "id": "scalar.math.mround.basic",
+      "expr": "MROUND(10, 3)",
+      "expected": 9,
+      "source": "dax.guide/mround/"
+    },
+    {
+      "id": "scalar.math.mround.negative",
+      "expr": "MROUND(-10, -3)",
+      "expected": -9,
+      "source": "dax.guide/mround/",
+      "notes": "Number and multiple must share sign."
+    },
+    {
+      "id": "scalar.math.int.floors_negative",
+      "expr": "INT(-4.3)",
+      "expected": -5,
+      "notes": "INT floors toward negative infinity, unlike TRUNC."
+    },
+    {
+      "id": "scalar.math.trunc.toward_zero_negative",
+      "expr": "TRUNC(-4.7)",
+      "expected": -4,
+      "notes": "TRUNC truncates toward zero (does not floor)."
+    },
+    {
+      "id": "scalar.math.ceiling.negative_significance",
+      "expr": "CEILING(-20, -3)",
+      "expected": -21,
+      "source": "dax.guide/ceiling/",
+      "notes": "With negative significance CEILING rounds toward the more negative multiple (worked example table: Value=-20 -> CEILING=-21)."
+    },
+    {
+      "id": "scalar.math.floor.negative_significance",
+      "expr": "FLOOR(-20, -3)",
+      "expected": -18,
+      "source": "dax.guide/ceiling/",
+      "notes": "Shared worked-example table with CEILING: Value=-20 -> FLOOR=-18."
+    },
+    {
+      "id": "scalar.math.mod.sign_follows_negative_dividend",
+      "expr": "MOD(-5, 3)",
+      "expected": 1,
+      "notes": "MOD result takes the sign of the divisor (3 here), so -5 mod 3 = 1."
+    },
+    {
+      "id": "scalar.math.mod.sign_follows_negative_divisor",
+      "expr": "MOD(5, -3)",
+      "expected": -1,
+      "notes": "MOD result takes the sign of the divisor (-3 here), so 5 mod -3 = -1."
+    },
+    {
+      "id": "scalar.math.quotient.basic",
+      "expr": "QUOTIENT(10, 3)",
+      "expected": 3
+    },
+    {
+      "id": "scalar.math.power.basic",
+      "expr": "POWER(2, 10)",
+      "expected": 1024
+    },
+    {
+      "id": "scalar.math.sqrt.basic",
+      "expr": "SQRT(16)",
+      "expected": 4
+    },
+    {
+      "id": "scalar.math.sqrt.negative_error",
+      "expr": "SQRT(-1)",
+      "expected": {
+        "error": true
+      },
+      "source": "dax.guide/sqrt/",
+      "notes": "\"If the number is negative, the SQRT function returns an error.\""
+    },
+    {
+      "id": "scalar.math.exp.one",
+      "expr": "EXP(1)",
+      "expected": 2.718281828459045,
+      "tolerance": 1e-12
+    },
+    {
+      "id": "scalar.math.ln.of_e",
+      "expr": "LN(EXP(1))",
+      "expected": 1,
+      "tolerance": 1e-09
+    },
+    {
+      "id": "scalar.math.log.base2_of_8",
+      "expr": "LOG(8, 2)",
+      "expected": 3,
+      "tolerance": 1e-09
+    },
+    {
+      "id": "scalar.math.log10.of_100",
+      "expr": "LOG10(100)",
+      "expected": 2
+    },
+    {
+      "id": "scalar.math.sign.negative",
+      "expr": "SIGN(-5)",
+      "expected": -1
+    },
+    {
+      "id": "scalar.math.sign.positive",
+      "expr": "SIGN(5)",
+      "expected": 1
+    },
+    {
+      "id": "scalar.math.even.rounds_up_away_from_zero",
+      "expr": "EVEN(1.5)",
+      "expected": 2
+    },
+    {
+      "id": "scalar.math.even.negative",
+      "expr": "EVEN(-1.5)",
+      "expected": -2
+    },
+    {
+      "id": "scalar.math.odd.rounds_up_away_from_zero",
+      "expr": "ODD(1.5)",
+      "expected": 3
+    },
+    {
+      "id": "scalar.math.odd.negative",
+      "expr": "ODD(-1.5)",
+      "expected": -3
+    },
+    {
+      "id": "scalar.math.fact.basic",
+      "expr": "FACT(5)",
+      "expected": 120
+    },
+    {
+      "id": "scalar.math.gcd.basic",
+      "expr": "GCD(12, 18)",
+      "expected": 6
+    },
+    {
+      "id": "scalar.math.lcm.basic",
+      "expr": "LCM(4, 6)",
+      "expected": 12
+    },
+    {
+      "id": "scalar.math.combin.basic",
+      "expr": "COMBIN(5, 2)",
+      "expected": 10
+    },
+    {
+      "id": "scalar.math.permut.basic",
+      "expr": "PERMUT(5, 2)",
+      "expected": 20
+    },
+    {
+      "id": "scalar.math.pi.basic",
+      "expr": "PI()",
+      "expected": 3.141592653589793,
+      "tolerance": 1e-12
+    },
+    {
+      "id": "scalar.math.divide.basic",
+      "expr": "DIVIDE(10, 2)",
+      "expected": 5
+    },
+    {
+      "id": "scalar.math.divide.by_zero_is_blank",
+      "expr": "DIVIDE(10, 0)",
+      "expected": null,
+      "source": "dax.guide/divide/",
+      "notes": "No AlternateResult supplied -> BLANK on division by zero."
+    },
+    {
+      "id": "scalar.math.divide.alternate_result",
+      "expr": "DIVIDE(10, 0, -1)",
+      "expected": -1,
+      "source": "dax.guide/divide/"
+    },
+    {
+      "id": "scalar.math.cos.zero",
+      "expr": "COS(0)",
+      "expected": 1
+    },
+    {
+      "id": "scalar.logical.if.true_branch",
+      "expr": "IF(1 = 1, 1, 2)",
+      "expected": 1
+    },
+    {
+      "id": "scalar.logical.if_eager.same_as_if",
+      "expr": "IF.EAGER(1 = 1, 1, 2)",
+      "expected": 1,
+      "notes": "IF.EAGER evaluates eagerly (both branches), but result for a scalar literal condition matches IF."
+    },
+    {
+      "id": "scalar.logical.or_function",
+      "expr": "OR(TRUE(), FALSE())",
+      "expected": true
+    },
+    {
+      "id": "scalar.logical.not_function",
+      "expr": "NOT(TRUE())",
+      "expected": false
+    },
+    {
+      "id": "scalar.logical.and_operator",
+      "expr": "TRUE() && FALSE()",
+      "expected": false
+    },
+    {
+      "id": "scalar.logical.or_operator",
+      "expr": "TRUE() || FALSE()",
+      "expected": true
+    },
+    {
+      "id": "scalar.logical.in_set_true",
+      "expr": "2 IN { 1, 2, 3 }",
+      "expected": true
+    },
+    {
+      "id": "scalar.logical.switch_value_form",
+      "expr": "SWITCH(2, 1, \"a\", 2, \"b\", \"c\")",
+      "expected": "b"
+    },
+    {
+      "id": "scalar.logical.switch_true_form",
+      "expr": "SWITCH(TRUE(), 1 > 2, \"a\", 3 > 2, \"b\", \"c\")",
+      "expected": "b"
+    },
+    {
+      "id": "scalar.logical.coalesce.first_non_blank",
+      "expr": "COALESCE(BLANK(), BLANK(), 3)",
+      "expected": 3
+    },
+    {
+      "id": "scalar.logical.iferror.intercepts_div_by_zero",
+      "expr": "IFERROR(1/0, -1)",
+      "expected": -1,
+      "source": "dax.guide/iserror/",
+      "notes": "IFERROR intercepts the Infinity produced by 1/0, same as ISERROR would flag it as an error."
+    },
+    {
+      "id": "scalar.info.isblank.blank_is_true",
+      "expr": "ISBLANK(BLANK())",
+      "expected": true
+    },
+    {
+      "id": "scalar.info.isblank.empty_string_is_false",
+      "expr": "ISBLANK(\"\")",
+      "expected": false,
+      "source": "dax.guide/isblank/",
+      "notes": "Empty text \"\" is a real value, distinct from BLANK()."
+    },
+    {
+      "id": "scalar.info.iserror.div_by_zero_is_true",
+      "expr": "ISERROR(1/0)",
+      "expected": true,
+      "source": "dax.guide/iserror/",
+      "notes": "ISERROR also returns TRUE for the Infinity/NaN produced by raw division by zero."
+    },
+    {
+      "id": "scalar.info.iserror.divide_function_is_false",
+      "expr": "ISERROR(DIVIDE(1, 0))",
+      "expected": false,
+      "source": "dax.guide/iserror/",
+      "notes": "DIVIDE returns BLANK (not an error/Infinity) on division by zero, so ISERROR is FALSE."
+    },
+    {
+      "id": "scalar.info.isnumber.true",
+      "expr": "ISNUMBER(5)",
+      "expected": true
+    },
+    {
+      "id": "scalar.info.istext.true",
+      "expr": "ISTEXT(\"abc\")",
+      "expected": true
+    },
+    {
+      "id": "scalar.info.isnontext.true_for_number",
+      "expr": "ISNONTEXT(5)",
+      "expected": true
+    },
+    {
+      "id": "scalar.info.islogical.true",
+      "expr": "ISLOGICAL(TRUE())",
+      "expected": true
+    },
+    {
+      "id": "scalar.info.iseven.true",
+      "expr": "ISEVEN(4)",
+      "expected": true
+    },
+    {
+      "id": "scalar.info.isodd.true",
+      "expr": "ISODD(3)",
+      "expected": true
+    },
+    {
+      "id": "scalar.blank.plus_number_coerces_zero",
+      "expr": "BLANK() + 1",
+      "expected": 1,
+      "notes": "BLANK coerces to 0 in arithmetic +."
+    },
+    {
+      "id": "scalar.blank.ampersand_coerces_empty_text",
+      "expr": "BLANK() & \"a\"",
+      "expected": "a",
+      "notes": "BLANK coerces to \"\" in text concatenation."
+    },
+    {
+      "id": "scalar.blank.eq_zero_is_true",
+      "expr": "BLANK() = 0",
+      "expected": true,
+      "notes": "BLANK compares equal to 0 numerically."
+    },
+    {
+      "id": "scalar.blank.empty_text_eq_blank_is_true",
+      "expr": "\"\" = BLANK()",
+      "expected": true,
+      "notes": "Empty text compares equal to BLANK() with the = operator (distinct from ISBLANK(\"\"), which is FALSE)."
+    },
+    {
+      "id": "scalar.conversion.currency_rounds_4_decimals",
+      "expr": "CURRENCY(1.23456)",
+      "expected": 1.2346,
+      "notes": "CURRENCY fixes precision to 4 decimal places, rounding half away from zero."
+    },
+    {
+      "id": "scalar.date.date.overflow_month",
+      "expr": "DATE(2024, 14, 1)",
+      "expected": {
+        "date": "2025-02-01"
+      },
+      "notes": "Month 14 overflows past December into the next year: Jan(13)+1 more -> Feb 2025."
+    },
+    {
+      "id": "scalar.date.date.overflow_day",
+      "expr": "DATE(2024, 1, 32)",
+      "expected": {
+        "date": "2024-02-01"
+      },
+      "notes": "January has 31 days; day 32 rolls into February 1."
+    },
+    {
+      "id": "scalar.date.year_of_literal",
+      "expr": "YEAR(DATE(2024, 3, 15))",
+      "expected": 2024
+    },
+    {
+      "id": "scalar.date.month_of_literal",
+      "expr": "MONTH(DATE(2024, 3, 15))",
+      "expected": 3
+    },
+    {
+      "id": "scalar.date.day_of_literal",
+      "expr": "DAY(DATE(2024, 3, 15))",
+      "expected": 15
+    },
+    {
+      "id": "scalar.date.eomonth.same_month",
+      "expr": "EOMONTH(DATE(2024, 1, 15), 0)",
+      "expected": {
+        "date": "2024-01-31"
+      }
+    },
+    {
+      "id": "scalar.date.eomonth.leap_february",
+      "expr": "EOMONTH(DATE(2024, 1, 15), 1)",
+      "expected": {
+        "date": "2024-02-29"
+      },
+      "notes": "2024 is a leap year, so one month after January ends on Feb 29."
+    },
+    {
+      "id": "scalar.date.edate.jan31_plus_one_month_clamped",
+      "expr": "EDATE(DATE(2024, 1, 31), 1)",
+      "expected": {
+        "date": "2024-02-29"
+      },
+      "notes": "EDATE clamps the day-of-month to the target month's length; Jan 31 + 1 month in a leap year -> Feb 29."
+    },
+    {
+      "id": "scalar.date.weekday.type1_sunday_first",
+      "expr": "WEEKDAY(DATE(2024, 3, 15), 1)",
+      "expected": 6,
+      "notes": "2024-03-15 is a Friday; type 1 numbers Sunday=1..Saturday=7, so Friday=6."
+    },
+    {
+      "id": "scalar.date.weekday.type2_monday_first",
+      "expr": "WEEKDAY(DATE(2024, 3, 15), 2)",
+      "expected": 5,
+      "notes": "Type 2 numbers Monday=1..Sunday=7, so Friday=5."
+    },
+    {
+      "id": "scalar.date.weekday.type3_monday_zero",
+      "expr": "WEEKDAY(DATE(2024, 3, 15), 3)",
+      "expected": 4,
+      "notes": "Type 3 numbers Monday=0..Sunday=6, so Friday=4."
+    },
+    {
+      "id": "scalar.date.weeknum.type1_sunday_start",
+      "expr": "WEEKNUM(DATE(2024, 3, 15), 1)",
+      "expected": 11,
+      "source": "dax.guide/weeknum/",
+      "notes": "Jan 1 2024 is a Monday; week-of-year via Excel's documented WEEKNUM(date,1) formula gives 11."
+    },
+    {
+      "id": "scalar.date.weeknum.iso21",
+      "expr": "WEEKNUM(DATE(2024, 3, 15), 21)",
+      "expected": 11,
+      "source": "dax.guide/weeknum/",
+      "notes": "Return type 21 = ISO 8601 week number (matches Python's date.isocalendar())."
+    },
+    {
+      "id": "scalar.date.quarter.basic",
+      "expr": "QUARTER(DATE(2024, 8, 1))",
+      "expected": 3
+    },
+    {
+      "id": "scalar.date.datediff.month_boundaries_crossed",
+      "expr": "DATEDIFF(DATE(2025, 10, 28), DATE(2026, 1, 1), MONTH)",
+      "expected": 3,
+      "source": "singdata.com DATEDIFF article (official-semantics worked example)",
+      "notes": "DATEDIFF counts calendar-month boundaries crossed (Nov, Dec, Jan), not whole elapsed months (which would be 2)."
+    },
+    {
+      "id": "scalar.date.datediff.year_official_example",
+      "expr": "DATEDIFF(DATE(2011,1,1), DATE(2012,12,15), YEAR)",
+      "expected": 1,
+      "source": "learn.microsoft.com/en-us/dax/datediff-function-dax"
+    },
+    {
+      "id": "scalar.date.datediff.month_official_example",
+      "expr": "DATEDIFF(DATE(2011,1,1), DATE(2012,12,15), MONTH)",
+      "expected": 23,
+      "source": "learn.microsoft.com/en-us/dax/datediff-function-dax"
+    },
+    {
+      "id": "scalar.date.datevalue.iso_text",
+      "expr": "DATEVALUE(\"2024-03-15\")",
+      "expected": {
+        "date": "2024-03-15"
+      }
+    },
+    {
+      "id": "scalar.date.arithmetic.subtract_one_crosses_month_end",
+      "expr": "DATE(2024, 3, 1) - 1",
+      "expected": {
+        "date": "2024-02-29"
+      },
+      "notes": "2024 is a leap year, so one day before March 1 is Feb 29."
+    }
+  ]
+}

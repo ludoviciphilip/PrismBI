@@ -1,0 +1,18 @@
+{
+  "model": "filter_rel",
+  "category": "filter",
+  "description": "USERELATIONSHIP (relacionamento ativo OrderDate / inativo ShipDate) e comportamento de blank row (ProdutoID=9 orfao, sem correspondencia em d_Produto). Oraculo em oracles/filter.py.",
+  "cases": [
+    { "id": "filter.rel.active_default_jan", "expr": "[Total Pedido]", "filters": [{ "table": "d_Calendario", "column": "AnoMes", "values": ["2024-01"] }], "expected": 300, "notes": "Relacionamento ativo (OrderDate) e o usado por padrao." },
+    { "id": "filter.rel.active_default_feb", "expr": "[Total Pedido]", "filters": [{ "table": "d_Calendario", "column": "AnoMes", "values": ["2024-02"] }], "expected": 200 },
+    { "id": "filter.rel.userelationship_shipdate_jan", "expr": "CALCULATE([Total Pedido], USERELATIONSHIP(f_Pedido[ShipDate], d_Calendario[Data]))", "filters": [{ "table": "d_Calendario", "column": "AnoMes", "values": ["2024-01"] }], "expected": 100, "source": "dax.guide/userelationship", "notes": "Ativa o relacionamento inativo ShipDate->Data para este CALCULATE; so PedidoID 1 foi enviado em jan/2024." },
+    { "id": "filter.rel.userelationship_shipdate_feb", "expr": "CALCULATE([Total Pedido], USERELATIONSHIP(f_Pedido[ShipDate], d_Calendario[Data]))", "filters": [{ "table": "d_Calendario", "column": "AnoMes", "values": ["2024-02"] }], "expected": 350, "notes": "PedidoID 2 (ShipDate fev/01) e 3 (ShipDate fev/10)." },
+    { "id": "filter.rel.userelationship_no_filter_noop", "expr": "CALCULATE([Total Pedido], USERELATIONSHIP(f_Pedido[ShipDate], d_Calendario[Data]))", "expected": 500, "notes": "Sem filtro de calendario, ativar o relacionamento ShipDate nao muda nada: soma total." },
+    { "id": "filter.rel.category_filter_excludes_orphan", "expr": "[Total Pedido]", "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Escritorio"] }], "expected": 250, "notes": "Categoria=Escritorio -> ProdutoID 1 -> pedidos 1 e 3 (100+150). O pedido 4 (ProdutoID 9, orfao) nao casa com nenhuma categoria real e fica de fora." },
+    { "id": "filter.rel.unfiltered_includes_orphan", "expr": "[Total Pedido]", "expected": 500, "notes": "Sem filtro, a soma inclui o valor do pedido orfao (ProdutoID 9), pois SUM(f_Pedido[Valor]) nao depende do relacionamento." },
+    { "id": "filter.rel.blankrow.countrows_table_excludes", "expr": "COUNTROWS(d_Produto)", "expected": 2, "source": "sqlbi.com/articles/blank-row-in-dax/", "notes": "Referencia direta a tabela fisica NAO inclui a blank row adicionada por causa do relacionamento invalido (ProdutoID 9 orfao); contagem fisica = 2." },
+    { "id": "filter.rel.blankrow.values_table_includes", "expr": "COUNTROWS(VALUES(d_Produto))", "expected": 3, "source": "sqlbi.com/articles/blank-row-in-dax/", "notes": "VALUES(tabela) inclui a blank row virtual criada pelo VertiPaq quando ha violacao de integridade referencial (pedido com ProdutoID=9 inexistente). Gap esperado: o motor provavelmente nao materializa blank row." },
+    { "id": "filter.rel.blankrow.distinct_column_excludes", "expr": "COUNTROWS(DISTINCT(d_Produto[Produto]))", "expected": 2, "source": "sqlbi.com/articles/blank-row-in-dax/", "notes": "DISTINCT nunca retorna a blank row, mesmo com relacionamento invalido." },
+    { "id": "filter.rel.blankrow.values_column_includes", "expr": "COUNTROWS(VALUES(d_Produto[Produto]))", "expected": 3, "source": "sqlbi.com/articles/blank-row-in-dax/", "notes": "VALUES(coluna) inclui a blank row quando ha chave de fato sem correspondencia (ProdutoID 9). Gap esperado no motor." }
+  ]
+}
