@@ -390,21 +390,25 @@ fn eval_call(
             }
             let (table_eval, row_indices, rank_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
             let table_data = table_eval.as_ref();
-            let target_val = if args.len() >= 3 {
-                evaluate_ast(&args[2], model, ctx, row_stack, vars)?
-            } else {
-                evaluate_ast(&args[1], model, ctx, row_stack, vars)?
+            // 3rd arg (value) is optional / can be an omitted placeholder (Expr::Blank);
+            // when absent, the expression itself (2nd arg) supplies the value to rank.
+            let value_expr = match args.get(2) {
+                Some(Expr::Blank) | None => &args[1],
+                Some(e) => e,
             };
+            let target_val = evaluate_ast(value_expr, model, ctx, row_stack, vars)?;
             let Some(target_num) = (if target_val.is_blank() { None } else { target_val.as_f64() }) else {
                 return Ok(DaxValue::Blank);
             };
-            let ascending = if let Some(ord_expr) = args.get(3) {
-                match ord_expr {
-                    Expr::Ident(s) => s.eq_ignore_ascii_case("ASC"),
-                    _ => evaluate_ast(ord_expr, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0) == 1.0,
-                }
-            } else {
-                false
+            let ascending = match args.get(3) {
+                Some(Expr::Ident(s)) => s.eq_ignore_ascii_case("ASC"),
+                Some(Expr::Blank) | None => false,
+                Some(ord_expr) => evaluate_ast(ord_expr, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0) == 1.0,
+            };
+            let dense = match args.get(4) {
+                Some(Expr::Ident(s)) => s.eq_ignore_ascii_case("DENSE"),
+                Some(Expr::Text(s)) => s.eq_ignore_ascii_case("DENSE"),
+                _ => false,
             };
 
             let mut scores = Vec::new();
@@ -414,17 +418,26 @@ fn eval_call(
                 let mut next_stack = row_stack.to_vec();
                 next_stack.push(row_ctx);
                 let v = evaluate_ast(&args[1], model, &eff_ctx, &next_stack, vars)?;
-                if !v.is_blank() {
-                    if let Some(n) = v.as_f64() {
-                        scores.push(n);
-                    }
-                }
+                // BLANK is treated as 0 in RANKX comparisons (per dax.guide), not skipped.
+                scores.push(if v.is_blank() { 0.0 } else { v.as_f64().unwrap_or(0.0) });
             }
-            let better = scores
-                .iter()
-                .filter(|&&s| if ascending { s < target_num - 1e-9 } else { s > target_num + 1e-9 })
-                .count();
-            Ok(DaxValue::Number((better + 1) as f64))
+
+            if dense {
+                let mut better: Vec<f64> = scores
+                    .iter()
+                    .copied()
+                    .filter(|&s| if ascending { s < target_num - 1e-9 } else { s > target_num + 1e-9 })
+                    .collect();
+                better.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                better.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+                Ok(DaxValue::Number((better.len() + 1) as f64))
+            } else {
+                let better = scores
+                    .iter()
+                    .filter(|&&s| if ascending { s < target_num - 1e-9 } else { s > target_num + 1e-9 })
+                    .count();
+                Ok(DaxValue::Number((better + 1) as f64))
+            }
         }
         "SUM" | "AVERAGE" | "AVERAGEA" | "MIN" | "MINA" | "MAX" | "MAXA"
         | "COUNT" | "COUNTA" | "COUNTBLANK" | "DISTINCTCOUNT" | "DISTINCTCOUNTNOBLANK"
