@@ -67,15 +67,11 @@ export const UpdateModal: React.FC = () => {
   if (!updateModalOpen) return null;
 
   const handleDownloadAndInstall = async () => {
-    if (!availableUpdate?.downloadUrl) return;
+    if (!availableUpdate?.canInstall) return;
     setInstalling(true);
     setError(null);
     try {
-      const res = await downloadAndInstallUpdateNative(
-        availableUpdate.downloadUrl,
-        availableUpdate.assetName || `PrismBI_${availableUpdate.latestVersion}.AppImage`,
-        availableUpdate.expectedSha256
-      );
+      const res = await downloadAndInstallUpdateNative();
       setInstallResult(res);
     } catch (err: any) {
       setError(err?.message || String(err));
@@ -140,9 +136,9 @@ export const UpdateModal: React.FC = () => {
                   <span className="font-bold text-emerald-800 dark:text-emerald-300 text-xs">
                     Nova versão disponível: v{availableUpdate.latestVersion}
                   </span>
-                  {availableUpdate.expectedSha256 && (
+                  {availableUpdate.signatureVerified && (
                     <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 dark:text-emerald-400 font-medium">
-                      <ShieldCheck className="w-3 h-3" /> SHA-256 verificado
+                      <ShieldCheck className="w-3 h-3" /> Assinatura verificada
                     </span>
                   )}
                 </div>
@@ -154,6 +150,12 @@ export const UpdateModal: React.FC = () => {
                     </span>
                   )}
                 </div>
+                {!availableUpdate.canInstall && availableUpdate.installBlockedReason && (
+                  <div className="flex gap-1.5 text-[11px] text-amber-800 dark:text-amber-300">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>{availableUpdate.installBlockedReason}</span>
+                  </div>
+                )}
                 {availableUpdate.releaseNotes && (
                   <pre className="mt-2 p-2.5 rounded-lg bg-white/80 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800 text-[11px] text-slate-700 dark:text-slate-300 whitespace-pre-wrap max-h-40 overflow-y-auto font-sans">
                     {availableUpdate.releaseNotes}
@@ -209,7 +211,7 @@ export const UpdateModal: React.FC = () => {
               <span>Verificar</span>
             </button>
 
-            {availableUpdate?.updateAvailable && !installResult && (
+            {availableUpdate?.updateAvailable && availableUpdate.canInstall && !installResult && (
               <button
                 type="button"
                 onClick={() => void handleDownloadAndInstall()}

@@ -1,0 +1,942 @@
+{
+  "model": "vendas",
+  "category": "time",
+  "cases": [
+    {
+      "id": "time.totalytd.month_2025_03",
+      "expr": "TOTALYTD([Total Vendas], d_Calendario[Data])",
+      "expected": 574,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2025-03"
+          ]
+        }
+      ],
+      "notes": "YTD through Mar 2025 = Jan1-Mar31 2025 (rows 8,9,10,11,12)"
+    },
+    {
+      "id": "time.totalytd.full_year_2024",
+      "expr": "TOTALYTD([Total Vendas], d_Calendario[Data])",
+      "expected": 561,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2024
+          ]
+        }
+      ],
+      "notes": "Whole year selected: YTD == full year total"
+    },
+    {
+      "id": "time.datesqtd.jan_2024",
+      "expr": "CALCULATE([Total Vendas], DATESQTD(d_Calendario[Data]))",
+      "expected": 105,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2024-01"
+          ]
+        }
+      ],
+      "notes": "QTD through Jan 2024 == Jan total (start of Q1)"
+    },
+    {
+      "id": "time.totalqtd.mar_2024",
+      "expr": "TOTALQTD([Total Vendas], d_Calendario[Data])",
+      "expected": 341,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2024-03"
+          ]
+        }
+      ],
+      "notes": "QTD through end of Q1 2024 == full Q1 total"
+    },
+    {
+      "id": "time.datesqtd.single_day_q1_2025",
+      "expr": "CALCULATE([Total Vendas], DATESQTD(d_Calendario[Data]))",
+      "expected": 424,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2025-03-01"
+          ]
+        }
+      ],
+      "notes": "QTD as of 2025-03-01 (single date filter): Q1 2025 start through that day"
+    },
+    {
+      "id": "time.datesmtd.mar_2024",
+      "expr": "CALCULATE([Total Vendas], DATESMTD(d_Calendario[Data]))",
+      "expected": 200,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2024-03"
+          ]
+        }
+      ],
+      "notes": "MTD through end of March 2024 == full March total"
+    },
+    {
+      "id": "time.totalmtd.single_day_jan_2025",
+      "expr": "TOTALMTD([Total Vendas], d_Calendario[Data])",
+      "expected": 20,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2025-01-10"
+          ]
+        }
+      ],
+      "notes": "MTD as of 2025-01-10 (single date filter)"
+    },
+    {
+      "id": "time.datesmtd.no_sales_month",
+      "expr": "CALCULATE([Total Vendas], DATESMTD(d_Calendario[Data]))",
+      "expected": 160,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2024-06"
+          ]
+        }
+      ],
+      "notes": "June 2024 MTD through end of month == full June total (one sale on 06-30)"
+    },
+    {
+      "id": "time.datesytd.feb_2025_no_prior_blank_check",
+      "expr": "CALCULATE([Total Vendas], DATESYTD(d_Calendario[Data]))",
+      "expected": 400,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2025-02"
+          ]
+        }
+      ],
+      "notes": "Same family as core.ti.datesytd but kept distinct id/expr form"
+    },
+    {
+      "id": "time.totalmtd.blank_no_sales",
+      "expr": "TOTALMTD([Total Vendas], d_Calendario[Data])",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2024-04"
+          ]
+        }
+      ],
+      "notes": "April 2024 has zero f_Vendas rows -> BLANK"
+    },
+    {
+      "id": "time.totalytd.fiscal_year_end_0630",
+      "expr": "TOTALYTD([Total Vendas], d_Calendario[Data], \"06-30\")",
+      "expected": 634,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2025-03"
+          ]
+        }
+      ],
+      "source": "dax.guide/DATESYTD (fiscal year_end_date argument)",
+      "notes": "FY2025 (Jul2024-Jun2025) YTD through Mar 2025: starts 2024-07-01"
+    },
+    {
+      "id": "time.totalytd.fiscal_year_end_0630_second_half",
+      "expr": "TOTALYTD([Total Vendas], d_Calendario[Data], \"06-30\")",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2024-08"
+          ]
+        }
+      ],
+      "notes": "Aug 2024 is start of FY2025 (just after 2024-06-30 fiscal year end)"
+    },
+    {
+      "id": "time.sameperiodlastyear.first_year_blank",
+      "expr": "CALCULATE([Total Vendas], SAMEPERIODLASTYEAR(d_Calendario[Data]))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2024-03"
+          ]
+        }
+      ],
+      "notes": "2024 is the first year in the calendar -> prior-year dates don't exist -> BLANK"
+    },
+    {
+      "id": "time.sameperiodlastyear.quarter_2025",
+      "expr": "CALCULATE([Total Vendas], SAMEPERIODLASTYEAR(d_Calendario[Data]))",
+      "expected": 341,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Trimestre",
+          "values": [
+            1
+          ]
+        },
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2025
+          ]
+        }
+      ],
+      "notes": "Q1 2025 -> Q1 2024"
+    },
+    {
+      "id": "time.dateadd.month_end_jan31_minus1",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], -1, MONTH))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2024-01-31"
+          ]
+        }
+      ],
+      "notes": "Jan 31 - 1 month clamps to Dec 31 (Dec has 31 days, no clamping needed here)"
+    },
+    {
+      "id": "time.dateadd.month_end_jan31_minus1_feb_clamp",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], -1, MONTH))",
+      "expected": 60,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2025-01-31"
+          ]
+        }
+      ],
+      "notes": "Jan 31 2025 - 1 month clamps to Feb 28 2025 (non-leap)"
+    },
+    {
+      "id": "time.dateadd.month_end_mar31_minus1_leap_feb29",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], -1, MONTH))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2024-03-31"
+          ]
+        }
+      ],
+      "notes": "Mar 31 2024 - 1 month clamps to Feb 29 2024 (leap year)"
+    },
+    {
+      "id": "time.dateadd.month_end_mar31_minus1_nonleap_feb28",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], -1, MONTH))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2025-03-31"
+          ]
+        }
+      ],
+      "notes": "Mar 31 2025 - 1 month clamps to Feb 28 2025 (non-leap)"
+    },
+    {
+      "id": "time.dateadd.month_plus1",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], 1, MONTH))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2024-03"
+          ]
+        }
+      ],
+      "notes": "March 2024 + 1 month = April 2024 (no sales -> BLANK)"
+    },
+    {
+      "id": "time.dateadd.quarter_minus1",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], -1, QUARTER))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2024-03"
+          ]
+        }
+      ],
+      "notes": "March 2024 - 1 quarter shifts into Dec 2023, before calendar start -> BLANK"
+    },
+    {
+      "id": "time.dateadd.quarter_minus1_q1_2025",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], -1, QUARTER))",
+      "expected": 60,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Trimestre",
+          "values": [
+            1
+          ]
+        },
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2025
+          ]
+        }
+      ],
+      "notes": "Q1 2025 - 1 quarter = Q4 2024"
+    },
+    {
+      "id": "time.dateadd.quarter_plus1_q2_2024",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], 1, QUARTER))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Trimestre",
+          "values": [
+            2
+          ]
+        },
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2024
+          ]
+        }
+      ],
+      "notes": "Q2 2024 + 1 quarter = Q3 2024 (no sales -> BLANK)"
+    },
+    {
+      "id": "time.dateadd.year_minus1_blank",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], -1, YEAR))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2024
+          ]
+        }
+      ],
+      "notes": "2024 - 1 year = 2023, before calendar start -> BLANK"
+    },
+    {
+      "id": "time.dateadd.year_plus1",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], 1, YEAR))",
+      "expected": 574,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2024
+          ]
+        }
+      ],
+      "notes": "2024 + 1 year = 2025"
+    },
+    {
+      "id": "time.dateadd.day_minus1_hits_sale",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], -1, DAY))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2025-01-31"
+          ]
+        }
+      ],
+      "notes": "2025-01-31 - 1 day = 2025-01-30 (no sale -> BLANK)"
+    },
+    {
+      "id": "time.dateadd.day_plus4_hits_sale",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], 4, DAY))",
+      "expected": 150,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2024-03-01"
+          ]
+        }
+      ],
+      "notes": "2024-03-01 + 4 days = 2024-03-05, hits row4 (150)"
+    },
+    {
+      "id": "time.parallelperiod.month_minus1",
+      "expr": "CALCULATE([Total Vendas], PARALLELPERIOD(d_Calendario[Data], -1, MONTH))",
+      "expected": 36,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2024-03"
+          ]
+        }
+      ],
+      "notes": "March 2024 parallel period -1 month = Feb 2024"
+    },
+    {
+      "id": "time.parallelperiod.month_plus1",
+      "expr": "CALCULATE([Total Vendas], PARALLELPERIOD(d_Calendario[Data], 1, MONTH))",
+      "expected": 200,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2024-02"
+          ]
+        }
+      ],
+      "notes": "Feb 2024 parallel period +1 month = Mar 2024"
+    },
+    {
+      "id": "time.parallelperiod.quarter_minus1",
+      "expr": "CALCULATE([Total Vendas], PARALLELPERIOD(d_Calendario[Data], -1, QUARTER))",
+      "expected": 60,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Trimestre",
+          "values": [
+            1
+          ]
+        },
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2025
+          ]
+        }
+      ],
+      "notes": "Q1 2025 parallel period -1 quarter = Q4 2024"
+    },
+    {
+      "id": "time.previousday.hits_sale",
+      "expr": "CALCULATE([Total Vendas], PREVIOUSDAY(d_Calendario[Data]))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2025-01-31"
+          ]
+        }
+      ],
+      "notes": "PREVIOUSDAY of 2025-01-31 = 2025-01-30 (no sale -> BLANK)"
+    },
+    {
+      "id": "time.previousday.day_before_sale",
+      "expr": "CALCULATE([Total Vendas], PREVIOUSDAY(d_Calendario[Data]))",
+      "expected": 20,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2025-01-11"
+          ]
+        }
+      ],
+      "notes": "PREVIOUSDAY of 2025-01-11 = 2025-01-10, hits row8 (20)"
+    },
+    {
+      "id": "time.nextday.hits_sale",
+      "expr": "CALCULATE([Total Vendas], NEXTDAY(d_Calendario[Data]))",
+      "expected": 60,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2024-12-30"
+          ]
+        }
+      ],
+      "notes": "NEXTDAY of 2024-12-30 = 2024-12-31, hits row7 (60)"
+    },
+    {
+      "id": "time.previousmonth.first_date_based",
+      "expr": "CALCULATE([Total Vendas], PREVIOUSMONTH(d_Calendario[Data]))",
+      "expected": 60,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2025-01"
+          ]
+        }
+      ],
+      "notes": "Distinct id/expr variant of the core.ti.previousmonth seed case"
+    },
+    {
+      "id": "time.nextmonth.uses_last_date_of_multi_day_selection",
+      "expr": "CALCULATE([Total Vendas], NEXTMONTH(d_Calendario[Data]))",
+      "expected": 36,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2024-01-15",
+            "2024-01-20"
+          ]
+        }
+      ],
+      "source": "learn.microsoft.com/en-us/dax/time-intelligence-functions-dax (NEXTMONTH uses last date)",
+      "notes": "Selection {Jan15,Jan20} 2024 -> last date Jan20 -> next month = Feb 2024"
+    },
+    {
+      "id": "time.previousquarter.q1_2025",
+      "expr": "CALCULATE([Total Vendas], PREVIOUSQUARTER(d_Calendario[Data]))",
+      "expected": 60,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Trimestre",
+          "values": [
+            1
+          ]
+        },
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2025
+          ]
+        }
+      ],
+      "notes": "PREVIOUSQUARTER of Q1 2025 = Q4 2024 (no sales -> BLANK)"
+    },
+    {
+      "id": "time.previousyear.2024_before_calendar_blank",
+      "expr": "CALCULATE([Total Vendas], PREVIOUSYEAR(d_Calendario[Data]))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2024
+          ]
+        }
+      ],
+      "notes": "PREVIOUSYEAR of 2024 = 2023, outside calendar -> BLANK"
+    },
+    {
+      "id": "time.nextyear.2024_to_2025",
+      "expr": "CALCULATE([Total Vendas], NEXTYEAR(d_Calendario[Data]))",
+      "expected": 574,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2024
+          ]
+        }
+      ],
+      "notes": "NEXTYEAR of 2024 = 2025"
+    },
+    {
+      "id": "time.datesbetween.literal_range",
+      "expr": "CALCULATE([Total Vendas], DATESBETWEEN(d_Calendario[Data], DATE(2024,1,1), DATE(2024,3,31)))",
+      "expected": 341,
+      "notes": "Absolute literal range Jan1-Mar31 2024, ignores any current context"
+    },
+    {
+      "id": "time.datesbetween.literal_range_no_sales",
+      "expr": "CALCULATE([Total Vendas], DATESBETWEEN(d_Calendario[Data], DATE(2024,4,1), DATE(2024,5,31)))",
+      "expected": null,
+      "notes": "April-May 2024 has no f_Vendas rows -> BLANK"
+    },
+    {
+      "id": "time.datesbetween.single_day",
+      "expr": "CALCULATE([Total Vendas], DATESBETWEEN(d_Calendario[Data], DATE(2024,3,5), DATE(2024,3,5)))",
+      "expected": 150,
+      "notes": "Start==end collapses to a single day"
+    },
+    {
+      "id": "time.datesinperiod.rolling_12m_ending_2025_06_30",
+      "expr": "CALCULATE([Total Vendas], DATESINPERIOD(d_Calendario[Data], DATE(2025,6,30), -12, MONTH))",
+      "expected": 634,
+      "source": "learn.microsoft.com/en-us/dax/datesinperiod-function-dax (worked example)",
+      "notes": "Rolling 12 months ending 2025-06-30 = 2024-07-01..2025-06-30"
+    },
+    {
+      "id": "time.datesinperiod.forward_3_months",
+      "expr": "CALCULATE([Total Vendas], DATESINPERIOD(d_Calendario[Data], DATE(2024,1,1), 3, MONTH))",
+      "expected": 341,
+      "notes": "Forward window [2024-01-01, 2024-04-01) i.e. Jan-Mar 2024"
+    },
+    {
+      "id": "time.datesinperiod.backward_7_days",
+      "expr": "CALCULATE([Total Vendas], DATESINPERIOD(d_Calendario[Data], DATE(2025,2,14), -7, DAY))",
+      "expected": 80,
+      "notes": "Backward 7-day window ending 2025-02-14 inclusive, hits row10"
+    },
+    {
+      "id": "time.datesinperiod.forward_1_year",
+      "expr": "CALCULATE([Total Vendas], DATESINPERIOD(d_Calendario[Data], DATE(2024,1,1), 1, YEAR))",
+      "expected": 561,
+      "notes": "Forward 1-year window [2024-01-01,2025-01-01) == calendar year 2024"
+    },
+    {
+      "id": "time.startofmonth.march_2024",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), STARTOFMONTH(d_Calendario[Data])), d_Calendario[AnoMes] = \"2024-03\")",
+      "expected": {
+        "date": "2024-03-01"
+      },
+      "notes": "Scalar extracted via nested CALCULATE(MAX(...), STARTOFMONTH(...))"
+    },
+    {
+      "id": "time.endofmonth.march_2024",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), ENDOFMONTH(d_Calendario[Data])), d_Calendario[AnoMes] = \"2024-03\")",
+      "expected": {
+        "date": "2024-03-31"
+      }
+    },
+    {
+      "id": "time.endofmonth.leap_february_2024",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), ENDOFMONTH(d_Calendario[Data])), d_Calendario[AnoMes] = \"2024-02\")",
+      "expected": {
+        "date": "2024-02-29"
+      },
+      "notes": "Leap year: end of Feb 2024 is the 29th"
+    },
+    {
+      "id": "time.endofmonth.nonleap_february_2025",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), ENDOFMONTH(d_Calendario[Data])), d_Calendario[AnoMes] = \"2025-02\")",
+      "expected": {
+        "date": "2025-02-28"
+      },
+      "notes": "Non-leap year: end of Feb 2025 is the 28th"
+    },
+    {
+      "id": "time.startofquarter.q1_2025",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), STARTOFQUARTER(d_Calendario[Data])), d_Calendario[Trimestre] = 1, d_Calendario[Ano] = 2025)",
+      "expected": {
+        "date": "2025-01-01"
+      },
+      "notes": "Trimestre/Ano passed as two separate CALCULATE filter args (not &&)"
+    },
+    {
+      "id": "time.endofquarter.q1_2025",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), ENDOFQUARTER(d_Calendario[Data])), d_Calendario[Trimestre] = 1, d_Calendario[Ano] = 2025)",
+      "expected": {
+        "date": "2025-03-31"
+      }
+    },
+    {
+      "id": "time.startofyear.2024",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), STARTOFYEAR(d_Calendario[Data])), d_Calendario[Ano] = 2024)",
+      "expected": {
+        "date": "2024-01-01"
+      }
+    },
+    {
+      "id": "time.endofyear.2025",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), ENDOFYEAR(d_Calendario[Data])), d_Calendario[Ano] = 2025)",
+      "expected": {
+        "date": "2025-12-31"
+      }
+    },
+    {
+      "id": "time.firstdate.march_2024",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), FIRSTDATE(d_Calendario[Data])), d_Calendario[AnoMes] = \"2024-03\")",
+      "expected": {
+        "date": "2024-03-01"
+      }
+    },
+    {
+      "id": "time.lastdate.march_2024",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), LASTDATE(d_Calendario[Data])), d_Calendario[AnoMes] = \"2024-03\")",
+      "expected": {
+        "date": "2024-03-31"
+      }
+    },
+    {
+      "id": "time.openingbalancemonth.jan_2025",
+      "expr": "OPENINGBALANCEMONTH([Total Vendas], d_Calendario[Data])",
+      "expected": 60,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2025-01"
+          ]
+        }
+      ],
+      "source": "dax.guide/openingbalancemonth (evaluated at last date of previous month)",
+      "notes": "Opening balance of Jan 2025 = value at 2024-12-31, hits row7 (60)"
+    },
+    {
+      "id": "time.closingbalancemonth.jan_2025",
+      "expr": "CLOSINGBALANCEMONTH([Total Vendas], d_Calendario[Data])",
+      "expected": 300,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2025-01"
+          ]
+        }
+      ],
+      "notes": "Closing balance of Jan 2025 = value at 2025-01-31, hits row9 (300)"
+    },
+    {
+      "id": "time.openingbalancemonth.march_2024_blank",
+      "expr": "OPENINGBALANCEMONTH([Total Vendas], d_Calendario[Data])",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "AnoMes",
+          "values": [
+            "2024-03"
+          ]
+        }
+      ],
+      "notes": "Opening balance of March 2024 = value at 2024-02-29 (leap), no sale that day -> BLANK"
+    },
+    {
+      "id": "time.openingbalancequarter.q1_2025",
+      "expr": "OPENINGBALANCEQUARTER([Total Vendas], d_Calendario[Data])",
+      "expected": 60,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Trimestre",
+          "values": [
+            1
+          ]
+        },
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2025
+          ]
+        }
+      ],
+      "notes": "Opening balance of Q1 2025 = value at 2024-12-31, hits row7 (60)"
+    },
+    {
+      "id": "time.closingbalancequarter.q1_2025",
+      "expr": "CLOSINGBALANCEQUARTER([Total Vendas], d_Calendario[Data])",
+      "expected": 150,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Trimestre",
+          "values": [
+            1
+          ]
+        },
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2025
+          ]
+        }
+      ],
+      "notes": "Closing balance of Q1 2025 = value at 2025-03-31, hits row12 (150)"
+    },
+    {
+      "id": "time.openingbalanceyear.2025",
+      "expr": "OPENINGBALANCEYEAR([Total Vendas], d_Calendario[Data])",
+      "expected": 60,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2025
+          ]
+        }
+      ],
+      "notes": "Opening balance of 2025 = value at 2024-12-31, hits row7 (60)"
+    },
+    {
+      "id": "time.closingbalanceyear.2024",
+      "expr": "CLOSINGBALANCEYEAR([Total Vendas], d_Calendario[Data])",
+      "expected": 60,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2024
+          ]
+        }
+      ],
+      "notes": "Closing balance of 2024 = value at 2024-12-31, hits row7 (60)"
+    },
+    {
+      "id": "time.firstnonblank.year_2024",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), FIRSTNONBLANK(d_Calendario[Data], [Total Vendas])), d_Calendario[Ano] = 2024)",
+      "expected": {
+        "date": "2024-01-15"
+      },
+      "notes": "First date in 2024 with non-blank Total Vendas = 2024-01-15 (row1)"
+    },
+    {
+      "id": "time.lastnonblank.year_2024",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), LASTNONBLANK(d_Calendario[Data], [Total Vendas])), d_Calendario[Ano] = 2024)",
+      "expected": {
+        "date": "2024-12-31"
+      },
+      "notes": "Last date in 2024 with non-blank Total Vendas = 2024-12-31 (row7)"
+    },
+    {
+      "id": "time.firstnonblank.quarter_single_sale",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), FIRSTNONBLANK(d_Calendario[Data], [Total Vendas])), d_Calendario[Trimestre] = 2, d_Calendario[Ano] = 2024)",
+      "expected": {
+        "date": "2024-06-30"
+      },
+      "notes": "Q2 2024 has a single sale on 2024-06-30 (row6); first == last"
+    },
+    {
+      "id": "time.dateadd.mesnum_filter_quarter_minus1",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], -1, QUARTER))",
+      "expected": 60,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "MesNum",
+          "values": [
+            3
+          ]
+        },
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2025
+          ]
+        }
+      ],
+      "notes": "Filter via MesNum=3 & Ano=2025 (March 2025), -1 quarter = Dec 2024"
+    },
+    {
+      "id": "time.samperiodlastyear.trimestre_filter_q4_2024",
+      "expr": "CALCULATE([Total Vendas], SAMEPERIODLASTYEAR(d_Calendario[Data]))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Trimestre",
+          "values": [
+            4
+          ]
+        },
+        {
+          "table": "d_Calendario",
+          "column": "Ano",
+          "values": [
+            2024
+          ]
+        }
+      ],
+      "notes": "Q4 2024 (filtered via Trimestre=4) -> Q4 2023, before calendar -> BLANK"
+    },
+    {
+      "id": "time.dateadd.year_minus1_from_leap_day",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], -1, YEAR))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2024-02-29"
+          ]
+        }
+      ],
+      "notes": "2024-02-29 - 1 year clamps to 2023-02-28, outside calendar -> BLANK"
+    },
+    {
+      "id": "time.dateadd.year_plus1_from_leap_day_clamps",
+      "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], 1, YEAR))",
+      "expected": null,
+      "filters": [
+        {
+          "table": "d_Calendario",
+          "column": "Data",
+          "values": [
+            "2024-02-29"
+          ]
+        }
+      ],
+      "notes": "2024-02-29 + 1 year clamps to 2025-02-28 (no sale -> BLANK)"
+    },
+    {
+      "id": "time.endofmonth.from_leap_day",
+      "expr": "CALCULATE(CALCULATE(MAX(d_Calendario[Data]), ENDOFMONTH(d_Calendario[Data])), d_Calendario[Data] = DATE(2024,2,29))",
+      "expected": {
+        "date": "2024-02-29"
+      },
+      "notes": "ENDOFMONTH of the leap day itself is still 2024-02-29"
+    }
+  ]
+}

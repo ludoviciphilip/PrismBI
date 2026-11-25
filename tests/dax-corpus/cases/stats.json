@@ -1,0 +1,570 @@
+{
+  "model": "stats",
+  "category": "stats",
+  "description": "MEDIAN/PERCENTILE/STDEV/VAR/GEOMEAN/PRODUCT families (column and X-iterator forms), COUNTA/COUNTAX/AVERAGEA/MINA/MAXA/DISTINCTCOUNTNOBLANK, RANKX (ASC/DESC, SKIP vs DENSE ties, BLANK target), TOPN-based aggregates, CONCATENATEX ordering, and the financial functions (PMT/PV/FV/NPER/RATE/IPMT/PPMT/NPV/XNPV/XIRR/SLN/SYD/DB/DDB/EFFECT/NOMINAL). All expected values are independently computed in tests/dax-corpus/oracles/stats.py (stdlib statistics/math + hand-written, documented Excel/DAX financial formulas) against tests/dax-corpus/models/stats.json — never copied from either engine's output.",
+  "cases": [
+    {
+      "id": "stats.median.column",
+      "expr": "MEDIAN(t_Valores[Valor])",
+      "expected": 20,
+      "source": "oracles/stats.py",
+      "notes": "n=8 não-blank, 2 blanks ignorados; mediana = média de 20 e 20."
+    },
+    {
+      "id": "stats.medianx.table_expr",
+      "expr": "MEDIANX(t_Valores, t_Valores[Valor] * 2)",
+      "expected": 40,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.stdevs.column",
+      "expr": "STDEV.S(t_Valores[Valor])",
+      "expected": 9.636241116594315,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.stdevp.column",
+      "expr": "STDEV.P(t_Valores[Valor])",
+      "expected": 9.013878188659973,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.vars.column",
+      "expr": "VAR.S(t_Valores[Valor])",
+      "expected": 92.85714285714286,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.varp.column",
+      "expr": "VAR.P(t_Valores[Valor])",
+      "expected": 81.25,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.stdevxs.table_expr",
+      "expr": "STDEVX.S(t_Valores, t_Valores[Valor] * 2)",
+      "expected": 19.27248223318863,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.stdevxp.table_expr",
+      "expr": "STDEVX.P(t_Valores, t_Valores[Valor] * 2)",
+      "expected": 18.027756377319946,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.varxs.table_expr",
+      "expr": "VARX.S(t_Valores, t_Valores[Valor] * 2)",
+      "expected": 371.42857142857144,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.varxp.table_expr",
+      "expr": "VARX.P(t_Valores, t_Valores[Valor] * 2)",
+      "expected": 325,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.geomean.column",
+      "expr": "GEOMEAN(t_Valores[Valor])",
+      "expected": 17.320508075688775,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.geomeanx.table_expr",
+      "expr": "GEOMEANX(t_Valores, t_Valores[Valor] * 2)",
+      "expected": 34.64101615137755,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.product.column",
+      "expr": "PRODUCT(t_Valores[Valor])",
+      "expected": 8100000000,
+      "tolerance": 1e-06,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.productx.table_expr",
+      "expr": "PRODUCTX(t_Valores, t_Valores[Valor] * 2)",
+      "expected": 2073600000000,
+      "tolerance": 1e-06,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.percentile_inc.p0",
+      "expr": "PERCENTILE.INC(t_Valores[Valor], 0)",
+      "expected": 5,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.percentile_inc.p25",
+      "expr": "PERCENTILE.INC(t_Valores[Valor], 0.25)",
+      "expected": 13.75,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.percentile_inc.p50",
+      "expr": "PERCENTILE.INC(t_Valores[Valor], 0.5)",
+      "expected": 20,
+      "source": "oracles/stats.py",
+      "notes": "Igual à mediana, caminho de código diferente."
+    },
+    {
+      "id": "stats.percentile_inc.p75",
+      "expr": "PERCENTILE.INC(t_Valores[Valor], 0.75)",
+      "expected": 30,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.percentile_inc.p100",
+      "expr": "PERCENTILE.INC(t_Valores[Valor], 1)",
+      "expected": 30,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.percentile_exc.p25",
+      "expr": "PERCENTILE.EXC(t_Valores[Valor], 0.25)",
+      "expected": 11.25,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.percentile_exc.p50",
+      "expr": "PERCENTILE.EXC(t_Valores[Valor], 0.5)",
+      "expected": 20,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.percentile_exc.p75",
+      "expr": "PERCENTILE.EXC(t_Valores[Valor], 0.75)",
+      "expected": 30,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.percentilex_inc.table_expr",
+      "expr": "PERCENTILEX.INC(t_Valores, t_Valores[Valor], 0.3)",
+      "expected": 15.5,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.percentilex_exc.table_expr",
+      "expr": "PERCENTILEX.EXC(t_Valores, t_Valores[Valor], 0.3)",
+      "expected": 13.499999999999998,
+      "tolerance": 1e-09,
+      "source": "oracles/stats.py"
+    },
+    {
+      "id": "stats.counta.text_with_blanks",
+      "expr": "COUNTA(t_Valores[Texto])",
+      "expected": 7,
+      "notes": "3 BLANKs entre 10 linhas; COUNTA ignora BLANK, conta texto."
+    },
+    {
+      "id": "stats.countblank.text",
+      "expr": "COUNTBLANK(t_Valores[Texto])",
+      "expected": 3
+    },
+    {
+      "id": "stats.distinctcount.text_includes_blank",
+      "expr": "DISTINCTCOUNT(t_Valores[Texto])",
+      "expected": 4,
+      "notes": "x, y, z e BLANK contam como 4 valores distintos."
+    },
+    {
+      "id": "stats.distinctcountnoblank.text",
+      "expr": "DISTINCTCOUNTNOBLANK(t_Valores[Texto])",
+      "expected": 3
+    },
+    {
+      "id": "stats.counta.boolean_with_blanks",
+      "expr": "COUNTA(t_Valores[Ok])",
+      "expected": 7
+    },
+    {
+      "id": "stats.averagea.boolean",
+      "expr": "AVERAGEA(t_Valores[Ok])",
+      "expected": 0.5714285714285714,
+      "tolerance": 1e-09,
+      "notes": "TRUE=1, FALSE=0, BLANK ignorado: 4 TRUE / 7 não-blank."
+    },
+    {
+      "id": "stats.mina.boolean",
+      "expr": "MINA(t_Valores[Ok])",
+      "expected": 0
+    },
+    {
+      "id": "stats.maxa.boolean",
+      "expr": "MAXA(t_Valores[Ok])",
+      "expected": 1
+    },
+    {
+      "id": "stats.countx.numeric_ignores_blank",
+      "expr": "COUNTX(t_Valores, t_Valores[Valor])",
+      "expected": 8
+    },
+    {
+      "id": "stats.countax.text_expression",
+      "expr": "COUNTAX(t_Valores, t_Valores[Texto])",
+      "expected": 7,
+      "notes": "COUNTAX conta resultados não-blank da expressão, inclusive texto."
+    },
+    {
+      "id": "stats.minx.ignores_blank",
+      "expr": "MINX(t_Valores, t_Valores[Valor])",
+      "expected": 5
+    },
+    {
+      "id": "stats.maxx.ignores_blank",
+      "expr": "MAXX(t_Valores, t_Valores[Valor])",
+      "expected": 30
+    },
+    {
+      "id": "stats.averagex.table_expr",
+      "expr": "AVERAGEX(t_Valores, t_Valores[Valor])",
+      "expected": 20,
+      "notes": "160 / 8 não-blank = 20."
+    },
+    {
+      "id": "stats.rankx.desc.min_value",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])))",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            4
+          ]
+        }
+      ],
+      "expected": 8,
+      "notes": "Valor=5 é o menor; DESC -> última posição. SUM() é a forma exigida pelo motor TS para usar uma coluna fora de contexto de linha (coluna nua dá erro 'sem contexto de linha'). Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
+    },
+    {
+      "id": "stats.rankx.sum_without_calculate_ties_all",
+      "expr": "RANKX(ALL(t_Valores), SUM(t_Valores[Valor]))",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            4
+          ]
+        }
+      ],
+      "expected": 1,
+      "notes": "Pegadinha clássica (SQLBI, 'RANKX and context transition'): SUM não é medida, então não há transição de contexto; cada linha de ALL(t_Valores) avalia SUM no filtro externo (ID=4 => 5), todos empatam e o resultado é 1."
+    },
+    {
+      "id": "stats.sumx.all_with_plain_sum_uses_outer_filter",
+      "expr": "SUMX(ALL(t_Valores), SUM(t_Valores[Valor]))",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            4
+          ]
+        }
+      ],
+      "expected": 50,
+      "notes": "ALL(t_Valores) só define as linhas iteradas; o filtro externo (ID=4) continua valendo para a expressão. SUM sem CALCULATE não transiciona: 10 linhas x 5 = 50."
+    },
+    {
+      "id": "stats.rankx.desc.mid_value",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])))",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            1
+          ]
+        }
+      ],
+      "expected": 7,
+      "notes": "Valor=10. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
+    },
+    {
+      "id": "stats.rankx.desc.value_15",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])))",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            6
+          ]
+        }
+      ],
+      "expected": 6,
+      "notes": "Valor=15. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
+    },
+    {
+      "id": "stats.rankx.desc.tie_20",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])))",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            2
+          ]
+        }
+      ],
+      "expected": 4,
+      "notes": "Empate 20/20 (IDs 2 e 3): ambos rank 4 (SKIP), 3 valores (30,30,30) acima. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
+    },
+    {
+      "id": "stats.rankx.desc.tie_30",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])))",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            7
+          ]
+        }
+      ],
+      "expected": 1,
+      "notes": "Empate triplo 30/30/30 (IDs 7,8,9): todos rank 1. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
+    },
+    {
+      "id": "stats.rankx.asc.min_value",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])), , ASC)",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            4
+          ]
+        }
+      ],
+      "expected": 3,
+      "source": "learn.microsoft.com/dax/rankx-function-dax",
+      "notes": "BLANK é tratado como 0 na comparação (doc oficial): as 2 linhas com Valor=BLANK (IDs 5,10) contam como 0 < 5, então o valor 5 fica em rank 3, não rank 1. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
+    },
+    {
+      "id": "stats.rankx.asc.tie_30",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])), , ASC)",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            9
+          ]
+        }
+      ],
+      "expected": 8,
+      "source": "learn.microsoft.com/dax/rankx-function-dax",
+      "notes": "ASC, SKIP, BLANK=0: 7 valores menores que 30 (5,10,15,20,20 e os 2 BLANKs=0) -> rank 8. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
+    },
+    {
+      "id": "stats.rankx.blank_target_ranks_as_zero",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])))",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            5
+          ]
+        }
+      ],
+      "expected": 9,
+      "notes": "Valor BLANK é comparado como 0 (dax.guide/RANKX): 8 valores > 0 (10,20,20,5,15,30,30,30) => posição 9; os dois BLANKs empatam. RANKX não devolve BLANK sozinho; medidas reais usam IF(ISBLANK(...), BLANK(), RANKX(...))."
+    },
+    {
+      "id": "stats.rankx.dense.desc.tie_20",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])), , DESC, DENSE)",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            2
+          ]
+        }
+      ],
+      "expected": 2,
+      "source": "learn.microsoft.com/dax/rankx-function-dax",
+      "notes": "DENSE: apenas 1 valor distinto (30) acima de 20, então rank 2. Esperado conferido via dax.guide/Microsoft Learn; mecanismo de empate DENSE provavelmente não suportado no Rust. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
+    },
+    {
+      "id": "stats.rankx.dense.desc.tie_30",
+      "expr": "RANKX(ALL(t_Valores), CALCULATE(SUM(t_Valores[Valor])), , DESC, DENSE)",
+      "filters": [
+        {
+          "table": "t_Valores",
+          "column": "ID",
+          "values": [
+            7
+          ]
+        }
+      ],
+      "expected": 1,
+      "notes": "Grupo mais alto, DENSE ou SKIP dão rank 1 igualmente. Corrigido: sem CALCULATE não há transição de contexto (SUM ignora o contexto de linha), ver caso stats.rankx.sum_without_calculate_ties_all."
+    },
+    {
+      "id": "stats.topn.sumx_desc_tie_boundary",
+      "expr": "SUMX(TOPN(3, t_Valores, t_Valores[Valor], DESC), t_Valores[Valor])",
+      "expected": 90,
+      "notes": "N=3 coincide exatamente com o grupo empatado de três 30s — sem ambiguidade de corte no empate."
+    },
+    {
+      "id": "stats.topn.sumx_asc_filtered_blanks",
+      "expr": "SUMX(TOPN(5, FILTER(t_Valores, NOT(ISBLANK(t_Valores[Valor]))), t_Valores[Valor], ASC), t_Valores[Valor])",
+      "expected": 70,
+      "notes": "Remove BLANKs antes do TOPN para evitar ambiguidade de ordenação de BLANK; soma dos 5 menores (5+10+15+20+20)."
+    },
+    {
+      "id": "stats.concatenatex.text_asc",
+      "expr": "CONCATENATEX(FILTER(VALUES(t_Valores[Texto]), NOT(ISBLANK(t_Valores[Texto]))), t_Valores[Texto], \", \", t_Valores[Texto], ASC)",
+      "expected": "x, y, z"
+    },
+    {
+      "id": "stats.concatenatex.text_desc",
+      "expr": "CONCATENATEX(FILTER(VALUES(t_Valores[Texto]), NOT(ISBLANK(t_Valores[Texto]))), t_Valores[Texto], \", \", t_Valores[Texto], DESC)",
+      "expected": "z, y, x"
+    },
+    {
+      "id": "stats.pmt.loan_10y_8pct",
+      "expr": "PMT(0.08/12, 120, 10000)",
+      "expected": -121.32759435535777,
+      "tolerance": 1e-06,
+      "source": "learn.microsoft.com/dax/pmt-function-dax (fórmula padrão de anuidade)"
+    },
+    {
+      "id": "stats.pv.annuity_200_per_month",
+      "expr": "PV(0.06/12, 60, -200)",
+      "expected": 10345.112150226196,
+      "tolerance": 1e-06
+    },
+    {
+      "id": "stats.fv.savings_200_per_month",
+      "expr": "FV(0.06/12, 120, -200)",
+      "expected": 32775.8693612916,
+      "tolerance": 1e-06
+    },
+    {
+      "id": "stats.nper.payoff_2000_at_200",
+      "expr": "NPER(0.1/12, -200, 2000)",
+      "expected": 10.48481075313113,
+      "tolerance": 1e-06
+    },
+    {
+      "id": "stats.ipmt.period1_of_36",
+      "expr": "IPMT(0.1/12, 1, 36, 8000)",
+      "expected": -66.66666666666667,
+      "tolerance": 1e-06
+    },
+    {
+      "id": "stats.ppmt.period1_of_36",
+      "expr": "PPMT(0.1/12, 1, 36, 8000)",
+      "expected": -191.47083088403394,
+      "tolerance": 1e-06
+    },
+    {
+      "id": "stats.ipmt.period12_of_36",
+      "expr": "IPMT(0.1/12, 12, 36, 8000)",
+      "expected": -48.365270531095696,
+      "tolerance": 1e-06
+    },
+    {
+      "id": "stats.ppmt.period12_of_36",
+      "expr": "PPMT(0.1/12, 12, 36, 8000)",
+      "expected": -209.77222701960494,
+      "tolerance": 1e-06
+    },
+    {
+      "id": "stats.sln.basic",
+      "expr": "SLN(10000, 1000, 5)",
+      "expected": 1800,
+      "tolerance": 1e-09
+    },
+    {
+      "id": "stats.syd.first_period",
+      "expr": "SYD(10000, 1000, 5, 1)",
+      "expected": 3000,
+      "tolerance": 1e-09
+    },
+    {
+      "id": "stats.syd.last_period",
+      "expr": "SYD(10000, 1000, 5, 5)",
+      "expected": 600,
+      "tolerance": 1e-09
+    },
+    {
+      "id": "stats.db.period1",
+      "expr": "DB(10000, 1000, 5, 1)",
+      "expected": 3690,
+      "tolerance": 1e-06
+    },
+    {
+      "id": "stats.db.period2",
+      "expr": "DB(10000, 1000, 5, 2)",
+      "expected": 2328.39,
+      "tolerance": 1e-06
+    },
+    {
+      "id": "stats.ddb.period1",
+      "expr": "DDB(10000, 1000, 5, 1)",
+      "expected": 4000,
+      "tolerance": 1e-09
+    },
+    {
+      "id": "stats.ddb.period2",
+      "expr": "DDB(10000, 1000, 5, 2)",
+      "expected": 2400,
+      "tolerance": 1e-09
+    },
+    {
+      "id": "stats.effect.quarterly_8pct",
+      "expr": "EFFECT(0.08, 4)",
+      "expected": 0.08243215999999998,
+      "tolerance": 1e-09
+    },
+    {
+      "id": "stats.nominal.quarterly_effective",
+      "expr": "NOMINAL(0.0824, 4)",
+      "expected": 0.07996969457606884,
+      "tolerance": 1e-09
+    },
+    {
+      "id": "stats.rate.loan_36_periods",
+      "expr": "RATE(36, -300, 8000)",
+      "expected": 0.017215488459916755,
+      "tolerance": 1e-06,
+      "notes": "RATE é resolvida por Newton-Raphson; tolerância relativa por ser iterativa."
+    },
+    {
+      "id": "stats.xnpv.cashflow_10pct",
+      "expr": "XNPV(t_Fluxo, t_Fluxo[Valor], t_Fluxo[Data], 0.10)",
+      "expected": 2316.808365460487,
+      "tolerance": 1e-06,
+      "source": "learn.microsoft.com/dax/xnpv-function-dax (fórmula padrão, dias/365)",
+      "notes": "Suportado no motor TS; não encontrado na lista de funções do Rust (gap esperado)."
+    },
+    {
+      "id": "stats.xirr.cashflow",
+      "expr": "XIRR(t_Fluxo, t_Fluxo[Valor], t_Fluxo[Data])",
+      "expected": 0.6122389541287326,
+      "tolerance": 1e-06,
+      "notes": "Resolvida por Newton-Raphson contra XNPV=0; mesmo gap esperado no Rust."
+    }
+  ]
+}

@@ -215,7 +215,7 @@ export interface ExportPbipPayload {
 }
 
 export interface DaxModelSyncPayload {
-  tables: { name: string; columns: string[]; rows: Record<string, any>[] }[];
+  tables: { name: string; columns: string[]; rows: Record<string, any>[]; columnTypes?: (string | null)[] }[];
   relationships: {
     fromTable: string;
     fromColumn: string;
@@ -408,6 +408,12 @@ export interface UpdateCheckResult {
   downloadUrl: string;
   assetSize: number;
   expectedSha256?: string | null;
+  /** SHA256SUMS.txt com assinatura Ed25519 válida da chave oficial. */
+  signatureVerified?: boolean;
+  /** O backend guardou um pacote verificado pronto para instalar. */
+  canInstall?: boolean;
+  installKind?: 'appImage' | 'deb' | 'rpm' | 'managed' | 'unknown';
+  installBlockedReason?: string | null;
   isAppimage: boolean;
   appimagePath?: string | null;
 }
@@ -423,14 +429,161 @@ export async function checkForUpdatesNative(currentVersion: string): Promise<Upd
   return await invoke<UpdateCheckResult>('check_for_updates', { currentVersion });
 }
 
-export async function downloadAndInstallUpdateNative(
-  downloadUrl: string,
-  assetName: string,
-  expectedSha256?: string | null
-): Promise<UpdateInstallResult> {
-  return await invoke<UpdateInstallResult>('download_and_install_update', {
-    downloadUrl,
-    assetName,
-    expectedSha256: expectedSha256 ?? null,
+/**
+ * Instala o pacote que o backend verificou no último `checkForUpdatesNative`.
+ * Por segurança o frontend não escolhe URL nem hash.
+ */
+export async function downloadAndInstallUpdateNative(): Promise<UpdateInstallResult> {
+  return await invoke<UpdateInstallResult>('download_and_install_update');
+}
+
+// ---------------------------------------------------------------------
+// Conectores nativos de banco de dados (v0.8.0)
+// ---------------------------------------------------------------------
+
+export type DbConnectorConfig =
+  | { kind: 'sqlite'; path: string }
+  | { kind: 'duckdb_file'; path: string }
+  | {
+      kind: 'postgres';
+      host: string;
+      port: number;
+      database: string;
+      user: string;
+      password?: string | null;
+      schema?: string | null;
+      sslMode?: string | null;
+    }
+  | {
+      kind: 'mysql';
+      host: string;
+      port: number;
+      database: string;
+      user: string;
+      password?: string | null;
+    }
+  | { kind: 'parquet_glob'; url: string; hivePartitioning?: boolean };
+
+export interface DbConnectionInfo {
+  connectionId: string;
+  kind: DbConnectorConfig['kind'];
+  config: DbConnectorConfig;
+}
+
+export interface DbSchemaInfo {
+  name: string;
+}
+
+export interface DbTableInfo {
+  schema: string;
+  name: string;
+}
+
+export interface DbPreviewResult {
+  columns: string[];
+  rows: Record<string, any>[];
+  rowCount: number;
+}
+
+export type DbImportSource =
+  | { mode: 'table'; schema: string; table: string }
+  | { mode: 'sql'; sql: string };
+
+export async function dbConnect(
+  config: DbConnectorConfig,
+  persistCredentialKey?: string
+): Promise<DbConnectionInfo> {
+  return await invoke<DbConnectionInfo>('db_connect', {
+    config,
+    persistCredentialKey: persistCredentialKey ?? null,
   });
+}
+
+export async function dbListSchemas(connectionId: string): Promise<DbSchemaInfo[]> {
+  return await invoke<DbSchemaInfo[]>('db_list_schemas', { connectionId });
+}
+
+export async function dbListTables(connectionId: string, schema?: string): Promise<DbTableInfo[]> {
+  return await invoke<DbTableInfo[]>('db_list_tables', { connectionId, schema: schema ?? null });
+}
+
+export async function dbPreviewTable(
+  connectionId: string,
+  schema: string,
+  table: string,
+  limit?: number
+): Promise<DbPreviewResult> {
+  return await invoke<DbPreviewResult>('db_preview_table', {
+    connectionId,
+    schema,
+    table,
+    limit: limit ?? null,
+  });
+}
+
+export async function dbQueryPreview(
+  connectionId: string,
+  sql: string,
+  limit?: number
+): Promise<DbPreviewResult> {
+  return await invoke<DbPreviewResult>('db_query_preview', { connectionId, sql, limit: limit ?? null });
+}
+
+export async function dbImportTable(
+  connectionId: string,
+  source: DbImportSource,
+  targetTableName: string
+): Promise<NativeImportedTable> {
+  return await invoke<NativeImportedTable>('db_import_table', {
+    connectionId,
+    source: source.mode === 'table'
+      ? { mode: 'table', schema: source.schema, table: source.table }
+      : { mode: 'sql', sql: source.sql },
+    targetTableName,
+  });
+}
+
+export async function dbDisconnect(connectionId: string): Promise<void> {
+  await invoke<void>('db_disconnect', { connectionId });
+}
+
+/**
+ * Usado pelo "Atualizar Dados": reconecta com a senha guardada no
+ * keyring (identificada por `credentialKey`, nunca enviada antes pelo
+ * frontend) e reimporta a tabela/consulta.
+ */
+export async function dbRefreshImport(
+  config: DbConnectorConfig,
+  credentialKey: string | undefined,
+  source: DbImportSource,
+  targetTableName: string
+): Promise<NativeImportedTable> {
+  return await invoke<NativeImportedTable>('db_refresh_import', {
+    config,
+    credentialKey: credentialKey ?? null,
+    source: source.mode === 'table'
+      ? { mode: 'table', schema: source.schema, table: source.table }
+      : { mode: 'sql', sql: source.sql },
+    targetTableName,
+  });
+}
+
+// ---------------------------------------------------------------------
+// Credenciais seguras (chaveiro Linux Secret Service) — v0.8.0
+// ---------------------------------------------------------------------
+
+export async function credentialsSet(key: string, secret: string): Promise<void> {
+  await invoke<void>('credentials_set', { key, secret });
+}
+
+export async function credentialsGetExists(key: string): Promise<boolean> {
+  return await invoke<boolean>('credentials_get_exists', { key });
+}
+
+export async function credentialsGet(key: string): Promise<string | null> {
+  return await invoke<string | null>('credentials_get', { key });
+}
+
+export async function credentialsDelete(key: string): Promise<void> {
+  await invoke<void>('credentials_delete', { key });
 }

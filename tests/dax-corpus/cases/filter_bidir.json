@@ -1,0 +1,14 @@
+{
+  "model": "filter_bidir",
+  "category": "filter",
+  "description": "Relacionamento bidirecional (crossFilter both) entre f_Vendas e d_Cliente: filtrar d_Produto deve propagar ate d_Cliente. Tambem testa CROSSFILTER() alterando a direcao em tempo de consulta. Oraculo em oracles/filter.py.",
+  "cases": [
+    { "id": "filter.bidir.countrows_no_filter", "expr": "COUNTROWS(d_Cliente)", "expected": 4 },
+    { "id": "filter.bidir.countrows_filtered_papelaria", "expr": "COUNTROWS(d_Cliente)", "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Papelaria"] }], "expected": 2, "notes": "Papelaria=Caneta(ProdutoID1) -> vendas 1(Ana) e 3(Carla). Como f_Vendas-d_Cliente e bidirecional, d_Cliente fica restrito a {Ana,Carla}." },
+    { "id": "filter.bidir.countrows_filtered_informatica", "expr": "COUNTROWS(d_Cliente)", "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Informatica"] }], "expected": 1, "notes": "Informatica=Mouse(ProdutoID2) -> apenas venda 2 (Bruno)." },
+    { "id": "filter.bidir.sum_filtered_papelaria", "expr": "[Total Vendas]", "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Papelaria"] }], "expected": 40, "notes": "Vendas 1 (10) + 3 (30)." },
+    { "id": "filter.bidir.crossfilter_none_blocks_propagation", "expr": "CALCULATE(COUNTROWS(d_Cliente), CROSSFILTER(f_Vendas[ClienteID], d_Cliente[ClienteID], NONE))", "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Papelaria"] }], "expected": 4, "source": "dax.guide/crossfilter", "notes": "CROSSFILTER(...,NONE) corta toda propagacao entre f_Vendas e d_Cliente (inclusive a direcao normal), entao o filtro de Categoria deixa de afetar d_Cliente: volta a 4." },
+    { "id": "filter.bidir.crossfilter_both_on_produto", "expr": "CALCULATE(COUNTROWS(d_Produto), CROSSFILTER(f_Vendas[ProdutoID], d_Produto[ProdutoID], BOTH))", "filters": [{ "table": "d_Cliente", "column": "Cliente", "values": ["Ana"] }], "expected": 1, "source": "dax.guide/crossfilter", "notes": "f_Vendas-d_Produto e single por padrao; CROSSFILTER(...,BOTH) torna-o bidirecional nesta consulta. Filtrar Cliente=Ana restringe f_Vendas a venda 1 (ProdutoID 1), que agora se propaga ate d_Produto: COUNTROWS=1 (so Caneta)." },
+    { "id": "filter.bidir.hasonevalue_after_propagation", "expr": "HASONEVALUE(d_Cliente[Cliente])", "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Informatica"] }], "expected": true, "notes": "Com a propagacao bidirecional, d_Cliente fica restrito a um unico cliente (Bruno)." }
+  ]
+}

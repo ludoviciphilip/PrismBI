@@ -1,7 +1,7 @@
 {
   "name": "prismbi",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.8.0",
   "license": "SEE LICENSE IN LICENSE.md",
   "type": "module",
   "scripts": {
@@ -11,7 +11,8 @@
     "tauri": "tauri",
     "lint": "tsc --noEmit",
     "lint:strict": "tsc --project tsconfig.strict.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dax:report": "node scripts/dax-conformance-report.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

@@ -92,6 +92,64 @@ pub fn days_to_civil(days: i32) -> (i32, u32, u32) {
     (year, m, d)
 }
 
+/// DAX/Excel serial epoch offset: days between 1899-12-30 (serial 0) and
+/// 1970-01-01 (the Unix day `civil_to_days` counts from).
+const SERIAL_EPOCH_OFFSET_DAYS: i64 = 25_569;
+
+pub fn civil_to_serial(y: i32, m: u32, d: u32) -> f64 {
+    (civil_to_days(y, m, d) as i64 + SERIAL_EPOCH_OFFSET_DAYS) as f64
+}
+
+pub fn serial_to_civil_days(serial: f64) -> i32 {
+    (serial.floor() as i64 - SERIAL_EPOCH_OFFSET_DAYS) as i32
+}
+
+pub fn serial_to_civil(serial: f64) -> (i32, u32, u32) {
+    days_to_civil(serial_to_civil_days(serial))
+}
+
+/// Parses `YYYY-MM-DD` (optionally `T`/space + `HH:MM[:SS]`) into a DAX
+/// serial number (days since 1899-12-30, fractional part = time of day).
+pub fn parse_iso_to_serial(s: &str) -> Option<f64> {
+    let trimmed = s.trim();
+    let date_part = trimmed.split(['T', ' ']).next()?.trim();
+    let (y, m, d) = parse_iso_ymd(date_part)?;
+    let base = civil_to_serial(y, m, d);
+    if let Some(time_part) = trimmed.get(date_part.len()..).map(|t| t.trim_start_matches(['T', ' '])) {
+        if !time_part.is_empty() {
+            let parts: Vec<&str> = time_part.split(':').collect();
+            if parts.len() >= 2 {
+                let h: f64 = parts[0].parse().ok()?;
+                let mi: f64 = parts[1].parse().ok()?;
+                let se: f64 = parts.get(2).and_then(|p| p.parse().ok()).unwrap_or(0.0);
+                let frac = (h * 3600.0 + mi * 60.0 + se) / 86_400.0;
+                return Some(base + frac);
+            }
+        }
+    }
+    Some(base)
+}
+
+/// Formats a DAX serial number back to the JSON boundary contract: plain
+/// `YYYY-MM-DD` when the time-of-day is zero, else `YYYY-MM-DDTHH:MM:SS`.
+pub fn serial_to_iso(serial: f64) -> String {
+    if !serial.is_finite() {
+        return String::new();
+    }
+    let days = serial.floor();
+    let frac = serial - days;
+    let (y, m, d) = serial_to_civil(serial);
+    if frac.abs() < 1e-9 {
+        format!("{:04}-{:02}-{:02}", y, m, d)
+    } else {
+        let secs_total = (frac * 86_400.0).round() as i64;
+        let hh = secs_total / 3600;
+        let mm = (secs_total % 3600) / 60;
+        let ss = secs_total % 60;
+        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", y, m, d, hh, mm, ss)
+    }
+}
+
 pub fn today_ymd() -> (i32, u32, u32) {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -266,6 +324,7 @@ fn format_dax_value(val: &DaxValue, pattern: &str) -> String {
             out = out.replace("MMM", MONTHS_SHORT_PT[m_idx]);
             out = out.replace("mmm", MONTHS_SHORT_PT[m_idx]);
             out = out.replace("MM", &format!("{:02}", m));
+            out = out.replace("mm", &format!("{:02}", m));
             out = out.replace("dd", &format!("{:02}", d));
             out = out.replace("DD", &format!("{:02}", d));
             return out;
@@ -284,11 +343,17 @@ fn format_dax_value(val: &DaxValue, pattern: &str) -> String {
         return format!("$ {}", format_number_grouped(num, 2));
     }
     if lower == "percent" || p_trimmed.contains('%') {
-        let decimals = p_trimmed
-            .split('.')
-            .nth(1)
-            .map(|s| s.chars().filter(|&c| c == '0' || c == '#').count())
-            .unwrap_or(2);
+        let decimals = if p_trimmed.contains('.') {
+            p_trimmed
+                .split('.')
+                .nth(1)
+                .map(|s| s.chars().filter(|&c| c == '0' || c == '#').count())
+                .unwrap_or(0)
+        } else if lower == "percent" {
+            2
+        } else {
+            0
+        };
         return format!("{:.prec$}%", num * 100.0, prec = decimals);
     }
     if lower == "standard" || lower == "fixed" || p_trimmed.contains('#') || p_trimmed.contains('0') {
@@ -301,6 +366,64 @@ fn format_dax_value(val: &DaxValue, pattern: &str) -> String {
     }
 
     val.as_display_string()
+}
+
+/// Tokens for a simplified wildcard pattern as used by DAX SEARCH/LIKE:
+/// `*` matches any run of characters (incl. empty), `?` matches exactly
+/// one character, and `~` escapes the following character as a literal.
+enum WildcardToken {
+    Star,
+    Any,
+    Lit(char),
+}
+
+fn tokenize_wildcard(pattern: &str) -> Vec<WildcardToken> {
+    let mut out = Vec::new();
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '~' => {
+                if let Some(n) = chars.next() {
+                    out.push(WildcardToken::Lit(n));
+                } else {
+                    out.push(WildcardToken::Lit('~'));
+                }
+            }
+            '*' => out.push(WildcardToken::Star),
+            '?' => out.push(WildcardToken::Any),
+            other => out.push(WildcardToken::Lit(other)),
+        }
+    }
+    out
+}
+
+fn wildcard_match_from(hay: &[char], hi: usize, tok: &[WildcardToken], ti: usize) -> bool {
+    if ti == tok.len() {
+        return true;
+    }
+    match &tok[ti] {
+        WildcardToken::Lit(c) => hi < hay.len() && hay[hi] == *c && wildcard_match_from(hay, hi + 1, tok, ti + 1),
+        WildcardToken::Any => hi < hay.len() && wildcard_match_from(hay, hi + 1, tok, ti + 1),
+        WildcardToken::Star => {
+            for k in hi..=hay.len() {
+                if wildcard_match_from(hay, k, tok, ti + 1) {
+                    return true;
+                }
+            }
+            false
+        }
+    }
+}
+
+/// Finds the first char offset in `hay` where `tok` matches (DAX SEARCH semantics:
+/// the pattern need not consume the rest of the haystack).
+fn wildcard_find(hay: &[char], tok: &[WildcardToken]) -> Option<usize> {
+    for start in 0..=hay.len() {
+        if wildcard_match_from(hay, start, tok, 0) {
+            return Some(start);
+        }
+    }
+    None
 }
 
 /// Evaluates pure scalar DAX functions (Math/Trig, Text, Date/Time, Info, Financial).
@@ -319,12 +442,14 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
         // ==========================================
         // Information & Conversion (scalar)
         // ==========================================
-        "ISNUMBER" | "ISNUMERIC" | "ISDOUBLE" | "ISCURRENCY" => {
-            DaxValue::Boolean(matches!(args.first(), Some(DaxValue::Number(_))))
-        }
+        "ISNUMBER" | "ISNUMERIC" | "ISDOUBLE" | "ISCURRENCY" => DaxValue::Boolean(matches!(
+            args.first(),
+            Some(DaxValue::Integer(_)) | Some(DaxValue::Decimal(_)) | Some(DaxValue::Currency(_))
+        )),
         "ISINT64" => DaxValue::Boolean(match args.first() {
-            Some(DaxValue::Number(n)) => n.is_finite() && (n.fract()).abs() < 1e-12,
-            _ => false,
+            Some(DaxValue::Integer(_)) => true,
+            Some(other) => other.as_f64().map(|n| n.is_finite() && (n.fract()).abs() < 1e-12).unwrap_or(false),
+            None => false,
         }),
         "ISTEXT" | "ISSTRING" => DaxValue::Boolean(matches!(args.first(), Some(DaxValue::Text(_)))),
         "ISLOGICAL" | "ISBOOLEAN" => {
@@ -350,43 +475,43 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
         "ROUNDUP" => {
             let n = arg_f64(0, 0.0);
             let d = arg_f64(1, 0.0).trunc() as i32;
-            DaxValue::Number(round_with_decimals(n, d, 1))
+            DaxValue::number_smart(round_with_decimals(n, d, 1))
         }
         "ROUNDDOWN" => {
             let n = arg_f64(0, 0.0);
             let d = arg_f64(1, 0.0).trunc() as i32;
-            DaxValue::Number(round_with_decimals(n, d, -1))
+            DaxValue::number_smart(round_with_decimals(n, d, -1))
         }
         "TRUNC" => {
             let n = arg_f64(0, 0.0);
             let d = arg_f64(1, 0.0).trunc() as i32;
-            DaxValue::Number(round_with_decimals(n, d, -1))
+            DaxValue::number_smart(round_with_decimals(n, d, -1))
         }
         "MROUND" => {
             let n = arg_f64(0, 0.0);
             let mult = arg_f64(1, 1.0);
             if mult.abs() < 1e-12 {
-                DaxValue::Number(0.0)
+                DaxValue::number_smart(0.0)
             } else {
-                DaxValue::Number((n / mult).round() * mult)
+                DaxValue::number_smart((n / mult).round() * mult)
             }
         }
         "CEILING" | "ISO.CEILING" => {
             let n = arg_f64(0, 0.0);
-            let sig = arg_f64(1, 1.0).abs();
-            if sig < 1e-12 {
-                DaxValue::Number(0.0)
+            let sig = arg_f64(1, 1.0);
+            if sig.abs() < 1e-12 {
+                DaxValue::number_smart(0.0)
             } else {
-                DaxValue::Number((n / sig).ceil() * sig)
+                DaxValue::number_smart((n / sig).ceil() * sig)
             }
         }
         "FLOOR" => {
             let n = arg_f64(0, 0.0);
-            let sig = arg_f64(1, 1.0).abs();
-            if sig < 1e-12 {
-                DaxValue::Number(0.0)
+            let sig = arg_f64(1, 1.0);
+            if sig.abs() < 1e-12 {
+                DaxValue::number_smart(0.0)
             } else {
-                DaxValue::Number((n / sig).floor() * sig)
+                DaxValue::number_smart((n / sig).floor() * sig)
             }
         }
         "MOD" => {
@@ -395,7 +520,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             if d.abs() < 1e-12 {
                 DaxValue::Blank
             } else {
-                DaxValue::Number(n - d * (n / d).floor())
+                DaxValue::number_smart(n - d * (n / d).floor())
             }
         }
         "QUOTIENT" => {
@@ -404,13 +529,13 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             if d.abs() < 1e-12 {
                 DaxValue::Blank
             } else {
-                DaxValue::Number((n / d).trunc())
+                DaxValue::number_smart((n / d).trunc())
             }
         }
         "SIGN" => {
             let n = arg_f64(0, 0.0);
             let s = if n > 0.0 { 1.0 } else if n < 0.0 { -1.0 } else { 0.0 };
-            DaxValue::Number(s)
+            DaxValue::number_smart(s)
         }
         "EVEN" => {
             let n = arg_f64(0, 0.0);
@@ -419,7 +544,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             } else {
                 (n / 2.0).floor() * 2.0
             };
-            DaxValue::Number(v)
+            DaxValue::number_smart(v)
         }
         "ODD" => {
             let n = arg_f64(0, 0.0);
@@ -432,16 +557,16 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                 let f = n.floor();
                 if (f as i64).abs() % 2 == 0 { f - 1.0 } else { f }
             };
-            DaxValue::Number(v)
+            DaxValue::number_smart(v)
         }
-        "EXP" => DaxValue::Number(arg_f64(0, 0.0).exp()),
+        "EXP" => DaxValue::number_smart(arg_f64(0, 0.0).exp()),
         "LN" => {
             let n = arg_f64(0, 0.0);
-            if n <= 0.0 { DaxValue::Blank } else { DaxValue::Number(n.ln()) }
+            if n <= 0.0 { DaxValue::Blank } else { DaxValue::number_smart(n.ln()) }
         }
         "LOG10" => {
             let n = arg_f64(0, 0.0);
-            if n <= 0.0 { DaxValue::Blank } else { DaxValue::Number(n.log10()) }
+            if n <= 0.0 { DaxValue::Blank } else { DaxValue::number_smart(n.log10()) }
         }
         "LOG" => {
             let n = arg_f64(0, 0.0);
@@ -449,13 +574,13 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             if n <= 0.0 || base <= 0.0 || (base - 1.0).abs() < 1e-12 {
                 DaxValue::Blank
             } else {
-                DaxValue::Number(n.log(base))
+                DaxValue::number_smart(n.log(base))
             }
         }
-        "PI" => DaxValue::Number(std::f64::consts::PI),
+        "PI" => DaxValue::number_smart(std::f64::consts::PI),
         "SQRTPI" => {
             let n = arg_f64(0, 0.0);
-            if n < 0.0 { DaxValue::Blank } else { DaxValue::Number((n * std::f64::consts::PI).sqrt()) }
+            if n < 0.0 { DaxValue::Blank } else { DaxValue::number_smart((n * std::f64::consts::PI).sqrt()) }
         }
         "FACT" => {
             let n = arg_f64(0, 0.0).floor();
@@ -466,25 +591,25 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                 for i in 2..=(n as u64) {
                     acc *= i as f64;
                 }
-                DaxValue::Number(acc)
+                DaxValue::number_smart(acc)
             }
         }
         "GCD" => {
             let a = arg_f64(0, 0.0).abs().floor() as u64;
             let b = arg_f64(1, 0.0).abs().floor() as u64;
-            DaxValue::Number(gcd_u64(a, b) as f64)
+            DaxValue::number_smart(gcd_u64(a, b) as f64)
         }
         "LCM" => {
             let a = arg_f64(0, 0.0).abs().floor() as u64;
             let b = arg_f64(1, 0.0).abs().floor() as u64;
             if a == 0 || b == 0 {
-                DaxValue::Number(0.0)
+                DaxValue::number_smart(0.0)
             } else {
                 let g = gcd_u64(a, b);
-                DaxValue::Number(((a / g) * b) as f64)
+                DaxValue::number_smart(((a / g) * b) as f64)
             }
         }
-        "RAND" => DaxValue::Number(pseudo_random_0_1(args.len())),
+        "RAND" => DaxValue::number_smart(pseudo_random_0_1(args.len())),
         "RANDBETWEEN" => {
             let lo = arg_f64(0, 0.0).ceil() as i64;
             let hi = arg_f64(1, 1.0).floor() as i64;
@@ -493,27 +618,27 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             } else {
                 let span = (hi - lo + 1) as f64;
                 let r = (pseudo_random_0_1(lo as usize ^ hi as usize) * span).floor() as i64;
-                DaxValue::Number((lo + r.min(hi - lo)) as f64)
+                DaxValue::number_smart((lo + r.min(hi - lo)) as f64)
             }
         }
-        "SIN" => DaxValue::Number(arg_f64(0, 0.0).sin()),
-        "COS" => DaxValue::Number(arg_f64(0, 0.0).cos()),
-        "TAN" => DaxValue::Number(arg_f64(0, 0.0).tan()),
+        "SIN" => DaxValue::number_smart(arg_f64(0, 0.0).sin()),
+        "COS" => DaxValue::number_smart(arg_f64(0, 0.0).cos()),
+        "TAN" => DaxValue::number_smart(arg_f64(0, 0.0).tan()),
         "ASIN" => {
             let n = arg_f64(0, 0.0);
-            if (-1.0..=1.0).contains(&n) { DaxValue::Number(n.asin()) } else { DaxValue::Blank }
+            if (-1.0..=1.0).contains(&n) { DaxValue::number_smart(n.asin()) } else { DaxValue::Blank }
         }
         "ACOS" => {
             let n = arg_f64(0, 0.0);
-            if (-1.0..=1.0).contains(&n) { DaxValue::Number(n.acos()) } else { DaxValue::Blank }
+            if (-1.0..=1.0).contains(&n) { DaxValue::number_smart(n.acos()) } else { DaxValue::Blank }
         }
-        "ATAN" => DaxValue::Number(arg_f64(0, 0.0).atan()),
-        "DEGREES" => DaxValue::Number(arg_f64(0, 0.0).to_degrees()),
-        "RADIANS" => DaxValue::Number(arg_f64(0, 0.0).to_radians()),
-        "CURRENCY" => DaxValue::Number((arg_f64(0, 0.0) * 10_000.0).round() / 10_000.0),
-        "BITAND" => DaxValue::Number(((arg_f64(0, 0.0) as i64) & (arg_f64(1, 0.0) as i64)) as f64),
-        "BITOR" => DaxValue::Number(((arg_f64(0, 0.0) as i64) | (arg_f64(1, 0.0) as i64)) as f64),
-        "BITXOR" => DaxValue::Number(((arg_f64(0, 0.0) as i64) ^ (arg_f64(1, 0.0) as i64)) as f64),
+        "ATAN" => DaxValue::number_smart(arg_f64(0, 0.0).atan()),
+        "DEGREES" => DaxValue::number_smart(arg_f64(0, 0.0).to_degrees()),
+        "RADIANS" => DaxValue::number_smart(arg_f64(0, 0.0).to_radians()),
+        "CURRENCY" => DaxValue::number_smart((arg_f64(0, 0.0) * 10_000.0).round() / 10_000.0),
+        "BITAND" => DaxValue::number_smart(((arg_f64(0, 0.0) as i64) & (arg_f64(1, 0.0) as i64)) as f64),
+        "BITOR" => DaxValue::number_smart(((arg_f64(0, 0.0) as i64) | (arg_f64(1, 0.0) as i64)) as f64),
+        "BITXOR" => DaxValue::number_smart(((arg_f64(0, 0.0) as i64) ^ (arg_f64(1, 0.0) as i64)) as f64),
         "BITLSHIFT" => {
             let n = arg_f64(0, 0.0) as i64;
             let shift = (arg_f64(1, 0.0) as i32).clamp(-63, 63);
@@ -522,7 +647,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             } else {
                 n.wrapping_shr((-shift) as u32)
             };
-            DaxValue::Number(shifted as f64)
+            DaxValue::number_smart(shifted as f64)
         }
         "BITRSHIFT" => {
             let n = arg_f64(0, 0.0) as i64;
@@ -532,19 +657,19 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             } else {
                 n.wrapping_shl((-shift) as u32)
             };
-            DaxValue::Number(shifted as f64)
+            DaxValue::number_smart(shifted as f64)
         }
-        "SINH" => DaxValue::Number(arg_f64(0, 0.0).sinh()),
-        "COSH" => DaxValue::Number(arg_f64(0, 0.0).cosh()),
-        "TANH" => DaxValue::Number(arg_f64(0, 0.0).tanh()),
-        "ASINH" => DaxValue::Number(arg_f64(0, 0.0).asinh()),
+        "SINH" => DaxValue::number_smart(arg_f64(0, 0.0).sinh()),
+        "COSH" => DaxValue::number_smart(arg_f64(0, 0.0).cosh()),
+        "TANH" => DaxValue::number_smart(arg_f64(0, 0.0).tanh()),
+        "ASINH" => DaxValue::number_smart(arg_f64(0, 0.0).asinh()),
         "ACOSH" => {
             let n = arg_f64(0, 1.0);
-            if n >= 1.0 { DaxValue::Number(n.acosh()) } else { DaxValue::Blank }
+            if n >= 1.0 { DaxValue::number_smart(n.acosh()) } else { DaxValue::Blank }
         }
         "ATANH" => {
             let n = arg_f64(0, 0.0);
-            if n > -1.0 && n < 1.0 { DaxValue::Number(n.atanh()) } else { DaxValue::Blank }
+            if n > -1.0 && n < 1.0 { DaxValue::number_smart(n.atanh()) } else { DaxValue::Blank }
         }
         "COMBIN" => {
             let n = arg_f64(0, 0.0).trunc() as i64;
@@ -557,14 +682,14 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                 for i in 0..k {
                     res = res * ((n - i) as f64) / ((i + 1) as f64);
                 }
-                DaxValue::Number(res.round())
+                DaxValue::number_smart(res.round())
             }
         }
         "COMBINA" => {
             let n = arg_f64(0, 0.0).trunc() as i64;
             let k = arg_f64(1, 0.0).trunc() as i64;
             if n <= 0 || k < 0 {
-                if n == 0 && k == 0 { DaxValue::Number(1.0) } else { DaxValue::Blank }
+                if n == 0 && k == 0 { DaxValue::number_smart(1.0) } else { DaxValue::Blank }
             } else {
                 let top = n + k - 1;
                 let kk = k.min(top - k);
@@ -572,7 +697,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                 for i in 0..kk {
                     res = res * ((top - i) as f64) / ((i + 1) as f64);
                 }
-                DaxValue::Number(res.round())
+                DaxValue::number_smart(res.round())
             }
         }
         "PERMUT" => {
@@ -585,7 +710,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                 for i in 0..k {
                     res *= (n - i) as f64;
                 }
-                DaxValue::Number(res)
+                DaxValue::number_smart(res)
             }
         }
         "CONVERT" => {
@@ -595,9 +720,9 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             } else {
                 let target_t = arg_str(1).trim().to_uppercase();
                 match target_t.as_str() {
-                    "INTEGER" | "INT64" => DaxValue::Number(v.as_f64().unwrap_or(0.0).trunc()),
-                    "DOUBLE" | "DECIMAL" => DaxValue::Number(v.as_f64().unwrap_or(0.0)),
-                    "CURRENCY" => DaxValue::Number((v.as_f64().unwrap_or(0.0) * 10_000.0).round() / 10_000.0),
+                    "INTEGER" | "INT64" => DaxValue::number_smart(v.as_f64().unwrap_or(0.0).trunc()),
+                    "DOUBLE" | "DECIMAL" => DaxValue::number_smart(v.as_f64().unwrap_or(0.0)),
+                    "CURRENCY" => DaxValue::number_smart((v.as_f64().unwrap_or(0.0) * 10_000.0).round() / 10_000.0),
                     "STRING" | "TEXT" => DaxValue::Text(v.as_display_string()),
                     "BOOLEAN" => DaxValue::Boolean(v.as_bool()),
                     "DATETIME" | "DATE" => {
@@ -634,21 +759,27 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             let tail: String = haystack.chars().skip(start).collect();
             if let Some(byte_idx) = tail.find(&needle) {
                 let char_pos = tail[..byte_idx].chars().count() + start + 1;
-                DaxValue::Number(char_pos as f64)
+                DaxValue::number_smart(char_pos as f64)
             } else if args.len() >= 4 {
                 args[3].clone()
             } else {
-                DaxValue::Blank
+                return Err("FIND: texto não encontrado".to_string());
             }
         }
         "SEARCH" => {
             let needle = arg_str(0).to_lowercase();
             let haystack = arg_str(1).to_lowercase();
             let start = (arg_f64(2, 1.0).max(1.0) as usize).saturating_sub(1);
-            let tail: String = haystack.chars().skip(start).collect();
-            if let Some(byte_idx) = tail.find(&needle) {
-                let char_pos = tail[..byte_idx].chars().count() + start + 1;
-                DaxValue::Number(char_pos as f64)
+            let tail_chars: Vec<char> = haystack.chars().skip(start).collect();
+            let found = if needle.contains(['*', '?', '~']) {
+                let tokens = tokenize_wildcard(&needle);
+                wildcard_find(&tail_chars, &tokens)
+            } else {
+                let tail: String = tail_chars.iter().collect();
+                tail.find(&needle).map(|byte_idx| tail[..byte_idx].chars().count())
+            };
+            if let Some(char_offset) = found {
+                DaxValue::number_smart((char_offset + start + 1) as f64)
             } else if args.len() >= 4 {
                 args[3].clone()
             } else {
@@ -708,7 +839,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                 cleaned.replace(',', ".").parse::<f64>()
             };
             match parsed {
-                Ok(n) if n.is_finite() => DaxValue::Number(n),
+                Ok(n) if n.is_finite() => DaxValue::number_smart(n),
                 _ => DaxValue::Blank,
             }
         }
@@ -731,7 +862,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
         }
         "UNICODE" => {
             match arg_str(0).chars().next() {
-                Some(ch) => DaxValue::Number((ch as u32) as f64),
+                Some(ch) => DaxValue::number_smart((ch as u32) as f64),
                 None => DaxValue::Blank,
             }
         }
@@ -808,7 +939,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                     3 => (sun0 + 6) % 7,                          // 0=Mon..6=Sun
                     _ => sun0 + 1,                                // 1=Sun..7=Sat
                 };
-                DaxValue::Number(wd as f64)
+                DaxValue::number_smart(wd as f64)
             } else {
                 DaxValue::Blank
             }
@@ -823,14 +954,14 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                 let start_dow = if ret_type == 2 || ret_type == 21 { 1 } else { 0 };
                 let offset = (jan1_dow - start_dow).rem_euclid(7);
                 let wnum = (doy0 + offset) / 7 + 1;
-                DaxValue::Number(wnum as f64)
+                DaxValue::number_smart(wnum as f64)
             } else {
                 DaxValue::Blank
             }
         }
         "QUARTER" => {
             if let Some((_, m, _)) = parse_flexible_ymd(&arg_str(0)) {
-                DaxValue::Number((((m - 1) / 3) + 1) as f64)
+                DaxValue::number_smart((((m - 1) / 3) + 1) as f64)
             } else {
                 DaxValue::Blank
             }
@@ -852,7 +983,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                     "WEEK" | "SEMANA" => (diff_days / 7) as f64,
                     _ => diff_days as f64,
                 };
-                DaxValue::Number(val)
+                DaxValue::number_smart(val)
             } else {
                 DaxValue::Blank
             }
@@ -862,7 +993,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                 (parse_flexible_ymd(&arg_str(0)), parse_flexible_ymd(&arg_str(1)))
             {
                 let diff = (civil_to_days(y2, m2, d2) - civil_to_days(y1, m1, d1)).abs() as f64;
-                DaxValue::Number(diff / 365.25)
+                DaxValue::number_smart(diff / 365.25)
             } else {
                 DaxValue::Blank
             }
@@ -881,7 +1012,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                         count += 1;
                     }
                 }
-                DaxValue::Number((count * sign) as f64)
+                DaxValue::number_smart((count * sign) as f64)
             } else {
                 DaxValue::Blank
             }
@@ -899,11 +1030,11 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             if nper.abs() < 1e-12 {
                 DaxValue::Blank
             } else if rate.abs() < 1e-12 {
-                DaxValue::Number(-(pv + fv) / nper)
+                DaxValue::number_smart(-(pv + fv) / nper)
             } else {
                 let pvif = (1.0 + rate).powf(nper);
                 let pmt = -(pv * pvif + fv) * rate / ((1.0 + rate * ptype) * (pvif - 1.0));
-                DaxValue::Number(pmt)
+                DaxValue::number_smart(pmt)
             }
         }
         "PV" => {
@@ -913,11 +1044,11 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             let fv = arg_f64(3, 0.0);
             let ptype = if arg_f64(4, 0.0) != 0.0 { 1.0 } else { 0.0 };
             if rate.abs() < 1e-12 {
-                DaxValue::Number(-fv - pmt * nper)
+                DaxValue::number_smart(-fv - pmt * nper)
             } else {
                 let pvif = (1.0 + rate).powf(nper);
                 let pv = (-fv - pmt * (1.0 + rate * ptype) * (pvif - 1.0) / rate) / pvif;
-                DaxValue::Number(pv)
+                DaxValue::number_smart(pv)
             }
         }
         "FV" => {
@@ -927,11 +1058,11 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             let pv = arg_f64(3, 0.0);
             let ptype = if arg_f64(4, 0.0) != 0.0 { 1.0 } else { 0.0 };
             if rate.abs() < 1e-12 {
-                DaxValue::Number(-pv - pmt * nper)
+                DaxValue::number_smart(-pv - pmt * nper)
             } else {
                 let pvif = (1.0 + rate).powf(nper);
                 let fv = -pv * pvif - pmt * (1.0 + rate * ptype) * (pvif - 1.0) / rate;
-                DaxValue::Number(fv)
+                DaxValue::number_smart(fv)
             }
         }
         "NPER" => {
@@ -944,7 +1075,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                 if pmt.abs() < 1e-12 {
                     DaxValue::Blank
                 } else {
-                    DaxValue::Number(-(pv + fv) / pmt)
+                    DaxValue::number_smart(-(pv + fv) / pmt)
                 }
             } else {
                 let z = pmt * (1.0 + rate * ptype) / rate;
@@ -953,7 +1084,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                 if den.abs() < 1e-12 || (num / den) <= 0.0 {
                     DaxValue::Blank
                 } else {
-                    DaxValue::Number((num / den).ln() / (1.0 + rate).ln())
+                    DaxValue::number_smart((num / den).ln() / (1.0 + rate).ln())
                 }
             }
         }
@@ -965,7 +1096,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                     sum += cf / (1.0 + rate).powi((idx + 1) as i32);
                 }
             }
-            DaxValue::Number(sum)
+            DaxValue::number_smart(sum)
         }
         "IPMT" | "PPMT" => {
             let rate = arg_f64(0, 0.0);
@@ -978,7 +1109,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                 DaxValue::Blank
             } else if rate.abs() < 1e-12 {
                 let pmt = -(pv + fv) / nper;
-                DaxValue::Number(if fname == "IPMT" { 0.0 } else { pmt })
+                DaxValue::number_smart(if fname == "IPMT" { 0.0 } else { pmt })
             } else {
                 let pvif = (1.0 + rate).powf(nper);
                 let pmt = -(pv * pvif + fv) * rate / ((1.0 + rate * ptype) * (pvif - 1.0));
@@ -995,9 +1126,9 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                     }
                 };
                 if fname == "IPMT" {
-                    DaxValue::Number(ipmt)
+                    DaxValue::number_smart(ipmt)
                 } else {
-                    DaxValue::Number(pmt - ipmt)
+                    DaxValue::number_smart(pmt - ipmt)
                 }
             }
         }
@@ -1008,7 +1139,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             if life.abs() < 1e-12 {
                 DaxValue::Blank
             } else {
-                DaxValue::Number((cost - salvage) / life)
+                DaxValue::number_smart((cost - salvage) / life)
             }
         }
         "SYD" => {
@@ -1020,7 +1151,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             if sum_years.abs() < 1e-12 {
                 DaxValue::Blank
             } else {
-                DaxValue::Number((cost - salvage) * (life - per + 1.0) / sum_years)
+                DaxValue::number_smart((cost - salvage) * (life - per + 1.0) / sum_years)
             }
         }
         "DB" => {
@@ -1030,7 +1161,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             let period = arg_f64(3, 1.0).max(1.0) as i32;
             let month = arg_f64(4, 12.0).clamp(1.0, 12.0);
             if cost <= 0.0 || life <= 0.0 {
-                DaxValue::Number(0.0)
+                DaxValue::number_smart(0.0)
             } else {
                 let raw_rate = 1.0 - (salvage / cost).max(0.0).powf(1.0 / life);
                 let rate = (raw_rate * 1000.0).round() / 1000.0;
@@ -1046,7 +1177,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                     }
                     total_dep += cur_dep;
                 }
-                DaxValue::Number(cur_dep)
+                DaxValue::number_smart(cur_dep)
             }
         }
         "DDB" => {
@@ -1065,18 +1196,18 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                     dep = (value * rate).min((value - salvage).max(0.0));
                     value -= dep;
                 }
-                DaxValue::Number(dep.max(0.0))
+                DaxValue::number_smart(dep.max(0.0))
             }
         }
         "EFFECT" => {
             let nom = arg_f64(0, 0.0);
             let npery = arg_f64(1, 1.0).trunc().max(1.0);
-            DaxValue::Number((1.0 + nom / npery).powf(npery) - 1.0)
+            DaxValue::number_smart((1.0 + nom / npery).powf(npery) - 1.0)
         }
         "NOMINAL" => {
             let eff = arg_f64(0, 0.0);
             let npery = arg_f64(1, 1.0).trunc().max(1.0);
-            DaxValue::Number(npery * ((1.0 + eff).powf(1.0 / npery) - 1.0))
+            DaxValue::number_smart(npery * ((1.0 + eff).powf(1.0 / npery) - 1.0))
         }
         "RATE" => {
             let nper = arg_f64(0, 1.0);
@@ -1111,7 +1242,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                     }
                     r -= y / dy;
                 }
-                if r.is_finite() { DaxValue::Number(r) } else { DaxValue::Blank }
+                if r.is_finite() { DaxValue::number_smart(r) } else { DaxValue::Blank }
             }
         }
 
@@ -1121,9 +1252,9 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
         "PATHLENGTH" => {
             let path = arg_str(0);
             if path.trim().is_empty() {
-                DaxValue::Number(0.0)
+                DaxValue::number_smart(0.0)
             } else {
-                DaxValue::Number(path.split('|').filter(|s| !s.trim().is_empty()).count() as f64)
+                DaxValue::number_smart(path.split('|').filter(|s| !s.trim().is_empty()).count() as f64)
             }
         }
         "PATHCONTAINS" => {
@@ -1148,7 +1279,7 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
             };
             match chosen {
                 Some(s) if ret_type == 1 => match s.parse::<f64>() {
-                    Ok(n) => DaxValue::Number(n),
+                    Ok(n) => DaxValue::number_smart(n),
                     Err(_) => DaxValue::Blank,
                 },
                 Some(s) => DaxValue::Text(s.to_string()),
@@ -1162,26 +1293,186 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
     Ok(Some(res))
 }
 
+/// One dated cash flow for XNPV/XIRR: (amount, day number — any consistent day epoch).
+pub type DatedFlow = (f64, i64);
+
+/// Year fractions `(d_i - d_first) / 365` (d_first = earliest date) paired with amounts.
+fn xnpv_terms(flows: &[DatedFlow]) -> Vec<(f64, f64)> {
+    let first = flows.iter().map(|f| f.1).min().unwrap_or(0);
+    flows.iter().map(|&(v, d)| (v, (d - first) as f64 / 365.0)).collect()
+}
+
+fn xnpv_at(terms: &[(f64, f64)], rate: f64) -> f64 {
+    terms.iter().map(|&(v, t)| v / (1.0 + rate).powf(t)).sum()
+}
+
+/// d/d(rate) of `xnpv_at`.
+fn xnpv_derivative(terms: &[(f64, f64)], rate: f64) -> f64 {
+    terms.iter().map(|&(v, t)| -t * v / (1.0 + rate).powf(t + 1.0)).sum()
+}
+
+/// XNPV = Σ v_i / (1 + rate)^((d_i - d_1) / 365), d_1 = earliest date (Microsoft Learn).
+pub fn calc_xnpv(rate: f64, flows: &[DatedFlow]) -> Result<f64, String> {
+    if rate <= -1.0 {
+        return Err(format!("XNPV: taxa deve ser maior que -1 (recebido {})", rate));
+    }
+    Ok(xnpv_at(&xnpv_terms(flows), rate))
+}
+
+const XIRR_TOL: f64 = 1e-10;
+
+/// Newton-Raphson on XNPV(rate) = 0. `None` when it diverges (rate leaves (-1, ∞), non-finite
+/// values, flat derivative) or doesn't converge within `max_iter` steps.
+fn xirr_newton(terms: &[(f64, f64)], guess: f64, max_iter: usize) -> Option<f64> {
+    let scale = terms.iter().map(|t| t.0.abs()).fold(1.0, f64::max);
+    let mut r = guess;
+    for _ in 0..max_iter {
+        if r <= -1.0 || !r.is_finite() {
+            return None;
+        }
+        let f = xnpv_at(terms, r);
+        if !f.is_finite() {
+            return None;
+        }
+        if f.abs() <= XIRR_TOL * scale {
+            return Some(r);
+        }
+        let df = xnpv_derivative(terms, r);
+        if !df.is_finite() || df.abs() < 1e-300 {
+            return None;
+        }
+        let next = r - f / df;
+        if (next - r).abs() <= XIRR_TOL * (1.0 + r.abs()) {
+            return (next > -1.0 && xnpv_at(terms, next).abs() <= 1e-6 * scale).then_some(next);
+        }
+        r = next;
+    }
+    None
+}
+
+/// Bisection fallback: scan a ladder of rates in (-1, ∞) for a sign change of XNPV and
+/// bisect it. `None` when no bracket exists (no real IRR in the scanned range).
+fn xirr_bisection(terms: &[(f64, f64)]) -> Option<f64> {
+    const LADDER: [f64; 18] = [
+        -0.999_999, -0.99, -0.9, -0.75, -0.5, -0.25, 0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 100.0,
+        1e3, 1e4, 1e6,
+    ];
+    let scale = terms.iter().map(|t| t.0.abs()).fold(1.0, f64::max);
+    let mut prev: Option<(f64, f64)> = None;
+    for &r in &LADDER {
+        let f = xnpv_at(terms, r);
+        if !f.is_finite() {
+            prev = None;
+            continue;
+        }
+        if f == 0.0 {
+            return Some(r);
+        }
+        if let Some((pr, pf)) = prev {
+            if pf.signum() != f.signum() {
+                let (mut lo, mut hi, mut flo) = (pr, r, pf);
+                for _ in 0..300 {
+                    let mid = 0.5 * (lo + hi);
+                    let fm = xnpv_at(terms, mid);
+                    if fm.abs() <= XIRR_TOL * scale || (hi - lo).abs() <= XIRR_TOL * (1.0 + mid.abs()) {
+                        return Some(mid);
+                    }
+                    if fm.signum() == flo.signum() {
+                        lo = mid;
+                        flo = fm;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                return Some(0.5 * (lo + hi));
+            }
+        }
+        prev = Some((r, f));
+    }
+    None
+}
+
+/// XIRR: the rate r with XNPV(r) = 0. Newton-Raphson from `guess` (DAX default 0.1), falling
+/// back to bracketing + bisection when Newton diverges or stalls; a DAX error when neither
+/// finds a root (e.g. flows without both signs, or no real IRR).
+pub fn calc_xirr(flows: &[DatedFlow], guess: f64) -> Result<f64, String> {
+    let has_pos = flows.iter().any(|f| f.0 > 0.0);
+    let has_neg = flows.iter().any(|f| f.0 < 0.0);
+    if !has_pos || !has_neg {
+        return Err("XIRR requer ao menos um fluxo positivo e um negativo".to_string());
+    }
+    let terms = xnpv_terms(flows);
+    xirr_newton(&terms, guess, 100)
+        .or_else(|| xirr_bisection(&terms))
+        .ok_or_else(|| "XIRR não convergiu: nenhuma taxa zera o XNPV destes fluxos".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn fluxo() -> Vec<DatedFlow> {
+        // tests/dax-corpus/models/stats.json t_Fluxo
+        [((2024, 1, 1), -10000.0), ((2024, 3, 1), 2750.0), ((2024, 6, 1), 4250.0), ((2024, 10, 1), 3250.0), ((2025, 1, 1), 2750.0)]
+            .iter()
+            .map(|&((y, m, d), v)| (v, civil_to_days(y, m, d) as i64))
+            .collect()
+    }
+
+    #[test]
+    fn test_xnpv_formula_and_rate_domain() {
+        let flows = fluxo();
+        assert!((calc_xnpv(0.10, &flows).unwrap() - 2316.808365460487).abs() < 1e-6);
+        // Rate 0 is the plain sum; order of the rows doesn't matter (d_1 = earliest date).
+        assert!((calc_xnpv(0.0, &flows).unwrap() - 3000.0).abs() < 1e-9);
+        let mut rev = flows.clone();
+        rev.reverse();
+        assert!((calc_xnpv(0.10, &rev).unwrap() - 2316.808365460487).abs() < 1e-6);
+        assert!(calc_xnpv(-1.0, &flows).is_err());
+    }
+
+    #[test]
+    fn test_xirr_newton_bisection_fallback_and_failure() {
+        let flows = fluxo();
+        let expected = 0.6122389541287326;
+        // Newton from the default guess converges on its own.
+        let terms = xnpv_terms(&flows);
+        let newton = xirr_newton(&terms, 0.1, 100).expect("newton converges from 0.1");
+        assert!((newton - expected).abs() < 1e-8);
+        assert!((calc_xirr(&flows, 0.1).unwrap() - expected).abs() < 1e-8);
+        // Bisection alone finds the same root.
+        assert!((xirr_bisection(&terms).unwrap() - expected).abs() < 1e-8);
+
+        // -100 now, +110 in one year: IRR = 10%. From guess 50 the first Newton step jumps
+        // below -1 (diverges), so the bisection fallback must provide the answer.
+        let simple = vec![(-100.0, 0), (110.0, 365)];
+        assert!(xirr_newton(&xnpv_terms(&simple), 50.0, 100).is_none());
+        assert!((calc_xirr(&simple, 50.0).unwrap() - 0.10).abs() < 1e-8);
+
+        // Mixed signs but no real root: 100 - 300x + 250x² > 0 for every x = 1/(1+r).
+        let no_root = vec![(100.0, 0), (-300.0, 365), (250.0, 730)];
+        assert!(calc_xirr(&no_root, 0.1).is_err());
+        // Single-signed flows have no IRR.
+        assert!(calc_xirr(&[(100.0, 0), (50.0, 365)], 0.1).is_err());
+    }
+
+
     #[test]
     fn test_scalar_math_text_date_financial_functions() {
         assert_eq!(
-            try_eval_scalar_fn("ROUNDUP", &[DaxValue::Number(3.141), DaxValue::Number(2.0)]).unwrap(),
-            Some(DaxValue::Number(3.15))
+            try_eval_scalar_fn("ROUNDUP", &[DaxValue::number_smart(3.141), DaxValue::number_smart(2.0)]).unwrap(),
+            Some(DaxValue::number_smart(3.15))
         );
         assert_eq!(
-            try_eval_scalar_fn("MROUND", &[DaxValue::Number(17.0), DaxValue::Number(5.0)]).unwrap(),
-            Some(DaxValue::Number(15.0))
+            try_eval_scalar_fn("MROUND", &[DaxValue::number_smart(17.0), DaxValue::number_smart(5.0)]).unwrap(),
+            Some(DaxValue::number_smart(15.0))
         );
         assert_eq!(
-            try_eval_scalar_fn("GCD", &[DaxValue::Number(48.0), DaxValue::Number(18.0)]).unwrap(),
-            Some(DaxValue::Number(6.0))
+            try_eval_scalar_fn("GCD", &[DaxValue::number_smart(48.0), DaxValue::number_smart(18.0)]).unwrap(),
+            Some(DaxValue::number_smart(6.0))
         );
         assert_eq!(
-            try_eval_scalar_fn("MID", &[DaxValue::Text("PrismBI".into()), DaxValue::Number(6.0), DaxValue::Number(2.0)]).unwrap(),
+            try_eval_scalar_fn("MID", &[DaxValue::Text("PrismBI".into()), DaxValue::number_smart(6.0), DaxValue::number_smart(2.0)]).unwrap(),
             Some(DaxValue::Text("BI".into()))
         );
         assert_eq!(
@@ -1189,22 +1480,22 @@ mod tests {
             Some(DaxValue::Boolean(true))
         );
         assert_eq!(
-            try_eval_scalar_fn("FORMAT", &[DaxValue::Number(1234.5), DaxValue::Text("R$ #,##0.00".into())]).unwrap(),
+            try_eval_scalar_fn("FORMAT", &[DaxValue::number_smart(1234.5), DaxValue::Text("R$ #,##0.00".into())]).unwrap(),
             Some(DaxValue::Text("R$ 1,234.50".into()))
         );
         assert_eq!(
             try_eval_scalar_fn("DATEDIFF", &[DaxValue::Text("2026-01-15".into()), DaxValue::Text("2026-04-20".into()), DaxValue::Text("MONTH".into())]).unwrap(),
-            Some(DaxValue::Number(3.0))
+            Some(DaxValue::number_smart(3.0))
         );
         assert_eq!(
-            try_eval_scalar_fn("EOMONTH", &[DaxValue::Text("2024-02-10".into()), DaxValue::Number(0.0)]).unwrap(),
+            try_eval_scalar_fn("EOMONTH", &[DaxValue::Text("2024-02-10".into()), DaxValue::number_smart(0.0)]).unwrap(),
             Some(DaxValue::Text("2024-02-29".into()))
         );
         assert_eq!(
             try_eval_scalar_fn("NETWORKDAYS", &[DaxValue::Text("2026-11-23".into()), DaxValue::Text("2026-11-29".into())]).unwrap(),
-            Some(DaxValue::Number(5.0))
+            Some(DaxValue::number_smart(5.0))
         );
-        let pmt = try_eval_scalar_fn("PMT", &[DaxValue::Number(0.01), DaxValue::Number(12.0), DaxValue::Number(10000.0)])
+        let pmt = try_eval_scalar_fn("PMT", &[DaxValue::number_smart(0.01), DaxValue::number_smart(12.0), DaxValue::number_smart(10000.0)])
             .unwrap()
             .unwrap()
             .as_f64()
@@ -1217,7 +1508,7 @@ mod tests {
             Some(DaxValue::Boolean(true))
         );
         assert_eq!(
-            try_eval_scalar_fn("ISINT64", &[DaxValue::Number(42.0)]).unwrap(),
+            try_eval_scalar_fn("ISINT64", &[DaxValue::number_smart(42.0)]).unwrap(),
             Some(DaxValue::Boolean(true))
         );
         assert_eq!(
@@ -1225,26 +1516,26 @@ mod tests {
             Some(DaxValue::Text("ok".into()))
         );
         assert_eq!(
-            try_eval_scalar_fn("COMBIN", &[DaxValue::Number(5.0), DaxValue::Number(2.0)]).unwrap(),
-            Some(DaxValue::Number(10.0))
+            try_eval_scalar_fn("COMBIN", &[DaxValue::number_smart(5.0), DaxValue::number_smart(2.0)]).unwrap(),
+            Some(DaxValue::number_smart(10.0))
         );
         assert_eq!(
-            try_eval_scalar_fn("BITLSHIFT", &[DaxValue::Number(3.0), DaxValue::Number(2.0)]).unwrap(),
-            Some(DaxValue::Number(12.0))
+            try_eval_scalar_fn("BITLSHIFT", &[DaxValue::number_smart(3.0), DaxValue::number_smart(2.0)]).unwrap(),
+            Some(DaxValue::number_smart(12.0))
         );
         assert_eq!(
             try_eval_scalar_fn("PATHCONTAINS", &[DaxValue::Text("A|B|C".into()), DaxValue::Text("B".into())]).unwrap(),
             Some(DaxValue::Boolean(true))
         );
         assert_eq!(
-            try_eval_scalar_fn("PATHITEM", &[DaxValue::Text("10|20|30".into()), DaxValue::Number(2.0), DaxValue::Number(1.0)]).unwrap(),
-            Some(DaxValue::Number(20.0))
+            try_eval_scalar_fn("PATHITEM", &[DaxValue::Text("10|20|30".into()), DaxValue::number_smart(2.0), DaxValue::number_smart(1.0)]).unwrap(),
+            Some(DaxValue::number_smart(20.0))
         );
         assert_eq!(
-            try_eval_scalar_fn("SLN", &[DaxValue::Number(10000.0), DaxValue::Number(1000.0), DaxValue::Number(9.0)]).unwrap(),
-            Some(DaxValue::Number(1000.0))
+            try_eval_scalar_fn("SLN", &[DaxValue::number_smart(10000.0), DaxValue::number_smart(1000.0), DaxValue::number_smart(9.0)]).unwrap(),
+            Some(DaxValue::number_smart(1000.0))
         );
-        let eff = try_eval_scalar_fn("EFFECT", &[DaxValue::Number(0.12), DaxValue::Number(12.0)]).unwrap().unwrap().as_f64().unwrap();
+        let eff = try_eval_scalar_fn("EFFECT", &[DaxValue::number_smart(0.12), DaxValue::number_smart(12.0)]).unwrap().unwrap().as_f64().unwrap();
         assert!((eff - 0.126825).abs() < 1e-4);
     }
 }

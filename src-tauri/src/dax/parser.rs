@@ -236,12 +236,29 @@ impl Parser {
         }
     }
 
+    /// TRUE/FALSE may appear bare or as zero-arg calls TRUE()/FALSE().
+    fn consume_optional_zero_arg_parens(&mut self, name: &str) -> Result<(), String> {
+        if matches!(self.peek(), TokenKind::LParen) {
+            self.advance();
+            if !matches!(self.advance(), TokenKind::RParen) {
+                return Err(format!("Esperado ')' após {}(", name));
+            }
+        }
+        Ok(())
+    }
+
     fn parse_primary(&mut self) -> Result<Expr, String> {
         match self.advance() {
             TokenKind::Number(n) => Ok(Expr::Number(n)),
             TokenKind::String(s) => Ok(Expr::Text(s)),
-            TokenKind::True => Ok(Expr::Boolean(true)),
-            TokenKind::False => Ok(Expr::Boolean(false)),
+            TokenKind::True => {
+                self.consume_optional_zero_arg_parens("TRUE")?;
+                Ok(Expr::Boolean(true))
+            }
+            TokenKind::False => {
+                self.consume_optional_zero_arg_parens("FALSE")?;
+                Ok(Expr::Boolean(false))
+            }
             TokenKind::Bracket(b) => Ok(Expr::BracketRef(b)),
             TokenKind::LParen => {
                 let e = self.parse_expr()?;
@@ -256,7 +273,12 @@ impl Parser {
                     let mut args = Vec::new();
                     if !matches!(self.peek(), TokenKind::RParen) {
                         loop {
-                            args.push(self.parse_expr()?);
+                            // Omitted positional argument, e.g. RANKX(t, e, , ASC)
+                            if matches!(self.peek(), TokenKind::Comma | TokenKind::Semicolon | TokenKind::RParen) {
+                                args.push(Expr::Blank);
+                            } else {
+                                args.push(self.parse_expr()?);
+                            }
                             if matches!(self.peek(), TokenKind::Comma | TokenKind::Semicolon) {
                                 self.advance();
                             } else {

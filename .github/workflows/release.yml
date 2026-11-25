@@ -44,7 +44,7 @@ jobs:
 
       - name: Run Rust tests
         working-directory: src-tauri
-        run: cargo test --lib
+        run: cargo test --lib --test dax_corpus
 
       - name: Build Tauri bundles (AppImage, deb, rpm)
         env:
@@ -58,9 +58,41 @@ jobs:
           (cd release-assets && sha256sum * > SHA256SUMS.txt)
           ls -lh release-assets
 
+      # O updater do app (src-tauri/src/updater.rs) só instala se
+      # SHA256SUMS.txt tiver assinatura Ed25519 válida da chave oficial.
+      # Sem o secret a release falha aqui, em vez de publicar sem assinatura.
+      - name: Sign SHA256SUMS.txt (Ed25519)
+        env:
+          PRISMBI_UPDATE_SIGNING_KEY: ${{ secrets.PRISMBI_UPDATE_SIGNING_KEY }}
+          EXPECTED_PUBKEY_HEX: efbc7fdbf5234578df4e71300a8e6d16fc6f518b075e6357c4c2b4ee17a2a3f6
+        run: |
+          if [ -z "$PRISMBI_UPDATE_SIGNING_KEY" ]; then
+            echo "::error::Secret PRISMBI_UPDATE_SIGNING_KEY ausente: releases sem assinatura não são instaláveis pelo updater."
+            exit 1
+          fi
+          umask 077
+          key="$RUNNER_TEMP/update-signing.pem"
+          printf '%s\n' "$PRISMBI_UPDATE_SIGNING_KEY" > "$key"
+          actual=$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n')
+          if [ "$actual" != "$EXPECTED_PUBKEY_HEX" ]; then
+            echo "::error::A chave do secret não corresponde à chave pública embutida no app."
+            exit 1
+          fi
+          openssl pkeyutl -sign -inkey "$key" -rawin -in release-assets/SHA256SUMS.txt -out release-assets/SHA256SUMS.txt.sig
+          openssl pkey -in "$key" -pubout -out "$RUNNER_TEMP/pub.pem"
+          openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/pub.pem" -rawin -in release-assets/SHA256SUMS.txt -sigfile release-assets/SHA256SUMS.txt.sig
+          rm -f "$key"
+
+      - name: Release notes (docs/release-notes/<tag>.md when present)
+        id: notes
+        run: |
+          f="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$f" ]; then echo "path=$f" >> "$GITHUB_OUTPUT"; else echo "" > "$RUNNER_TEMP/empty.md"; echo "path=$RUNNER_TEMP/empty.md" >> "$GITHUB_OUTPUT"; fi
+
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
+          body_path: ${{ steps.notes.outputs.path }}
           generate_release_notes: true

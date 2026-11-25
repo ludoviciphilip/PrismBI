@@ -1,11 +1,24 @@
 use crate::dax::ast::{BinaryOp, Expr, UnaryOp};
-use crate::dax::functions::{
-    add_days, add_months, calc_geomean, calc_median, calc_percentile, calc_stdev, calc_variance,
-    civil_to_days, days_in_month, parse_flexible_ymd, parse_iso_ymd, try_eval_scalar_fn,
-};
+use crate::dax::functions;
+use crate::dax::functions::try_eval_scalar_fn;
 use crate::dax::parser::parse_dax;
-use crate::dax::{DaxModel, DaxTableData, DaxValue, FilterContext, RelOverride};
+use crate::dax::{DaxModel, DaxTableData, DaxValue, FilterContext, RelOverride, ValueKey, ColumnType};
 use std::collections::{HashMap, HashSet};
+
+// `eval_call` below is a routing table; the implementations live in one module per family.
+// Every family module does `use super::*`, so the shared core (evaluate_ast, RowContext,
+// context transition, ...) and the sibling modules' `pub(super)` items are all in scope.
+mod aggregate;
+mod filter;
+mod row;
+mod scalar;
+mod table;
+mod time;
+
+use filter::*;
+use row::*;
+use table::*;
+use time::*;
 
 #[derive(Debug, Clone)]
 pub struct RowContext<'a> {
@@ -22,7 +35,7 @@ pub fn evaluate_ast(
 ) -> Result<DaxValue, String> {
     match expr {
         Expr::Blank => Ok(DaxValue::Blank),
-        Expr::Number(n) => Ok(DaxValue::Number(*n)),
+        Expr::Number(n) => Ok(DaxValue::number_smart(*n)),
         Expr::Text(s) => Ok(DaxValue::Text(s.clone())),
         Expr::Boolean(b) => Ok(DaxValue::Boolean(*b)),
         Expr::Ident(id) => {
@@ -37,23 +50,19 @@ pub fn evaluate_ast(
         Expr::BracketRef(name) => {
             // 1. Check active row context column first
             if let Some(rc) = row_stack.last() {
-                if let Some(cidx) = rc.table.get_col_idx(name) {
+                if let Some(cidx) = bare_col_idx(rc.table, name) {
                     return Ok(rc.table.rows[rc.row_idx][cidx].clone());
                 }
             }
             // 2. Check measure
             if let Some(measure) = model.get_measure(name) {
-                let effective_ctx = if let Some(rc) = row_stack.last() {
-                    apply_context_transition(ctx, rc)
-                } else {
-                    ctx.clone()
-                };
+                let effective_ctx = apply_context_transition(model, ctx, row_stack);
                 let parsed = parse_dax(&measure.formula)?;
                 return evaluate_ast(&parsed, model, &effective_ctx, &[], &HashMap::new());
             }
             // 3. Fallback search across row stack
             for rc in row_stack.iter().rev() {
-                if let Some(cidx) = rc.table.get_col_idx(name) {
+                if let Some(cidx) = bare_col_idx(rc.table, name) {
                     return Ok(rc.table.rows[rc.row_idx][cidx].clone());
                 }
             }
@@ -61,10 +70,8 @@ pub fn evaluate_ast(
         }
         Expr::TableColRef { table, column } => {
             for rc in row_stack.iter().rev() {
-                if rc.table.name.eq_ignore_ascii_case(table) {
-                    if let Some(cidx) = rc.table.get_col_idx(column) {
-                        return Ok(rc.table.rows[rc.row_idx][cidx].clone());
-                    }
+                if let Some(cidx) = row_col_idx(rc.table, table, column) {
+                    return Ok(rc.table.rows[rc.row_idx][cidx].clone());
                 }
             }
             // Try RELATED path if in row context of another table
@@ -79,8 +86,8 @@ pub fn evaluate_ast(
         Expr::Unary { op, expr } => {
             let v = evaluate_ast(expr, model, ctx, row_stack, vars)?;
             match op {
-                UnaryOp::Neg => Ok(DaxValue::Number(-(v.as_f64().unwrap_or(0.0)))),
-                UnaryOp::Pos => Ok(DaxValue::Number(v.as_f64().unwrap_or(0.0))),
+                UnaryOp::Neg => Ok(v.dax_neg()),
+                UnaryOp::Pos => Ok(DaxValue::number_smart(v.as_f64().unwrap_or(0.0))),
                 UnaryOp::Not => Ok(DaxValue::Boolean(!v.as_bool())),
             }
         }
@@ -129,23 +136,54 @@ pub fn evaluate_ast(
 }
 
 fn eval_binary(op: &BinaryOp, l: &DaxValue, r: &DaxValue) -> Result<DaxValue, String> {
+    // Date ± number arithmetic yields a date (DAX stores dates as a serial day
+    // count). Works uniformly whether the operand is a native `DateTime` or a
+    // legacy ISO `Text` cell (`as_date_serial` bridges both), and preserves
+    // the operand's own representation in the result.
+    if matches!(op, BinaryOp::Add | BinaryOp::Sub) {
+        let l_date = l.as_date_serial();
+        let r_date = r.as_date_serial();
+        let l_is_dt = matches!(l, DaxValue::DateTime(_));
+        let r_is_dt = matches!(r, DaxValue::DateTime(_));
+        let wrap = |serial: f64, is_dt: bool| {
+            if is_dt {
+                DaxValue::DateTime(serial)
+            } else {
+                DaxValue::Text(functions::serial_to_iso(serial))
+            }
+        };
+        match (l_date, r_date) {
+            (Some(ls), None) => {
+                let delta = r.as_f64().unwrap_or(0.0);
+                let signed = if matches!(op, BinaryOp::Sub) { -delta } else { delta };
+                return Ok(wrap(ls + signed, l_is_dt));
+            }
+            (None, Some(rs)) if matches!(op, BinaryOp::Add) => {
+                let delta = l.as_f64().unwrap_or(0.0);
+                return Ok(wrap(rs + delta, r_is_dt));
+            }
+            (Some(ls), Some(rs)) if matches!(op, BinaryOp::Sub) => {
+                // DateTime - DateTime -> Decimal days (DAX: pure number of days).
+                return Ok(DaxValue::Decimal(ls - rs));
+            }
+            _ => {}
+        }
+    }
     match op {
-        BinaryOp::Add => Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) + r.as_f64().unwrap_or(0.0))),
-        BinaryOp::Sub => Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) - r.as_f64().unwrap_or(0.0))),
+        BinaryOp::Add => Ok(l.dax_add(r)),
+        BinaryOp::Sub => Ok(l.dax_sub(r)),
         BinaryOp::Mul => {
             if l.is_blank() || r.is_blank() {
                 Ok(DaxValue::Blank)
             } else {
-                Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) * r.as_f64().unwrap_or(0.0)))
+                Ok(l.dax_mul(r))
             }
         }
         BinaryOp::Div => {
-            let den = r.as_f64().unwrap_or(0.0);
-            if den == 0.0 {
-                Ok(DaxValue::Blank)
-            } else {
-                Ok(DaxValue::Number(l.as_f64().unwrap_or(0.0) / den))
-            }
+            // DAX: raw division by zero yields Infinity/-Infinity/NaN, same as IEEE754 (it is
+            // DIVIDE(...) that safely returns BLANK/alternate). ISERROR/IFERROR treat the
+            // resulting non-finite number as an error.
+            Ok(l.dax_div(r))
         }
         BinaryOp::Concat => Ok(DaxValue::Text(format!(
             "{}{}",
@@ -188,14 +226,13 @@ fn compare_dax_values(l: &DaxValue, r: &DaxValue) -> i8 {
     }
 }
 
-fn apply_context_transition(ctx: &FilterContext, rc: &RowContext<'_>) -> FilterContext {
-    let mut next = ctx.clone();
-    for (idx, cname) in rc.table.columns.iter().enumerate() {
-        let mut set = HashSet::new();
-        set.insert(rc.table.rows[rc.row_idx][idx].canonical_key());
-        next.set_column_filter(&rc.table.name, cname, set);
-    }
-    next
+/// Context transition (CALCULATE, measure references): every active row context on the
+/// stack becomes a filter, outermost first so inner rows win on shared columns. Only
+/// columns with model lineage are turned into filters (extension columns are skipped).
+fn apply_context_transition(model: &DaxModel, ctx: &FilterContext, row_stack: &[RowContext<'_>]) -> FilterContext {
+    row_stack
+        .iter()
+        .fold(ctx.clone(), |acc, rc| apply_lineage_transition(model, &acc, rc))
 }
 
 fn eval_call(
@@ -211,578 +248,84 @@ fn eval_call(
         "BLANK" => Ok(DaxValue::Blank),
         "TRUE" => Ok(DaxValue::Boolean(true)),
         "FALSE" => Ok(DaxValue::Boolean(false)),
-        "ISBLANK" => {
-            let v = eval_arg(args, 0, model, ctx, row_stack, vars)?;
-            Ok(DaxValue::Boolean(v.is_blank()))
-        }
-        "NOT" => {
-            let v = eval_arg(args, 0, model, ctx, row_stack, vars)?;
-            Ok(DaxValue::Boolean(!v.as_bool()))
-        }
-        "AND" => {
-            let a = eval_arg(args, 0, model, ctx, row_stack, vars)?;
-            let b = eval_arg(args, 1, model, ctx, row_stack, vars)?;
-            Ok(DaxValue::Boolean(a.as_bool() && b.as_bool()))
-        }
-        "OR" => {
-            let a = eval_arg(args, 0, model, ctx, row_stack, vars)?;
-            let b = eval_arg(args, 1, model, ctx, row_stack, vars)?;
-            Ok(DaxValue::Boolean(a.as_bool() || b.as_bool()))
-        }
-        "IF" => {
-            let cond = eval_arg(args, 0, model, ctx, row_stack, vars)?;
-            if cond.as_bool() {
-                eval_arg(args, 1, model, ctx, row_stack, vars)
-            } else if args.len() >= 3 {
-                eval_arg(args, 2, model, ctx, row_stack, vars)
-            } else {
-                Ok(DaxValue::Blank)
-            }
-        }
-        "SWITCH" => {
-            if args.len() < 3 {
-                return Ok(DaxValue::Blank);
-            }
-            let target = evaluate_ast(&args[0], model, ctx, row_stack, vars)?;
-            let mut idx = 1;
-            while idx + 1 < args.len() {
-                let cand = evaluate_ast(&args[idx], model, ctx, row_stack, vars)?;
-                if target.dax_equals(&cand) {
-                    return evaluate_ast(&args[idx + 1], model, ctx, row_stack, vars);
-                }
-                idx += 2;
-            }
-            if idx < args.len() {
-                evaluate_ast(&args[idx], model, ctx, row_stack, vars)
-            } else {
-                Ok(DaxValue::Blank)
-            }
-        }
-        "DIVIDE" => {
-            let num = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
-            let den = eval_arg(args, 1, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
-            if den.abs() < 1e-12 {
-                if args.len() >= 3 {
-                    eval_arg(args, 2, model, ctx, row_stack, vars)
-                } else {
-                    Ok(DaxValue::Blank)
-                }
-            } else {
-                Ok(DaxValue::Number(num / den))
-            }
-        }
-        "COALESCE" => {
-            for a in args {
-                let v = evaluate_ast(a, model, ctx, row_stack, vars)?;
-                if !v.is_blank() {
-                    return Ok(v);
-                }
-            }
-            Ok(DaxValue::Blank)
-        }
-        "IFERROR" => match eval_arg(args, 0, model, ctx, row_stack, vars) {
-            Ok(v) => Ok(v),
-            Err(_) => eval_arg(args, 1, model, ctx, row_stack, vars),
-        },
-        "ABS" => Ok(DaxValue::Number(
-            eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0).abs(),
-        )),
-        "ROUND" => {
-            let n = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
-            let digits = eval_arg(args, 1, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0) as i32;
-            let factor = 10f64.powi(digits);
-            Ok(DaxValue::Number((n * factor).round() / factor))
-        }
-        "INT" => {
-            let n = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
-            Ok(DaxValue::Number(n.floor()))
-        }
-        "SQRT" => {
-            let n = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
-            if n < 0.0 {
-                Ok(DaxValue::Blank)
-            } else {
-                Ok(DaxValue::Number(n.sqrt()))
-            }
-        }
-        "POWER" => {
-            let base = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
-            let exp = eval_arg(args, 1, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0);
-            Ok(DaxValue::Number(base.powf(exp)))
-        }
+        "ISBLANK" => scalar::eval_isblank(args, model, ctx, row_stack, vars),
+        "NOT" => scalar::eval_not(args, model, ctx, row_stack, vars),
+        "AND" => scalar::eval_and(args, model, ctx, row_stack, vars),
+        "OR" => scalar::eval_or(args, model, ctx, row_stack, vars),
+        "IF" | "IF.EAGER" => scalar::eval_if(args, model, ctx, row_stack, vars),
+        "SWITCH" => scalar::eval_switch(args, model, ctx, row_stack, vars),
+        "DIVIDE" => scalar::eval_divide(args, model, ctx, row_stack, vars),
+        "COALESCE" => scalar::eval_coalesce(args, model, ctx, row_stack, vars),
+        "IFERROR" => scalar::eval_iferror(args, model, ctx, row_stack, vars),
+        "ISERROR" => scalar::eval_iserror(args, model, ctx, row_stack, vars),
+        "ABS" => scalar::eval_abs(args, model, ctx, row_stack, vars),
+        "ROUND" => scalar::eval_round(args, model, ctx, row_stack, vars),
+        "INT" => scalar::eval_int(args, model, ctx, row_stack, vars),
+        "SQRT" => scalar::eval_sqrt(args, model, ctx, row_stack, vars),
+        "POWER" => scalar::eval_power(args, model, ctx, row_stack, vars),
         "TOTALYTD" | "TOTALMTD" | "TOTALQTD" => {
-            if args.len() < 2 {
-                return Err(format!("{} requer (expressão, Tabela[Data])", fname));
-            }
-            let Some(Expr::TableColRef { table, column }) = args.get(1) else {
-                return Err(format!("{} requer coluna de data no 2º argumento", fname));
-            };
-            let mut next_ctx = if let Some(rc) = row_stack.last() {
-                apply_context_transition(ctx, rc)
-            } else {
-                ctx.clone()
-            };
-            let mode = match fname.as_str() {
-                "TOTALMTD" => "MTD",
-                "TOTALQTD" => "QTD",
-                _ => "YTD",
-            };
-            apply_period_to_date(model, ctx, &mut next_ctx, table, column, mode);
-            for filter_expr in &args[2..] {
-                apply_calculate_modifier(filter_expr, model, ctx, &mut next_ctx, row_stack, vars)?;
-            }
-            evaluate_ast(&args[0], model, &next_ctx, &[], vars)
+            time::eval_total_to_date(&fname, args, model, ctx, row_stack, vars)
         }
         "OPENINGBALANCEMONTH" | "CLOSINGBALANCEMONTH"
         | "OPENINGBALANCEQUARTER" | "CLOSINGBALANCEQUARTER"
         | "OPENINGBALANCEYEAR" | "CLOSINGBALANCEYEAR" => {
-            if args.len() < 2 {
-                return Err(format!("{} requer (expressão, Tabela[Data])", fname));
-            }
-            let Some(Expr::TableColRef { table, column }) = args.get(1) else {
-                return Err(format!("{} requer coluna de data no 2º argumento", fname));
-            };
-            let mut next_ctx = if let Some(rc) = row_stack.last() {
-                apply_context_transition(ctx, rc)
-            } else {
-                ctx.clone()
-            };
-            let is_opening = fname.starts_with("OPENING");
-            let scope = if fname.ends_with("MONTH") {
-                "MONTH"
-            } else if fname.ends_with("QUARTER") {
-                "QUARTER"
-            } else {
-                "YEAR"
-            };
-            apply_period_boundary(model, ctx, &mut next_ctx, table, column, is_opening, scope);
-            for filter_expr in &args[2..] {
-                apply_calculate_modifier(filter_expr, model, ctx, &mut next_ctx, row_stack, vars)?;
-            }
-            evaluate_ast(&args[0], model, &next_ctx, &[], vars)
+            time::eval_opening_closing_balance(&fname, args, model, ctx, row_stack, vars)
         }
         "FIRSTDATE" | "LASTDATE" | "STARTOFMONTH" | "ENDOFMONTH"
         | "STARTOFQUARTER" | "ENDOFQUARTER" | "STARTOFYEAR" | "ENDOFYEAR" => {
-            let Some(Expr::TableColRef { table, column }) = args.first() else {
-                return Err(format!("{} requer referência Tabela[Data]", fname));
-            };
-            let bound_keys = resolve_date_boundary_keys(model, ctx, table, column, &fname);
-            if let Some(first) = bound_keys.into_iter().min() {
-                // Canonical key may be `t:YYYY-MM-DD`; strip prefix if present
-                let clean = first.strip_prefix("t:").unwrap_or(&first).to_string();
-                Ok(DaxValue::Text(clean))
-            } else {
-                Ok(DaxValue::Blank)
-            }
+            time::eval_date_boundary(&fname, args, model, ctx)
         }
-        "RANKX" => {
-            if args.len() < 2 {
-                return Err("RANKX requer (tabela, expressão)".to_string());
-            }
-            let (table_eval, row_indices, rank_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
-            let table_data = table_eval.as_ref();
-            let target_val = if args.len() >= 3 {
-                evaluate_ast(&args[2], model, ctx, row_stack, vars)?
-            } else {
-                evaluate_ast(&args[1], model, ctx, row_stack, vars)?
-            };
-            let Some(target_num) = (if target_val.is_blank() { None } else { target_val.as_f64() }) else {
-                return Ok(DaxValue::Blank);
-            };
-            let ascending = if let Some(ord_expr) = args.get(3) {
-                match ord_expr {
-                    Expr::Ident(s) => s.eq_ignore_ascii_case("ASC"),
-                    _ => evaluate_ast(ord_expr, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.0) == 1.0,
-                }
-            } else {
-                false
-            };
-
-            let mut scores = Vec::new();
-            for r_idx in row_indices {
-                let mut next_stack = row_stack.to_vec();
-                next_stack.push(RowContext {
-                    table: table_data,
-                    row_idx: r_idx,
-                });
-                let v = evaluate_ast(&args[1], model, &rank_ctx, &next_stack, vars)?;
-                if !v.is_blank() {
-                    if let Some(n) = v.as_f64() {
-                        scores.push(n);
-                    }
-                }
-            }
-            let better = scores
-                .iter()
-                .filter(|&&s| if ascending { s < target_num - 1e-9 } else { s > target_num + 1e-9 })
-                .count();
-            Ok(DaxValue::Number((better + 1) as f64))
-        }
+        "RANKX" => aggregate::eval_rankx(args, model, ctx, row_stack, vars),
         "SUM" | "AVERAGE" | "AVERAGEA" | "MIN" | "MINA" | "MAX" | "MAXA"
         | "COUNT" | "COUNTA" | "COUNTBLANK" | "DISTINCTCOUNT" | "DISTINCTCOUNTNOBLANK"
         | "MEDIAN" | "STDEV.S" | "STDEV.P" | "VAR.S" | "VAR.P" | "PRODUCT" | "GEOMEAN" => {
-            let Some(Expr::TableColRef { table, column }) = args.first() else {
-                return Err(format!("{} requer referência Tabela[Coluna]", fname));
-            };
-            eval_column_agg(&fname, model, ctx, table, column)
+            aggregate::eval_column_aggregate(&fname, args, model, ctx)
         }
         "PERCENTILE.INC" | "PERCENTILE.EXC" => {
-            if args.len() < 2 {
-                return Err(format!("{} requer (Tabela[Coluna], k)", fname));
-            }
-            let Some(Expr::TableColRef { table, column }) = args.first() else {
-                return Err(format!("{} requer referência Tabela[Coluna]", fname));
-            };
-            let k = evaluate_ast(&args[1], model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.5);
-            let tbl = model
-                .get_table(table)
-                .ok_or_else(|| format!("Tabela '{}' não encontrada", table))?;
-            let cidx = tbl
-                .get_col_idx(column)
-                .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", table, column))?;
-            let vis = model.get_visible_row_indices(table, ctx);
-            let nums: Vec<f64> = vis
-                .iter()
-                .filter_map(|&i| {
-                    let v = &tbl.rows[i][cidx];
-                    if v.is_blank() { None } else { v.as_f64() }
-                })
-                .collect();
-            Ok(calc_percentile(&nums, k, fname == "PERCENTILE.INC")
-                .map(DaxValue::Number)
-                .unwrap_or(DaxValue::Blank))
+            aggregate::eval_percentile(&fname, args, model, ctx, row_stack, vars)
         }
-        "COUNTROWS" => {
-            let Some(first) = args.first() else {
-                return Err("COUNTROWS requer expressão de tabela".to_string());
-            };
-            let (_, indices, _) = eval_table_expr_owned(first, model, ctx, row_stack, vars)?;
-            Ok(DaxValue::Number(indices.len() as f64))
-        }
-        "ISEMPTY" => {
-            let Some(first) = args.first() else {
-                return Ok(DaxValue::Boolean(true));
-            };
-            let (_, indices, _) = eval_table_expr_owned(first, model, ctx, row_stack, vars)?;
-            Ok(DaxValue::Boolean(indices.is_empty()))
-        }
-        "CONTAINSROW" => {
-            if args.len() < 2 {
-                return Err("CONTAINSROW requer (tabela, valor1, ...)".to_string());
-            }
-            let (table_eval, row_indices, _) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
-            let table_data = table_eval.as_ref();
-            let mut search_keys = Vec::with_capacity(args.len() - 1);
-            for a in &args[1..] {
-                search_keys.push(evaluate_ast(a, model, ctx, row_stack, vars)?.canonical_key());
-            }
-            let found = row_indices.iter().any(|&r_idx| {
-                let row = &table_data.rows[r_idx];
-                if search_keys.len() == 1 {
-                    row.first().is_some_and(|cell| cell.canonical_key() == search_keys[0])
-                } else {
-                    search_keys.len() <= row.len()
-                        && search_keys.iter().enumerate().all(|(ci, k)| row[ci].canonical_key() == *k)
-                }
-            });
-            Ok(DaxValue::Boolean(found))
-        }
+        "COUNTROWS" => aggregate::eval_countrows(args, model, ctx, row_stack, vars),
+        "ISEMPTY" => aggregate::eval_isempty(args, model, ctx, row_stack, vars),
+        "CONTAINSROW" => aggregate::eval_containsrow(args, model, ctx, row_stack, vars),
         "SUMX" | "AVERAGEX" | "MINX" | "MAXX" | "COUNTX" | "COUNTAX"
         | "MEDIANX" | "STDEVX.S" | "STDEVX.P" | "VARX.S" | "VARX.P"
         | "PRODUCTX" | "GEOMEANX" => {
-            if args.len() < 2 {
-                return Err(format!("{} requer (tabela, expressão)", fname));
-            }
-            let (table_eval, row_indices, iter_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
-            let table_data = table_eval.as_ref();
-            if fname == "COUNTAX" {
-                let mut cnt = 0usize;
-                for r_idx in row_indices {
-                    let mut next_stack = row_stack.to_vec();
-                    next_stack.push(RowContext { table: table_data, row_idx: r_idx });
-                    let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
-                    if !v.is_blank() {
-                        cnt += 1;
-                    }
-                }
-                return Ok(DaxValue::Number(cnt as f64));
-            }
-            let mut vals = Vec::new();
-            for r_idx in row_indices {
-                let mut next_stack = row_stack.to_vec();
-                next_stack.push(RowContext {
-                    table: table_data,
-                    row_idx: r_idx,
-                });
-                let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
-                if !v.is_blank() {
-                    if let Some(n) = v.as_f64() {
-                        vals.push(n);
-                    }
-                }
-            }
-            if vals.is_empty() {
-                return Ok(DaxValue::Blank);
-            }
-            let res = match fname.as_str() {
-                "SUMX" => Some(vals.iter().sum()),
-                "AVERAGEX" => Some(vals.iter().sum::<f64>() / vals.len() as f64),
-                "MINX" => Some(vals.iter().copied().fold(f64::INFINITY, f64::min)),
-                "MAXX" => Some(vals.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
-                "COUNTX" => Some(vals.len() as f64),
-                "MEDIANX" => calc_median(&vals),
-                "STDEVX.S" => calc_stdev(&vals, true),
-                "STDEVX.P" => calc_stdev(&vals, false),
-                "VARX.S" => calc_variance(&vals, true),
-                "VARX.P" => calc_variance(&vals, false),
-                "PRODUCTX" => Some(vals.iter().product()),
-                "GEOMEANX" => calc_geomean(&vals),
-                _ => None,
-            };
-            Ok(res.map(DaxValue::Number).unwrap_or(DaxValue::Blank))
+            aggregate::eval_x_aggregate(&fname, args, model, ctx, row_stack, vars)
         }
         "PERCENTILEX.INC" | "PERCENTILEX.EXC" => {
-            if args.len() < 3 {
-                return Err(format!("{} requer (tabela, expressão, k)", fname));
-            }
-            let (table_eval, row_indices, iter_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
-            let table_data = table_eval.as_ref();
-            let k = evaluate_ast(&args[2], model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.5);
-            let mut vals = Vec::new();
-            for r_idx in row_indices {
-                let mut next_stack = row_stack.to_vec();
-                next_stack.push(RowContext { table: table_data, row_idx: r_idx });
-                let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
-                if !v.is_blank() {
-                    if let Some(n) = v.as_f64() {
-                        vals.push(n);
-                    }
-                }
-            }
-            Ok(calc_percentile(&vals, k, fname == "PERCENTILEX.INC")
-                .map(DaxValue::Number)
-                .unwrap_or(DaxValue::Blank))
+            aggregate::eval_percentilex(&fname, args, model, ctx, row_stack, vars)
         }
-        "CONCATENATEX" => {
-            if args.len() < 2 {
-                return Err("CONCATENATEX requer (tabela, expressão, [delimitador])".to_string());
-            }
-            let (table_eval, row_indices, iter_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
-            let table_data = table_eval.as_ref();
-            let delim = if args.len() >= 3 {
-                evaluate_ast(&args[2], model, ctx, row_stack, vars)?.as_display_string()
-            } else {
-                String::new()
-            };
-            let sort_asc = args.get(4).is_some_and(|e| matches!(e, Expr::Ident(s) if s.eq_ignore_ascii_case("ASC")));
-            let mut items: Vec<(String, String)> = Vec::new();
-            for r_idx in row_indices {
-                let mut next_stack = row_stack.to_vec();
-                next_stack.push(RowContext { table: table_data, row_idx: r_idx });
-                let v = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
-                if !v.is_blank() {
-                    let text = v.as_display_string();
-                    let sort_k = if let Some(ord_e) = args.get(3) {
-                        evaluate_ast(ord_e, model, &iter_ctx, &next_stack, vars)?.as_display_string()
-                    } else {
-                        String::new()
-                    };
-                    items.push((text, sort_k));
-                }
-            }
-            if args.len() >= 4 {
-                items.sort_by(|a, b| {
-                    let cmp = a.1.cmp(&b.1);
-                    if sort_asc || args.len() < 5 { cmp } else { cmp.reverse() }
-                });
-            }
-            let joined: Vec<String> = items.into_iter().map(|(t, _)| t).collect();
-            Ok(DaxValue::Text(joined.join(&delim)))
-        }
-        "LOOKUPVALUE" => {
-            if args.len() < 3 || (args.len() % 2 == 0) {
-                // Can be (result, search_col, search_val) [odd len] or with alternateValue at end? Wait:
-                // 3 args: res, c1, v1 (odd)
-                // 4 args: res, c1, v1, alt (even!)
-                // 5 args: res, c1, v1, c2, v2 (odd)
-                // 6 args: res, c1, v1, c2, v2, alt (even!)
-            }
-            eval_lookupvalue(args, model, ctx, row_stack, vars)
-        }
-        "CALCULATE" => {
-            if args.is_empty() {
-                return Err("CALCULATE requer ao menos 1 argumento".to_string());
-            }
-            let mut next_ctx = if let Some(rc) = row_stack.last() {
-                apply_context_transition(ctx, rc)
-            } else {
-                ctx.clone()
-            };
-            for filter_expr in &args[1..] {
-                apply_calculate_modifier(filter_expr, model, ctx, &mut next_ctx, row_stack, vars)?;
-            }
-            evaluate_ast(&args[0], model, &next_ctx, &[], vars)
-        }
-        "SELECTEDVALUE" => {
-            let Some(Expr::TableColRef { table, column }) = args.first() else {
-                return Err("SELECTEDVALUE requer Tabela[Coluna]".to_string());
-            };
-            let alt = if args.len() >= 2 {
-                evaluate_ast(&args[1], model, ctx, row_stack, vars)?
-            } else {
-                DaxValue::Blank
-            };
-            eval_selected_value(model, ctx, table, column, alt)
-        }
-        "HASONEVALUE" | "HASONEFILTER" => {
-            let Some(Expr::TableColRef { table, column }) = args.first() else {
-                return Ok(DaxValue::Boolean(false));
-            };
-            if fname == "HASONEFILTER" {
-                let direct_count = ctx
-                    .filters
-                    .get(&table.to_lowercase())
-                    .and_then(|cols| cols.get(&column.to_lowercase()))
-                    .map(|s| s.len())
-                    .unwrap_or(0);
-                Ok(DaxValue::Boolean(direct_count == 1))
-            } else {
-                let count = count_distinct_visible(model, ctx, table, column);
-                Ok(DaxValue::Boolean(count == 1))
-            }
-        }
-        "ISFILTERED" => {
-            let Some(Expr::TableColRef { table, column }) = args.first() else {
-                return Ok(DaxValue::Boolean(false));
-            };
-            let is_direct = ctx
-                .filters
-                .get(&table.to_lowercase())
-                .and_then(|cols| cols.get(&column.to_lowercase()))
-                .is_some_and(|s| !s.is_empty());
-            Ok(DaxValue::Boolean(is_direct))
-        }
-        "ISCROSSFILTERED" => {
-            let Some(Expr::TableColRef { table, column }) = args.first() else {
-                return Ok(DaxValue::Boolean(false));
-            };
-            if let Some(tbl) = model.get_table(table) {
-                let vis_count = model.get_visible_row_indices(table, ctx).len();
-                let direct = ctx.filters.get(&tbl.name.to_lowercase()).is_some_and(|c| !c.is_empty());
-                let is_filtered = direct || vis_count < tbl.rows.len();
-                let _ = column;
-                Ok(DaxValue::Boolean(is_filtered))
-            } else {
-                Ok(DaxValue::Boolean(false))
-            }
-        }
-        "ISINSCOPE" | "ISATLEVEL" => {
-            let Some(Expr::TableColRef { table, column }) = args.first() else {
-                return Ok(DaxValue::Boolean(false));
-            };
-            let count = count_distinct_visible(model, ctx, table, column);
-            let direct = ctx
-                .filters
-                .get(&table.to_lowercase())
-                .and_then(|cols| cols.get(&column.to_lowercase()))
-                .is_some();
-            Ok(DaxValue::Boolean(direct || count == 1))
-        }
+        "CONCATENATEX" => aggregate::eval_concatenatex(args, model, ctx, row_stack, vars),
+        "LOOKUPVALUE" => filter::eval_lookupvalue(args, model, ctx, row_stack, vars),
+        "CALCULATE" => filter::eval_calculate(args, model, ctx, row_stack, vars),
+        "SELECTEDVALUE" => filter::eval_selectedvalue(args, model, ctx, row_stack, vars),
+        "HASONEVALUE" | "HASONEFILTER" => filter::eval_hasonevalue(&fname, args, model, ctx),
+        "ISFILTERED" => filter::eval_isfiltered(args, ctx),
+        "ISCROSSFILTERED" => filter::eval_iscrossfiltered(args, model, ctx),
+        "ISINSCOPE" | "ISATLEVEL" => filter::eval_isinscope(args, model, ctx),
         "ISSUBTOTAL" => Ok(DaxValue::Boolean(false)),
         "FIRSTNONBLANK" | "LASTNONBLANK" => {
-            if args.len() < 2 {
-                return Err(format!("{} requer (Tabela[Coluna], expressão)", fname));
-            }
-            let Some(Expr::TableColRef { table, column }) = args.first() else {
-                return Err(format!("{} requer Tabela[Coluna]", fname));
-            };
-            let Some(tbl) = model.get_table(table) else {
-                return Ok(DaxValue::Blank);
-            };
-            let Some(cidx) = tbl.get_col_idx(column) else {
-                return Ok(DaxValue::Blank);
-            };
-            let vis = model.get_visible_row_indices(table, ctx);
-            let mut distinct_vals: Vec<(String, DaxValue)> = Vec::new();
-            let mut seen = HashSet::new();
-            for r_idx in vis {
-                let v = &tbl.rows[r_idx][cidx];
-                if !v.is_blank() && seen.insert(v.canonical_key()) {
-                    distinct_vals.push((v.canonical_key(), v.clone()));
-                }
-            }
-            distinct_vals.sort_by(|a, b| a.1.as_display_string().cmp(&b.1.as_display_string()));
-            if fname == "LASTNONBLANK" {
-                distinct_vals.reverse();
-            }
-            for (k, v) in distinct_vals {
-                let mut test_ctx = ctx.clone();
-                let mut set = HashSet::new();
-                set.insert(k);
-                test_ctx.set_column_filter(&tbl.name, column, set);
-                let res = evaluate_ast(&args[1], model, &test_ctx, row_stack, vars)?;
-                if !res.is_blank() {
-                    return Ok(v);
-                }
-            }
-            Ok(DaxValue::Blank)
+            filter::eval_first_last_nonblank(&fname, args, model, ctx, row_stack, vars)
         }
-        "RELATED" => {
-            let Some(Expr::TableColRef { table, column }) = args.first() else {
-                return Err("RELATED requer Tabela[Coluna]".to_string());
-            };
-            if let Some(rc) = row_stack.last() {
-                Ok(resolve_related(model, rc, table, column).unwrap_or(DaxValue::Blank))
-            } else {
-                Ok(DaxValue::Blank)
-            }
-        }
-        "UPPER" => Ok(DaxValue::Text(
-            eval_arg(args, 0, model, ctx, row_stack, vars)?.as_display_string().to_uppercase(),
-        )),
-        "LOWER" => Ok(DaxValue::Text(
-            eval_arg(args, 0, model, ctx, row_stack, vars)?.as_display_string().to_lowercase(),
-        )),
-        "LEN" => Ok(DaxValue::Number(
-            eval_arg(args, 0, model, ctx, row_stack, vars)?.as_display_string().chars().count() as f64,
-        )),
-        "CONCATENATE" => {
-            let a = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_display_string();
-            let b = eval_arg(args, 1, model, ctx, row_stack, vars)?.as_display_string();
-            Ok(DaxValue::Text(format!("{}{}", a, b)))
-        }
-        "LEFT" => {
-            let s = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_display_string();
-            let n = eval_arg(args, 1, model, ctx, row_stack, vars)?.as_f64().unwrap_or(1.0).max(0.0) as usize;
-            Ok(DaxValue::Text(s.chars().take(n).collect()))
-        }
-        "RIGHT" => {
-            let s = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_display_string();
-            let n = eval_arg(args, 1, model, ctx, row_stack, vars)?.as_f64().unwrap_or(1.0).max(0.0) as usize;
-            let chars: Vec<char> = s.chars().collect();
-            let start = chars.len().saturating_sub(n);
-            Ok(DaxValue::Text(chars[start..].iter().collect()))
-        }
+        "XNPV" | "XIRR" => aggregate::eval_xnpv_xirr(&fname, args, model, ctx, row_stack, vars),
+        "EARLIER" | "EARLIEST" => row::eval_earlier(&fname, args, model, ctx, row_stack, vars),
+        "RELATED" => row::eval_related(args, model, row_stack),
+        "UPPER" => scalar::eval_upper(args, model, ctx, row_stack, vars),
+        "LOWER" => scalar::eval_lower(args, model, ctx, row_stack, vars),
+        "LEN" => scalar::eval_len(args, model, ctx, row_stack, vars),
+        "CONCATENATE" => scalar::eval_concatenate(args, model, ctx, row_stack, vars),
+        "LEFT" => scalar::eval_left(args, model, ctx, row_stack, vars),
+        "RIGHT" => scalar::eval_right(args, model, ctx, row_stack, vars),
         "YEAR" | "MONTH" | "DAY" => {
-            let s = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_display_string();
-            if let Some((y, m, d)) = parse_iso_ymd(&s) {
-                let val = match fname.as_str() {
-                    "YEAR" => y as f64,
-                    "MONTH" => m as f64,
-                    _ => d as f64,
-                };
-                Ok(DaxValue::Number(val))
-            } else {
-                Ok(DaxValue::Blank)
-            }
+            scalar::eval_date_part(&fname, args, model, ctx, row_stack, vars)
         }
         _ => {
             let mut eval_args = Vec::with_capacity(args.len());
             for a in args {
                 eval_args.push(evaluate_ast(a, model, ctx, row_stack, vars)?);
             }
-            if let Some(scalar) = try_eval_scalar_fn(&fname, &eval_args)? {
-                Ok(scalar)
+            if let Some(value) = try_eval_scalar_fn(&fname, &eval_args)? {
+                Ok(value)
             } else {
                 Err(format!("Função DAX '{}' ainda não implementada no motor nativo.", fname))
             }
@@ -804,1113 +347,18 @@ fn eval_arg(
     evaluate_ast(e, model, ctx, row_stack, vars)
 }
 
-fn extract_table_name(expr: Option<&Expr>) -> Result<String, String> {
-    match expr {
-        Some(Expr::Ident(t)) => Ok(t.clone()),
-        _ => Err("Esperado nome de tabela".to_string()),
-    }
-}
-
-enum TableEval<'a> {
-    Borrowed(&'a DaxTableData),
-    Owned(DaxTableData),
-}
-
-impl<'a> TableEval<'a> {
-    fn as_ref(&self) -> &DaxTableData {
-        match self {
-            TableEval::Borrowed(t) => t,
-            TableEval::Owned(t) => t,
-        }
-    }
-}
-
-fn eval_table_expr_owned<'a>(
-    expr: &Expr,
-    model: &'a DaxModel,
-    ctx: &FilterContext,
-    row_stack: &[RowContext<'_>],
-    vars: &HashMap<String, DaxValue>,
-) -> Result<(TableEval<'a>, Vec<usize>, FilterContext), String> {
-    if let Expr::Call { name, args } = expr {
-        if name.eq_ignore_ascii_case("GENERATESERIES") {
-            let start = args
-                .first()
-                .map(|a| evaluate_ast(a, model, ctx, row_stack, vars))
-                .transpose()?
-                .and_then(|v| v.as_f64())
-                .unwrap_or(1.0);
-            let end = args
-                .get(1)
-                .map(|a| evaluate_ast(a, model, ctx, row_stack, vars))
-                .transpose()?
-                .and_then(|v| v.as_f64())
-                .unwrap_or(start);
-            let step = args
-                .get(2)
-                .map(|a| evaluate_ast(a, model, ctx, row_stack, vars))
-                .transpose()?
-                .and_then(|v| v.as_f64())
-                .unwrap_or(1.0);
-
-            let mut rows = Vec::new();
-            if step.abs() > 1e-12 {
-                let mut cur = start;
-                let max_iters = 100_000usize;
-                for _ in 0..max_iters {
-                    if (step > 0.0 && cur > end + 1e-9) || (step < 0.0 && cur < end - 1e-9) {
-                        break;
-                    }
-                    rows.push(vec![DaxValue::Number(cur)]);
-                    cur += step;
-                }
-            }
-            let mut col_index = HashMap::new();
-            col_index.insert("value".to_string(), 0);
-            let tbl = DaxTableData {
-                name: "GENERATESERIES".to_string(),
-                columns: vec!["Value".to_string()],
-                col_index,
-                rows,
-            };
-            let indices: Vec<usize> = (0..tbl.rows.len()).collect();
-            return Ok((TableEval::Owned(tbl), indices, ctx.clone()));
-        }
-    }
-    let (tbl, indices, base_ctx) = eval_table_expr(expr, model, ctx, row_stack, vars)?;
-    Ok((TableEval::Borrowed(tbl), indices, base_ctx))
-}
-
-fn eval_table_expr<'a>(
-    expr: &Expr,
-    model: &'a DaxModel,
-    ctx: &FilterContext,
-    row_stack: &[RowContext<'_>],
-    vars: &HashMap<String, DaxValue>,
-) -> Result<(&'a DaxTableData, Vec<usize>, FilterContext), String> {
-    match expr {
-        Expr::Ident(tname) => {
-            let tbl = model
-                .get_table(tname)
-                .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
-            let indices = model.get_visible_row_indices(tname, ctx);
-            Ok((tbl, indices, ctx.clone()))
-        }
-        Expr::Call { name, args } if name.eq_ignore_ascii_case("ALL") || name.eq_ignore_ascii_case("ALLSELECTED") => {
-            match args.first() {
-                Some(Expr::TableColRef { table, column }) => {
-                    let tbl = model
-                        .get_table(table)
-                        .ok_or_else(|| format!("Tabela '{}' não encontrada", table))?;
-                    let cidx = tbl
-                        .get_col_idx(column)
-                        .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", table, column))?;
-                    let mut cleared_ctx = ctx.clone();
-                    cleared_ctx.clear_column(&tbl.name, column);
-                    let mut seen = HashSet::new();
-                    let mut rep_indices = Vec::new();
-                    for (r_idx, row) in tbl.rows.iter().enumerate() {
-                        let k = row[cidx].canonical_key();
-                        if seen.insert(k) {
-                            rep_indices.push(r_idx);
-                        }
-                    }
-                    Ok((tbl, rep_indices, cleared_ctx))
-                }
-                _ => {
-                    let tname = extract_table_name(args.first())?;
-                    let tbl = model
-                        .get_table(&tname)
-                        .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
-                    let mut cleared_ctx = ctx.clone();
-                    cleared_ctx.clear_table(&tbl.name);
-                    for rel in &model.relationships {
-                        if rel.is_active && rel.from_table.eq_ignore_ascii_case(&tbl.name) {
-                            cleared_ctx.clear_table(&rel.to_table);
-                        }
-                    }
-                    Ok((tbl, (0..tbl.rows.len()).collect(), cleared_ctx))
-                }
-            }
-        }
-        Expr::Call { name, args } if name.eq_ignore_ascii_case("VALUES") || name.eq_ignore_ascii_case("DISTINCT") => {
-            match args.first() {
-                Some(Expr::TableColRef { table, column }) => {
-                    let tbl = model
-                        .get_table(table)
-                        .ok_or_else(|| format!("Tabela '{}' não encontrada", table))?;
-                    let cidx = tbl
-                        .get_col_idx(column)
-                        .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", table, column))?;
-                    let visible = model.get_visible_row_indices(table, ctx);
-                    let mut seen = HashSet::new();
-                    let mut rep_indices = Vec::new();
-                    for r_idx in visible {
-                        let k = tbl.rows[r_idx][cidx].canonical_key();
-                        if seen.insert(k) {
-                            rep_indices.push(r_idx);
-                        }
-                    }
-                    Ok((tbl, rep_indices, ctx.clone()))
-                }
-                _ => {
-                    let tname = extract_table_name(args.first())?;
-                    let tbl = model
-                        .get_table(&tname)
-                        .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
-                    let indices = model.get_visible_row_indices(&tname, ctx);
-                    Ok((tbl, indices, ctx.clone()))
-                }
-            }
-        }
-        Expr::Call { name, args } if name.eq_ignore_ascii_case("TOPN") => {
-            if args.len() < 2 {
-                return Err("TOPN requer (N, tabela, [ordem])".to_string());
-            }
-            let top_n = evaluate_ast(&args[0], model, ctx, row_stack, vars)?
-                .as_f64()
-                .unwrap_or(0.0)
-                .max(0.0) as usize;
-            let (tbl, indices, base_ctx) = eval_table_expr(&args[1], model, ctx, row_stack, vars)?;
-            if top_n == 0 {
-                return Ok((tbl, Vec::new(), base_ctx));
-            }
-            let ascending = args.get(3).is_some_and(|e| matches!(e, Expr::Ident(s) if s.eq_ignore_ascii_case("ASC")));
-            if let Some(ord_expr) = args.get(2) {
-                let mut scored: Vec<(usize, f64)> = Vec::with_capacity(indices.len());
-                for r_idx in indices {
-                    let mut next_stack = row_stack.to_vec();
-                    next_stack.push(RowContext { table: tbl, row_idx: r_idx });
-                    let val = evaluate_ast(ord_expr, model, &base_ctx, &next_stack, vars)?
-                        .as_f64()
-                        .unwrap_or(f64::NEG_INFINITY);
-                    scored.push((r_idx, val));
-                }
-                scored.sort_by(|a, b| {
-                    let ord = a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal);
-                    if ascending { ord } else { ord.reverse() }
-                });
-                let kept = scored.into_iter().take(top_n).map(|(i, _)| i).collect();
-                Ok((tbl, kept, base_ctx))
-            } else {
-                Ok((tbl, indices.into_iter().take(top_n).collect(), base_ctx))
-            }
-        }
-        Expr::Call { name, args } if name.eq_ignore_ascii_case("FILTER") => {
-            if args.len() < 2 {
-                return Err("FILTER requer (tabela, condição)".to_string());
-            }
-            let (tbl, indices, base_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
-            let mut kept = Vec::new();
-            for r_idx in indices {
-                let mut next_stack = row_stack.to_vec();
-                next_stack.push(RowContext { table: tbl, row_idx: r_idx });
-                let cond = evaluate_ast(&args[1], model, &base_ctx, &next_stack, vars)?;
-                if cond.as_bool() {
-                    kept.push(r_idx);
-                }
-            }
-            Ok((tbl, kept, base_ctx))
-        }
-        _ => Err("Expressão de tabela não suportada neste iterador".to_string()),
-    }
-}
-
-fn apply_calculate_modifier(
-    expr: &Expr,
-    model: &DaxModel,
-    outer_ctx: &FilterContext,
-    next_ctx: &mut FilterContext,
-    row_stack: &[RowContext<'_>],
-    vars: &HashMap<String, DaxValue>,
-) -> Result<(), String> {
-    match expr {
-        Expr::Call { name, args } => {
-            let upper = name.trim().to_uppercase();
-            match upper.as_str() {
-                "REMOVEFILTERS" | "ALL" | "ALLSELECTED" => {
-                    if args.is_empty() {
-                        next_ctx.filters.clear();
-                    } else {
-                        for arg in args {
-                            match arg {
-                                Expr::Ident(t) => next_ctx.clear_table(t),
-                                Expr::TableColRef { table, column } => next_ctx.clear_column(table, column),
-                                _ => {}
-                            }
-                        }
-                    }
-                    return Ok(());
-                }
-                "USERELATIONSHIP" => {
-                    if let (
-                        Some(Expr::TableColRef { table: t1, column: c1 }),
-                        Some(Expr::TableColRef { table: t2, column: c2 }),
-                    ) = (args.first(), args.get(1))
-                    {
-                        next_ctx.rel_overrides.push(RelOverride {
-                            from_table: t1.clone(),
-                            from_column: c1.clone(),
-                            to_table: t2.clone(),
-                            to_column: c2.clone(),
-                            activate: Some(true),
-                            direction: None,
-                        });
-                    }
-                    return Ok(());
-                }
-                "CROSSFILTER" => {
-                    if let (
-                        Some(Expr::TableColRef { table: t1, column: c1 }),
-                        Some(Expr::TableColRef { table: t2, column: c2 }),
-                        Some(dir_arg),
-                    ) = (args.first(), args.get(1), args.get(2))
-                    {
-                        let raw_dir = match dir_arg {
-                            Expr::Ident(s) | Expr::Text(s) => s.to_uppercase(),
-                            _ => "BOTH".to_string(),
-                        };
-                        let mapped = match raw_dir.as_str() {
-                            "NONE" => "none",
-                            "ONEWAY" | "ONEWAY_LEFTFILTERSRIGHT" | "ONEWAY_RIGHTFILTERSLEFT" | "SINGLE" => "single",
-                            _ => "both",
-                        };
-                        next_ctx.rel_overrides.push(RelOverride {
-                            from_table: t1.clone(),
-                            from_column: c1.clone(),
-                            to_table: t2.clone(),
-                            to_column: c2.clone(),
-                            activate: None,
-                            direction: Some(mapped.to_string()),
-                        });
-                    }
-                    return Ok(());
-                }
-                "ALLEXCEPT" => {
-                    if let Some(Expr::Ident(t)) = args.first() {
-                        let keep: Vec<String> = args[1..]
-                            .iter()
-                            .filter_map(|a| match a {
-                                Expr::TableColRef { column, .. } => Some(column.clone()),
-                                _ => None,
-                            })
-                            .collect();
-                        next_ctx.clear_except(t, &keep);
-                    }
-                    return Ok(());
-                }
-                "KEEPFILTERS" => {
-                    if let Some(inner) = args.first() {
-                        return apply_calculate_modifier(inner, model, outer_ctx, next_ctx, row_stack, vars);
-                    }
-                    return Ok(());
-                }
-                "DATEADD" => {
-                    if args.len() >= 3 {
-                        if let Expr::TableColRef { table, column } = &args[0] {
-                            let shift = evaluate_ast(&args[1], model, outer_ctx, row_stack, vars)?
-                                .as_f64()
-                                .unwrap_or(0.0) as i32;
-                            let interval = match &args[2] {
-                                Expr::Ident(s) => s.to_uppercase(),
-                                _ => "DAY".to_string(),
-                            };
-                            apply_date_shift(model, outer_ctx, next_ctx, table, column, shift, &interval);
-                        }
-                    }
-                    return Ok(());
-                }
-                "PREVIOUSDAY" => {
-                    if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_date_shift(model, outer_ctx, next_ctx, table, column, -1, "DAY");
-                    }
-                    return Ok(());
-                }
-                "NEXTDAY" => {
-                    if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_date_shift(model, outer_ctx, next_ctx, table, column, 1, "DAY");
-                    }
-                    return Ok(());
-                }
-                "PREVIOUSMONTH" => {
-                    if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, -1, "MONTH");
-                    }
-                    return Ok(());
-                }
-                "NEXTMONTH" => {
-                    if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, 1, "MONTH");
-                    }
-                    return Ok(());
-                }
-                "PREVIOUSQUARTER" => {
-                    if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, -1, "QUARTER");
-                    }
-                    return Ok(());
-                }
-                "NEXTQUARTER" => {
-                    if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, 1, "QUARTER");
-                    }
-                    return Ok(());
-                }
-                "PREVIOUSYEAR" => {
-                    if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, -1, "YEAR");
-                    }
-                    return Ok(());
-                }
-                "NEXTYEAR" => {
-                    if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, 1, "YEAR");
-                    }
-                    return Ok(());
-                }
-                "SAMEPERIODLASTYEAR" => {
-                    if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        apply_date_shift(model, outer_ctx, next_ctx, table, column, -1, "YEAR");
-                    }
-                    return Ok(());
-                }
-                "PARALLELPERIOD" => {
-                    if args.len() >= 3 {
-                        if let Expr::TableColRef { table, column } = &args[0] {
-                            let shift = evaluate_ast(&args[1], model, outer_ctx, row_stack, vars)?
-                                .as_f64()
-                                .unwrap_or(0.0) as i32;
-                            let interval = match &args[2] {
-                                Expr::Ident(s) => s.to_uppercase(),
-                                _ => "MONTH".to_string(),
-                            };
-                            apply_complete_period_shift(model, outer_ctx, next_ctx, table, column, shift, &interval);
-                        }
-                    }
-                    return Ok(());
-                }
-                "DATESYTD" | "DATESMTD" | "DATESQTD" => {
-                    if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        let mode = match upper.as_str() {
-                            "DATESMTD" => "MTD",
-                            "DATESQTD" => "QTD",
-                            _ => "YTD",
-                        };
-                        apply_period_to_date(model, outer_ctx, next_ctx, table, column, mode);
-                    }
-                    return Ok(());
-                }
-                "DATESBETWEEN" => {
-                    if args.len() >= 3 {
-                        if let Expr::TableColRef { table, column } = &args[0] {
-                            let start_s = evaluate_ast(&args[1], model, outer_ctx, row_stack, vars)?.as_display_string();
-                            let end_s = evaluate_ast(&args[2], model, outer_ctx, row_stack, vars)?.as_display_string();
-                            apply_dates_between(model, next_ctx, table, column, &start_s, &end_s);
-                        }
-                    }
-                    return Ok(());
-                }
-                "DATESINPERIOD" => {
-                    if args.len() >= 4 {
-                        if let Expr::TableColRef { table, column } = &args[0] {
-                            let start_s = evaluate_ast(&args[1], model, outer_ctx, row_stack, vars)?.as_display_string();
-                            let count = evaluate_ast(&args[2], model, outer_ctx, row_stack, vars)?.as_f64().unwrap_or(0.0) as i32;
-                            let interval = match &args[3] {
-                                Expr::Ident(s) => s.to_uppercase(),
-                                _ => "DAY".to_string(),
-                            };
-                            apply_dates_in_period(model, next_ctx, table, column, &start_s, count, &interval);
-                        }
-                    }
-                    return Ok(());
-                }
-                "FIRSTDATE" | "LASTDATE" | "STARTOFMONTH" | "ENDOFMONTH"
-                | "STARTOFQUARTER" | "ENDOFQUARTER" | "STARTOFYEAR" | "ENDOFYEAR" => {
-                    if let Some(Expr::TableColRef { table, column }) = args.first() {
-                        let allowed = resolve_date_boundary_keys(model, outer_ctx, table, column, &upper);
-                        if let Some(tbl) = model.get_table(table) {
-                            next_ctx.clear_table(&tbl.name);
-                            next_ctx.set_column_filter(&tbl.name, column, allowed);
-                        }
-                    }
-                    return Ok(());
-                }
-                "TREATAS" => {
-                    if args.len() >= 2 {
-                        let (src_tbl, src_indices, _) =
-                            eval_table_expr_owned(&args[0], model, outer_ctx, row_stack, vars)?;
-                        let src_data = src_tbl.as_ref();
-                        for (col_pos, col_expr) in args[1..].iter().enumerate() {
-                            if let Expr::TableColRef { table, column } = col_expr {
-                                if let Some(target_tbl) = model.get_table(table) {
-                                    let mut allowed = HashSet::new();
-                                    for &r_idx in &src_indices {
-                                        if let Some(cell) = src_data.rows[r_idx].get(col_pos) {
-                                            allowed.insert(cell.canonical_key());
-                                        }
-                                    }
-                                    next_ctx.set_column_filter(&target_tbl.name, column, allowed);
-                                }
-                            }
-                        }
-                    }
-                    return Ok(());
-                }
-                "FILTER" => {
-                    if args.len() >= 2 {
-                        let (tbl, kept_indices, _) = eval_table_expr(expr, model, outer_ctx, row_stack, vars)?;
-                        if let Some(first_col) = tbl.columns.first() {
-                            let allowed: HashSet<String> = kept_indices
-                                .iter()
-                                .map(|&i| tbl.rows[i][0].canonical_key())
-                                .collect();
-                            next_ctx.set_column_filter(&tbl.name, first_col, allowed);
-                        }
-                    }
-                    return Ok(());
-                }
-                _ => {}
-            }
-        }
-        // Handle Boolean column predicate: e.g., dCategorias[DRE] == "Sim" or dCategorias[Saída de Caixa]
-        _ => {}
-    }
-
-    // Collect referenced table from predicate
-    if let Some((tbl_name, col_name)) = find_primary_table_col(expr) {
-        if let Some(tbl) = model.get_table(&tbl_name) {
-            if let Some(cidx) = tbl.get_col_idx(&col_name) {
-                let mut allowed = HashSet::new();
-                for r_idx in 0..tbl.rows.len() {
-                    let rc = RowContext { table: tbl, row_idx: r_idx };
-                    let v = evaluate_ast(expr, model, outer_ctx, &[rc], vars)?;
-                    if v.as_bool() {
-                        allowed.insert(tbl.rows[r_idx][cidx].canonical_key());
-                    }
-                }
-                next_ctx.set_column_filter(&tbl.name, &col_name, allowed);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn find_primary_table_col(expr: &Expr) -> Option<(String, String)> {
-    match expr {
-        Expr::TableColRef { table, column } => Some((table.clone(), column.clone())),
-        Expr::Binary { left, right, .. } => {
-            find_primary_table_col(left).or_else(|| find_primary_table_col(right))
-        }
-        Expr::InList { expr, .. } => find_primary_table_col(expr),
-        Expr::Unary { expr, .. } => find_primary_table_col(expr),
-        _ => None,
-    }
-}
-
-fn collect_table_dates(tbl: &DaxTableData, cidx: usize) -> HashMap<(i32, u32, u32), Vec<String>> {
-    let mut map: HashMap<(i32, u32, u32), Vec<String>> = HashMap::new();
-    for row in &tbl.rows {
-        let s = row[cidx].as_display_string();
-        if let Some(ymd) = parse_iso_ymd(&s) {
-            map.entry(ymd).or_default().push(row[cidx].canonical_key());
-        }
-    }
-    map
-}
-
-fn apply_date_shift(
-    model: &DaxModel,
-    outer_ctx: &FilterContext,
-    next_ctx: &mut FilterContext,
-    table_name: &str,
-    col_name: &str,
-    shift: i32,
-    interval: &str,
-) {
-    let Some(tbl) = model.get_table(table_name) else { return };
-    let Some(cidx) = tbl.get_col_idx(col_name) else { return };
-    let visible = model.get_visible_row_indices(table_name, outer_ctx);
-    let all_dates_map = collect_table_dates(tbl, cidx);
-
-    let mut visible_ymds: Vec<(i32, u32, u32)> = Vec::new();
-    for r_idx in visible {
-        let s = tbl.rows[r_idx][cidx].as_display_string();
-        if let Some(ymd) = parse_iso_ymd(&s) {
-            visible_ymds.push(ymd);
-        }
-    }
-
-    let mut shifted_keys = HashSet::new();
-    let push_ymd_keys = |ymd: (i32, u32, u32), out: &mut HashSet<String>| {
-        if let Some(keys) = all_dates_map.get(&ymd) {
-            for k in keys {
-                out.insert(k.clone());
-            }
-        }
-    };
-
-    if matches!(interval, "YEAR" | "MONTH" | "QUARTER") {
-        let delta_months = match interval {
-            "YEAR" => shift * 12,
-            "QUARTER" => shift * 3,
-            _ => shift,
-        };
-
-        let mut by_month: HashMap<(i32, u32), HashSet<u32>> = HashMap::new();
-        for &(y, m, d) in &visible_ymds {
-            by_month.entry((y, m)).or_default().insert(d);
-        }
-
-        for ((y, m), days_set) in by_month {
-            let dim_src = days_in_month(y, m);
-            let is_full_month = days_set.len() as u32 == dim_src
-                || (days_set.contains(&1) && days_set.contains(&dim_src));
-
-            let (ny, nm, _) = add_months(y, m, 1, delta_months);
-            let dim_dst = days_in_month(ny, nm);
-
-            if is_full_month {
-                for d_dst in 1..=dim_dst {
-                    push_ymd_keys((ny, nm, d_dst), &mut shifted_keys);
-                }
-            } else {
-                for d in days_set {
-                    let (_, _, nd) = add_months(y, m, d, delta_months);
-                    push_ymd_keys((ny, nm, nd), &mut shifted_keys);
-                }
-            }
-        }
-    } else {
-        for (y, m, d) in visible_ymds {
-            let shifted = add_days(y, m, d, shift);
-            push_ymd_keys(shifted, &mut shifted_keys);
-        }
-    }
-
-    // In DAX, time-intelligence functions replace any active column filters on the date table
-    next_ctx.clear_table(&tbl.name);
-    next_ctx.set_column_filter(&tbl.name, col_name, shifted_keys);
-}
-
-fn apply_complete_period_shift(
-    model: &DaxModel,
-    outer_ctx: &FilterContext,
-    next_ctx: &mut FilterContext,
-    table_name: &str,
-    col_name: &str,
-    shift: i32,
-    interval: &str,
-) {
-    let Some(tbl) = model.get_table(table_name) else { return };
-    let Some(cidx) = tbl.get_col_idx(col_name) else { return };
-    let visible = model.get_visible_row_indices(table_name, outer_ctx);
-
-    let mut anchor_ymd: Option<(i32, u32, u32)> = None;
-    for r_idx in visible {
-        let s = tbl.rows[r_idx][cidx].as_display_string();
-        if let Some(ymd) = parse_iso_ymd(&s) {
-            anchor_ymd = match anchor_ymd {
-                None => Some(ymd),
-                Some(cur) => {
-                    if shift < 0 {
-                        Some(if ymd < cur { ymd } else { cur })
-                    } else {
-                        Some(if ymd > cur { ymd } else { cur })
-                    }
-                }
-            };
-        }
-    }
-
-    let mut allowed = HashSet::new();
-    if let Some((y, m, _d)) = anchor_ymd {
-        let delta_months = match interval {
-            "YEAR" => shift * 12,
-            "QUARTER" => shift * 3,
-            _ => shift,
-        };
-        let (ty, tm, _) = add_months(y, m, 1, delta_months);
-        let target_quarter = (tm - 1) / 3;
-
-        for row in &tbl.rows {
-            let s = row[cidx].as_display_string();
-            if let Some((ry, rm, _)) = parse_iso_ymd(&s) {
-                let in_target = match interval {
-                    "YEAR" => ry == ty,
-                    "QUARTER" => ry == ty && ((rm - 1) / 3) == target_quarter,
-                    _ => ry == ty && rm == tm,
-                };
-                if in_target {
-                    allowed.insert(row[cidx].canonical_key());
-                }
-            }
-        }
-    }
-
-    next_ctx.clear_table(&tbl.name);
-    next_ctx.set_column_filter(&tbl.name, col_name, allowed);
-}
-
-fn apply_period_to_date(
-    model: &DaxModel,
-    outer_ctx: &FilterContext,
-    next_ctx: &mut FilterContext,
-    table_name: &str,
-    col_name: &str,
-    mode: &str, // "MTD" | "QTD" | "YTD"
-) {
-    let Some(tbl) = model.get_table(table_name) else { return };
-    let Some(cidx) = tbl.get_col_idx(col_name) else { return };
-    let visible = model.get_visible_row_indices(table_name, outer_ctx);
-
-    let mut max_ymd: Option<(i32, u32, u32)> = None;
-    for r_idx in visible {
-        let s = tbl.rows[r_idx][cidx].as_display_string();
-        if let Some(ymd) = parse_iso_ymd(&s) {
-            if max_ymd.is_none_or(|cur| ymd > cur) {
-                max_ymd = Some(ymd);
-            }
-        }
-    }
-
-    let Some((max_y, max_m, max_d)) = max_ymd else {
-        return;
-    };
-    let max_q = (max_m - 1) / 3;
-
-    let mut allowed = HashSet::new();
-    for row in &tbl.rows {
-        let s = row[cidx].as_display_string();
-        if let Some((y, m, d)) = parse_iso_ymd(&s) {
-            let in_period = match mode {
-                "MTD" => y == max_y && m == max_m && d <= max_d,
-                "QTD" => y == max_y && ((m - 1) / 3) == max_q && (m, d) <= (max_m, max_d),
-                _ => y == max_y && (m, d) <= (max_m, max_d),
-            };
-            if in_period {
-                allowed.insert(row[cidx].canonical_key());
-            }
-        }
-    }
-    next_ctx.clear_table(&tbl.name);
-    next_ctx.set_column_filter(&tbl.name, col_name, allowed);
-}
-
-fn resolve_date_boundary_keys(
-    model: &DaxModel,
-    ctx: &FilterContext,
-    table_name: &str,
-    col_name: &str,
-    func_name: &str,
-) -> HashSet<String> {
-    let mut allowed = HashSet::new();
-    let Some(tbl) = model.get_table(table_name) else { return allowed };
-    let Some(cidx) = tbl.get_col_idx(col_name) else { return allowed };
-    let visible = model.get_visible_row_indices(table_name, ctx);
-
-    let mut min_ymd: Option<(i32, u32, u32)> = None;
-    let mut max_ymd: Option<(i32, u32, u32)> = None;
-    for r_idx in visible {
-        let s = tbl.rows[r_idx][cidx].as_display_string();
-        if let Some(ymd) = parse_iso_ymd(&s) {
-            if min_ymd.is_none_or(|cur| ymd < cur) {
-                min_ymd = Some(ymd);
-            }
-            if max_ymd.is_none_or(|cur| ymd > cur) {
-                max_ymd = Some(ymd);
-            }
-        }
-    }
-
-    let is_end = func_name.starts_with("ENDOF") || func_name == "LASTDATE";
-    let target_ymd = match func_name {
-        "FIRSTDATE" => min_ymd,
-        "LASTDATE" => max_ymd,
-        "STARTOFMONTH" | "ENDOFMONTH" => max_ymd.and_then(|(y, m, _)| {
-            let candidates: Vec<(i32, u32, u32)> = tbl
-                .rows
-                .iter()
-                .filter_map(|r| parse_iso_ymd(&r[cidx].as_display_string()))
-                .filter(|&(ry, rm, _)| ry == y && rm == m)
-                .collect();
-            if is_end { candidates.into_iter().max() } else { candidates.into_iter().min() }
-        }),
-        "STARTOFQUARTER" | "ENDOFQUARTER" => max_ymd.and_then(|(y, m, _)| {
-            let q = (m - 1) / 3;
-            let candidates: Vec<(i32, u32, u32)> = tbl
-                .rows
-                .iter()
-                .filter_map(|r| parse_iso_ymd(&r[cidx].as_display_string()))
-                .filter(|&(ry, rm, _)| ry == y && ((rm - 1) / 3) == q)
-                .collect();
-            if is_end { candidates.into_iter().max() } else { candidates.into_iter().min() }
-        }),
-        "STARTOFYEAR" | "ENDOFYEAR" => max_ymd.and_then(|(y, _, _)| {
-            let candidates: Vec<(i32, u32, u32)> = tbl
-                .rows
-                .iter()
-                .filter_map(|r| parse_iso_ymd(&r[cidx].as_display_string()))
-                .filter(|&(ry, _, _)| ry == y)
-                .collect();
-            if is_end { candidates.into_iter().max() } else { candidates.into_iter().min() }
-        }),
-        _ => None,
-    };
-
-    if let Some(t) = target_ymd {
-        for row in &tbl.rows {
-            let s = row[cidx].as_display_string();
-            if parse_iso_ymd(&s) == Some(t) {
-                allowed.insert(row[cidx].canonical_key());
-            }
-        }
-    }
-    allowed
-}
-
-fn apply_period_boundary(
-    model: &DaxModel,
-    outer_ctx: &FilterContext,
-    next_ctx: &mut FilterContext,
-    table_name: &str,
-    col_name: &str,
-    is_opening: bool,
-    scope: &str,
-) {
-    let fname = match (is_opening, scope) {
-        (true, "MONTH") => "STARTOFMONTH",
-        (false, "MONTH") => "ENDOFMONTH",
-        (true, "QUARTER") => "STARTOFQUARTER",
-        (false, "QUARTER") => "ENDOFQUARTER",
-        (true, _) => "STARTOFYEAR",
-        (false, _) => "ENDOFYEAR",
-    };
-    let mut keys = HashSet::new();
-    if is_opening {
-        // Opening balance evaluates at the closing date of the immediately preceding period
-        if let Some(tbl) = model.get_table(table_name) {
-            if let Some(cidx) = tbl.get_col_idx(col_name) {
-                let visible = model.get_visible_row_indices(table_name, outer_ctx);
-                let min_cur = visible
-                    .into_iter()
-                    .filter_map(|i| parse_iso_ymd(&tbl.rows[i][cidx].as_display_string()))
-                    .min();
-                if let Some((y, m, d)) = min_cur {
-                    let prev_day = add_days(y, m, d, -1);
-                    for row in &tbl.rows {
-                        if parse_iso_ymd(&row[cidx].as_display_string()) == Some(prev_day) {
-                            keys.insert(row[cidx].canonical_key());
-                        }
-                    }
-                }
-            }
-        }
-        if keys.is_empty() {
-            keys = resolve_date_boundary_keys(model, outer_ctx, table_name, col_name, fname);
-        }
-    } else {
-        keys = resolve_date_boundary_keys(model, outer_ctx, table_name, col_name, fname);
-    }
-    if let Some(tbl) = model.get_table(table_name) {
-        next_ctx.clear_table(&tbl.name);
-        next_ctx.set_column_filter(&tbl.name, col_name, keys);
-    }
-}
-
-fn apply_dates_between(
-    model: &DaxModel,
-    next_ctx: &mut FilterContext,
-    table_name: &str,
-    col_name: &str,
-    start_str: &str,
-    end_str: &str,
-) {
-    let Some(tbl) = model.get_table(table_name) else { return };
-    let Some(cidx) = tbl.get_col_idx(col_name) else { return };
-    let start_days = parse_flexible_ymd(start_str).map(|(y, m, d)| civil_to_days(y, m, d));
-    let end_days = parse_flexible_ymd(end_str).map(|(y, m, d)| civil_to_days(y, m, d));
-
-    let mut allowed = HashSet::new();
-    for row in &tbl.rows {
-        let s = row[cidx].as_display_string();
-        if let Some((y, m, d)) = parse_iso_ymd(&s) {
-            let cur = civil_to_days(y, m, d);
-            let ge_start = start_days.is_none_or(|sd| cur >= sd);
-            let le_end = end_days.is_none_or(|ed| cur <= ed);
-            if ge_start && le_end {
-                allowed.insert(row[cidx].canonical_key());
-            }
-        }
-    }
-    next_ctx.clear_table(&tbl.name);
-    next_ctx.set_column_filter(&tbl.name, col_name, allowed);
-}
-
-fn apply_dates_in_period(
-    model: &DaxModel,
-    next_ctx: &mut FilterContext,
-    table_name: &str,
-    col_name: &str,
-    anchor_str: &str,
-    count: i32,
-    interval: &str,
-) {
-    let Some((ay, am, ad)) = parse_flexible_ymd(anchor_str) else { return };
-    let (start_d, end_d) = if count == 0 {
-        (civil_to_days(ay, am, ad), civil_to_days(ay, am, ad) - 1)
-    } else {
-        let shifted = match interval {
-            "YEAR" => add_months(ay, am, ad, count * 12),
-            "QUARTER" => add_months(ay, am, ad, count * 3),
-            "MONTH" => add_months(ay, am, ad, count),
-            _ => add_days(ay, am, ad, count),
-        };
-        let a_days = civil_to_days(ay, am, ad);
-        let s_days = civil_to_days(shifted.0, shifted.1, shifted.2);
-        if count > 0 {
-            (a_days, s_days - 1)
-        } else {
-            (s_days + 1, a_days)
-        }
-    };
-
-    let Some(tbl) = model.get_table(table_name) else { return };
-    let Some(cidx) = tbl.get_col_idx(col_name) else { return };
-    let mut allowed = HashSet::new();
-    for row in &tbl.rows {
-        let s = row[cidx].as_display_string();
-        if let Some((y, m, d)) = parse_iso_ymd(&s) {
-            let cur = civil_to_days(y, m, d);
-            if cur >= start_d && cur <= end_d {
-                allowed.insert(row[cidx].canonical_key());
-            }
-        }
-    }
-    next_ctx.clear_table(&tbl.name);
-    next_ctx.set_column_filter(&tbl.name, col_name, allowed);
-}
-
-fn eval_lookupvalue(
-    args: &[Expr],
-    model: &DaxModel,
-    ctx: &FilterContext,
-    row_stack: &[RowContext<'_>],
-    vars: &HashMap<String, DaxValue>,
-) -> Result<DaxValue, String> {
-    let Some(Expr::TableColRef { table: res_table, column: res_col }) = args.first() else {
-        return Err("LOOKUPVALUE requer Tabela[ColunaResultado] no 1º argumento".to_string());
-    };
-    let tbl = model
-        .get_table(res_table)
-        .ok_or_else(|| format!("Tabela '{}' não encontrada em LOOKUPVALUE", res_table))?;
-    let res_cidx = tbl
-        .get_col_idx(res_col)
-        .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada em LOOKUPVALUE", res_table, res_col))?;
-
-    let has_alternate = args.len() >= 4 && args.len() % 2 == 0;
-    let pairs_end = if has_alternate { args.len() - 1 } else { args.len() };
-    let alternate = if has_alternate {
-        evaluate_ast(&args[args.len() - 1], model, ctx, row_stack, vars)?
-    } else {
-        DaxValue::Blank
-    };
-
-    let mut criteria: Vec<(usize, DaxValue)> = Vec::new();
-    let mut i = 1;
-    while i + 1 < pairs_end {
-        let Some(Expr::TableColRef { column: scol, .. }) = args.get(i) else {
-            return Err("LOOKUPVALUE espera pares (Tabela[ColunaBusca], ValorBusca)".to_string());
-        };
-        let scidx = tbl
-            .get_col_idx(scol)
-            .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", tbl.name, scol))?;
-        let target_val = evaluate_ast(&args[i + 1], model, ctx, row_stack, vars)?;
-        criteria.push((scidx, target_val));
-        i += 2;
-    }
-
-    let mut found: Option<DaxValue> = None;
-    for row in &tbl.rows {
-        let matches = criteria.iter().all(|(cidx, expected)| row[*cidx].dax_equals(expected));
-        if matches {
-            let candidate = row[res_cidx].clone();
-            if let Some(ref prev) = found {
-                if !prev.dax_equals(&candidate) {
-                    return Ok(alternate);
-                }
-            } else {
-                found = Some(candidate);
-            }
-        }
-    }
-
-    Ok(found.unwrap_or(alternate))
-}
-
-fn eval_column_agg(
-    func: &str,
-    model: &DaxModel,
-    ctx: &FilterContext,
-    table_name: &str,
-    col_name: &str,
-) -> Result<DaxValue, String> {
-    let tbl = model
-        .get_table(table_name)
-        .ok_or_else(|| format!("Tabela '{}' não encontrada", table_name))?;
-    let cidx = tbl
-        .get_col_idx(col_name)
-        .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", table_name, col_name))?;
-    let visible = model.get_visible_row_indices(table_name, ctx);
-
-    if func == "COUNT" || func == "COUNTA" {
-        let cnt = visible.iter().filter(|&&i| !tbl.rows[i][cidx].is_blank()).count();
-        return Ok(DaxValue::Number(cnt as f64));
-    }
-    if func == "COUNTBLANK" {
-        let cnt = visible.iter().filter(|&&i| tbl.rows[i][cidx].is_blank()).count();
-        return Ok(DaxValue::Number(cnt as f64));
-    }
-    if func == "DISTINCTCOUNT" {
-        let distinct: HashSet<String> = visible
-            .iter()
-            .map(|&i| tbl.rows[i][cidx].canonical_key())
-            .collect();
-        return Ok(DaxValue::Number(distinct.len() as f64));
-    }
-    if func == "DISTINCTCOUNTNOBLANK" {
-        let distinct: HashSet<String> = visible
-            .iter()
-            .filter(|&&i| !tbl.rows[i][cidx].is_blank())
-            .map(|&i| tbl.rows[i][cidx].canonical_key())
-            .collect();
-        return Ok(DaxValue::Number(distinct.len() as f64));
-    }
-
-    let nums: Vec<f64> = visible
-        .iter()
-        .filter_map(|&i| {
-            let v = &tbl.rows[i][cidx];
-            if v.is_blank() {
-                None
-            } else if matches!(func, "AVERAGEA" | "MINA" | "MAXA") {
-                match v {
-                    DaxValue::Number(n) => Some(*n),
-                    DaxValue::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
-                    DaxValue::Text(_) => Some(0.0),
-                    DaxValue::Blank => None,
-                }
-            } else {
-                v.as_f64()
-            }
-        })
-        .collect();
-
-    if nums.is_empty() {
-        return Ok(DaxValue::Blank);
-    }
-    let out = match func {
-        "SUM" => Some(nums.iter().sum()),
-        "AVERAGE" | "AVERAGEA" => Some(nums.iter().sum::<f64>() / nums.len() as f64),
-        "MIN" | "MINA" => Some(nums.iter().copied().fold(f64::INFINITY, f64::min)),
-        "MAX" | "MAXA" => Some(nums.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
-        "MEDIAN" => calc_median(&nums),
-        "STDEV.S" => calc_stdev(&nums, true),
-        "STDEV.P" => calc_stdev(&nums, false),
-        "VAR.S" => calc_variance(&nums, true),
-        "VAR.P" => calc_variance(&nums, false),
-        "PRODUCT" => Some(nums.iter().product()),
-        "GEOMEAN" => calc_geomean(&nums),
-        _ => None,
-    };
-    Ok(out.map(DaxValue::Number).unwrap_or(DaxValue::Blank))
-}
-
-fn eval_selected_value(
-    model: &DaxModel,
-    ctx: &FilterContext,
-    table_name: &str,
-    col_name: &str,
-    alternate: DaxValue,
-) -> Result<DaxValue, String> {
-    let Some(tbl) = model.get_table(table_name) else {
-        return Ok(alternate);
-    };
-    let Some(cidx) = tbl.get_col_idx(col_name) else {
-        return Ok(alternate);
-    };
-    let visible = model.get_visible_row_indices(table_name, ctx);
-    let mut distinct_keys = HashSet::new();
-    let mut first_val: Option<DaxValue> = None;
-
-    for r_idx in visible {
-        let val = &tbl.rows[r_idx][cidx];
-        if val.is_blank() {
-            continue;
-        }
-        distinct_keys.insert(val.canonical_key());
-        if first_val.is_none() {
-            first_val = Some(val.clone());
-        }
-        if distinct_keys.len() > 1 {
-            return Ok(alternate);
-        }
-    }
-
-    if distinct_keys.len() == 1 {
-        Ok(first_val.unwrap_or(alternate))
-    } else {
-        Ok(alternate)
-    }
-}
-
-fn count_distinct_visible(
-    model: &DaxModel,
-    ctx: &FilterContext,
-    table_name: &str,
-    col_name: &str,
-) -> usize {
-    let Some(tbl) = model.get_table(table_name) else { return 0 };
-    let Some(cidx) = tbl.get_col_idx(col_name) else { return 0 };
-    model
-        .get_visible_row_indices(table_name, ctx)
-        .into_iter()
-        .filter(|&i| !tbl.rows[i][cidx].is_blank())
-        .map(|i| tbl.rows[i][cidx].canonical_key())
-        .collect::<HashSet<_>>()
-        .len()
-}
-
-fn resolve_related(
-    model: &DaxModel,
-    rc: &RowContext<'_>,
-    target_table: &str,
-    target_col: &str,
-) -> Option<DaxValue> {
-    for rel in &model.relationships {
-        if !rel.is_active {
-            continue;
-        }
-        if rel.from_table.eq_ignore_ascii_case(&rc.table.name)
-            && rel.to_table.eq_ignore_ascii_case(target_table)
-        {
-            let fk_idx = rc.table.get_col_idx(&rel.from_column)?;
-            let fk_key = rc.table.rows[rc.row_idx][fk_idx].canonical_key();
-            let to_tbl = model.get_table(target_table)?;
-            let pk_idx = to_tbl.get_col_idx(&rel.to_column)?;
-            let val_idx = to_tbl.get_col_idx(target_col)?;
-            for row in &to_tbl.rows {
-                if row[pk_idx].canonical_key() == fk_key {
-                    return Some(row[val_idx].clone());
-                }
-            }
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
+    /// Monta a chave de filtro como o frontend faz: valor JSON convertido pelo
+    /// tipo da coluna (ver `build_filter_context`).
+    fn typed_keys(model: &DaxModel, table: &str, col: &str, raw: &str) -> std::collections::HashSet<crate::dax::ValueKey> {
+        let ctx = crate::dax::build_filter_context(
+            &[crate::dax::NativeFilterInput { table_id: table.into(), column: col.into(), values: vec![serde_json::Value::String(raw.into())] }],
+            model,
+        );
+        ctx.filters[&table.to_lowercase()][&col.to_lowercase()].clone()
+    }
+
     use super::*;
     use crate::dax::{DaxMeasureInput, DaxModelSyncPayload, DaxRelationshipInput, DaxTableInput};
     use crate::engine::DuckDbStore;
@@ -1942,10 +390,10 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { name: "fLançamentos".into(), columns: vec!["Data".into(), "Valor".into(), "Categoria".into(), "Tipo".into()], rows: f_rows },
-                DaxTableInput { name: "dCategorias".into(), columns: vec!["Categoria".into(), "Grupo DRE".into(), "DRE".into()], rows: cat_rows },
-                DaxTableInput { name: "dEstrutura".into(), columns: vec!["Linha".into(), "Ordem".into()], rows: est_rows },
-                DaxTableInput { name: "dCalendario".into(), columns: vec!["Data".into(), "Mês".into()], rows: cal_rows },
+                DaxTableInput { column_types: vec![], name: "fLançamentos".into(), columns: vec!["Data".into(), "Valor".into(), "Categoria".into(), "Tipo".into()], rows: f_rows },
+                DaxTableInput { column_types: vec![], name: "dCategorias".into(), columns: vec!["Categoria".into(), "Grupo DRE".into(), "DRE".into()], rows: cat_rows },
+                DaxTableInput { column_types: vec![], name: "dEstrutura".into(), columns: vec!["Linha".into(), "Ordem".into()], rows: est_rows },
+                DaxTableInput { column_types: vec![], name: "dCalendario".into(), columns: vec!["Data".into(), "Mês".into()], rows: cal_rows },
             ],
             relationships: vec![
                 DaxRelationshipInput {
@@ -1997,7 +445,7 @@ mod tests {
         assert!((dre_total - 22500.0).abs() < 1e-6);
 
         let mut ctx_rec = FilterContext::default();
-        ctx_rec.set_column_filter("dEstrutura", "Linha", [DaxValue::Text("Receita Bruta".into()).canonical_key()].into_iter().collect());
+        ctx_rec.set_column_filter("dEstrutura", "Linha", typed_keys(&model, "dEstrutura", "Linha", "Receita Bruta"));
         let dre_rec = model.evaluate_dax("[DRE]", &ctx_rec).unwrap().as_f64().unwrap();
         assert!((dre_rec - 25000.0).abs() < 1e-6);
     }
@@ -2019,7 +467,7 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "dCal".into(),
                     columns: vec!["Data".into()],
                     rows: vec![
@@ -2030,7 +478,7 @@ mod tests {
                         make_cal_row("2026-03-05"),
                     ],
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "fVendas".into(),
                     columns: vec!["Data".into(), "Valor".into()],
                     rows: vec![
@@ -2079,19 +527,21 @@ mod tests {
                 DaxMeasureInput {
                     name: "Rank Data".into(),
                     table_name: "fVendas".into(),
+                    formula: "RANKX(ALL(dCal[Data]), [Receita])".into(),
+                },
+                DaxMeasureInput {
+                    // ALL(fVendas) só define as linhas iteradas; o filtro externo em
+                    // dCal continua ativo durante a transição, então as outras datas
+                    // ficam BLANK e o valor do dia é o maior => 1 (como no DAX real).
+                    name: "Rank Fato".into(),
+                    table_name: "fVendas".into(),
                     formula: "RANKX(ALL(fVendas), [Receita])".into(),
                 },
             ],
         });
 
         let mut ctx_feb_2026 = FilterContext::default();
-        ctx_feb_2026.set_column_filter(
-            "dCal",
-            "Data",
-            [DaxValue::Text("2026-02-15".into()).canonical_key()]
-                .into_iter()
-                .collect(),
-        );
+        ctx_feb_2026.set_column_filter("dCal", "Data", typed_keys(&model, "dCal", "Data", "2026-02-15"));
 
         let ytd = model.evaluate_dax("[Receita YTD]", &ctx_feb_2026).unwrap().as_f64().unwrap();
         assert!((ytd - 700.0).abs() < 1e-6);
@@ -2107,6 +557,9 @@ mod tests {
 
         let rank = model.evaluate_dax("[Rank Data]", &ctx_feb_2026).unwrap().as_f64().unwrap();
         assert!((rank - 2.0).abs() < 1e-6);
+
+        let rank_fact = model.evaluate_dax("[Rank Fato]", &ctx_feb_2026).unwrap().as_f64().unwrap();
+        assert!((rank_fact - 1.0).abs() < 1e-6, "rank_fact = {}", rank_fact);
     }
 
     #[test]
@@ -2123,7 +576,7 @@ mod tests {
         let tables_input: Vec<DaxTableInput> = summary
             .loaded_tables
             .iter()
-            .map(|t| DaxTableInput {
+            .map(|t| DaxTableInput { column_types: vec![],
                 name: t.table_name.clone(),
                 columns: t.columns.iter().map(|c| c.name.clone()).collect(),
                 rows: t.rows.clone(),
@@ -2182,43 +635,23 @@ mod tests {
         );
 
         let mut ctx_set = FilterContext::default();
-        ctx_set.set_column_filter(
-            "dCalendario",
-            "Ano",
-            [DaxValue::Text("2026".into()).canonical_key()].into_iter().collect(),
-        );
-        ctx_set.set_column_filter(
-            "dCalendario",
-            "Nome do Mês",
-            [DaxValue::Text("Setembro".into()).canonical_key()].into_iter().collect(),
-        );
+        ctx_set.set_column_filter("dCalendario", "Ano", typed_keys(&model, "dCalendario", "Ano", "2026"));
+        ctx_set.set_column_filter("dCalendario", "Nome do Mês", typed_keys(&model, "dCalendario", "Nome do Mês", "Setembro"));
         let fat_set = model.evaluate_dax("[Faturamento]", &ctx_set).expect("eval Faturamento Setembro");
         let sal_set = model.evaluate_dax("[Salários]", &ctx_set).expect("eval Salários Setembro");
         let mut ctx_out = FilterContext::default();
-        ctx_out.set_column_filter(
-            "dCalendario",
-            "Nome do Mês",
-            [DaxValue::Text("Outubro".into()).canonical_key()].into_iter().collect(),
-        );
+        ctx_out.set_column_filter("dCalendario", "Nome do Mês", typed_keys(&model, "dCalendario", "Nome do Mês", "Outubro"));
         let fat_out = model.evaluate_dax("[Faturamento]", &ctx_out).expect("eval Faturamento Outubro");
 
         let mut ctx_nov_mesano = FilterContext::default();
-        ctx_nov_mesano.set_column_filter(
-            "dCalendario",
-            "Mês/Ano",
-            [DaxValue::Text("Nov/2026".into()).canonical_key()].into_iter().collect(),
-        );
+        ctx_nov_mesano.set_column_filter("dCalendario", "Mês/Ano", typed_keys(&model, "dCalendario", "Mês/Ano", "Nov/2026"));
         let fat_nov = model.evaluate_dax("[Faturamento]", &ctx_nov_mesano).expect("eval Fat Nov");
         let lucro_nov = model.evaluate_dax("[Lucro Atual]", &ctx_nov_mesano).expect("eval Lucro Nov");
         let fat_prev_nov = model.evaluate_dax("[Faturamento Mês Passado]", &ctx_nov_mesano).expect("eval Fat Prev Nov");
         let lucro_prev_nov = model.evaluate_dax("[Lucro Mês Passado]", &ctx_nov_mesano).expect("eval Lucro Prev Nov");
 
         let mut ctx_out_mesano = FilterContext::default();
-        ctx_out_mesano.set_column_filter(
-            "dCalendario",
-            "Mês/Ano",
-            [DaxValue::Text("Out/2026".into()).canonical_key()].into_iter().collect(),
-        );
+        ctx_out_mesano.set_column_filter("dCalendario", "Mês/Ano", typed_keys(&model, "dCalendario", "Mês/Ano", "Out/2026"));
         let fat_out_m = model.evaluate_dax("[Faturamento]", &ctx_out_mesano).expect("eval Fat Out");
         let lucro_out_m = model.evaluate_dax("[Lucro Atual]", &ctx_out_mesano).expect("eval Lucro Out");
         let fat_prev_out = model.evaluate_dax("[Faturamento Mês Passado]", &ctx_out_mesano).expect("eval Fat Prev Out");
@@ -2292,12 +725,12 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "dCalendario".into(),
                     columns: vec!["Data".into(), "Mês/Ano".into()],
                     rows: cal_rows,
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "fLanc".into(),
                     columns: vec!["Data".into(), "Valor".into()],
                     rows: fact_rows,
@@ -2331,11 +764,7 @@ mod tests {
         });
 
         let mut ctx_nov = FilterContext::default();
-        ctx_nov.set_column_filter(
-            "dCalendario",
-            "Mês/Ano",
-            [DaxValue::Text("Nov/2026".into()).canonical_key()].into_iter().collect(),
-        );
+        ctx_nov.set_column_filter("dCalendario", "Mês/Ano", typed_keys(&model, "dCalendario", "Mês/Ano", "Nov/2026"));
 
         let prev_dateadd = model.evaluate_dax("[Fat Mes Passado DateAdd]", &ctx_nov).unwrap().as_f64().unwrap();
         let prev_month = model.evaluate_dax("[Fat Mes Passado Prev]", &ctx_nov).unwrap().as_f64().unwrap();
@@ -2376,7 +805,7 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "dCal".into(),
                     columns: vec!["Data".into(), "Ano".into(), "Mes".into()],
                     rows: vec![
@@ -2385,7 +814,7 @@ mod tests {
                         cal_row("2026-03-20", 2026, 3),
                     ],
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "fVendas".into(),
                     columns: vec!["Data".into(), "Valor".into()],
                     rows: vec![
@@ -2394,7 +823,7 @@ mod tests {
                         sale_row("2026-03-20", 65606.32),
                     ],
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "fAberturas".into(),
                     columns: vec!["Data".into(), "Saldo".into()],
                     // Only day 1 of month exists in fAberturas
@@ -2427,16 +856,8 @@ mod tests {
         });
 
         let mut ctx = FilterContext::default();
-        ctx.set_column_filter(
-            "dCal",
-            "Ano",
-            [DaxValue::Text("2026".into()).canonical_key()].into_iter().collect(),
-        );
-        ctx.set_column_filter(
-            "dCal",
-            "Mes",
-            [DaxValue::Text("3".into()).canonical_key()].into_iter().collect(),
-        );
+        ctx.set_column_filter("dCal", "Ano", typed_keys(&model, "dCal", "Ano", "2026"));
+        ctx.set_column_filter("dCal", "Mes", typed_keys(&model, "dCal", "Mes", "3"));
 
         let total = model.evaluate_dax("[Fat]", &ctx).unwrap().as_f64().unwrap();
         assert!((total - 128723.52).abs() < 1e-6);
@@ -2447,7 +868,7 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "dCal".into(),
                     columns: vec!["Data".into(), "Trimestre".into()],
                     rows: vec![
@@ -2457,7 +878,7 @@ mod tests {
                         serde_json::from_value(json!({"Data": "2026-04-30", "Trimestre": "T2"})).unwrap(),
                     ],
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "dClientes".into(),
                     columns: vec!["Id".into(), "Nome".into()],
                     rows: vec![
@@ -2465,7 +886,7 @@ mod tests {
                         serde_json::from_value(json!({"Id": 2, "Nome": "Beta"})).unwrap(),
                     ],
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "fPedidos".into(),
                     columns: vec!["DataPedido".into(), "DataEntrega".into(), "ClienteId".into(), "Valor".into()],
                     rows: vec![
@@ -2539,7 +960,7 @@ mod tests {
         assert!((between - 400.0).abs() < 1e-6);
 
         let mut ctx_apr = FilterContext::default();
-        ctx_apr.set_column_filter("dCal", "Trimestre", [DaxValue::Text("T2".into()).canonical_key()].into_iter().collect());
+        ctx_apr.set_column_filter("dCal", "Trimestre", typed_keys(&model, "dCal", "Trimestre", "T2"));
         let qtd = model.evaluate_dax("[QTD T2]", &ctx_apr).unwrap().as_f64().unwrap();
         assert!((qtd - 1200.0).abs() < 1e-6);
         let close_m = model.evaluate_dax("CLOSINGBALANCEMONTH([Total], dCal[Data])", &ctx_apr).unwrap().as_f64().unwrap();
@@ -2554,12 +975,220 @@ mod tests {
         assert!((by_delivery - 1600.0).abs() < 1e-6);
     }
 
+    fn rows(v: serde_json::Value) -> Vec<serde_json::Map<String, serde_json::Value>> {
+        v.as_array().unwrap().iter().map(|r| r.as_object().unwrap().clone()).collect()
+    }
+
+    fn rel(from: &str, from_col: &str, to: &str, to_col: &str) -> DaxRelationshipInput {
+        DaxRelationshipInput {
+            from_table: from.into(),
+            from_column: from_col.into(),
+            to_table: to.into(),
+            to_column: to_col.into(),
+            cross_filter_direction: "single".into(),
+            is_active: true,
+        }
+    }
+
+    /// fact f (4 sales) -> dim p (3 products) -> sub-dim g (2 groups).
+    fn table_fns_model() -> DaxModel {
+        let mut model = DaxModel::new();
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput { column_types: vec![],
+                    name: "f".into(),
+                    columns: vec!["ProdID".into(), "Valor".into()],
+                    rows: rows(json!([
+                        {"ProdID": 1, "Valor": 10}, {"ProdID": 1, "Valor": 5},
+                        {"ProdID": 2, "Valor": 20}, {"ProdID": 3, "Valor": 40}
+                    ])),
+                },
+                DaxTableInput { column_types: vec![],
+                    name: "p".into(),
+                    columns: vec!["ProdID".into(), "Cat".into(), "GrupoID".into(), "Preco".into()],
+                    rows: rows(json!([
+                        {"ProdID": 1, "Cat": "A", "GrupoID": 1, "Preco": 3},
+                        {"ProdID": 2, "Cat": "A", "GrupoID": 1, "Preco": 1},
+                        {"ProdID": 3, "Cat": "B", "GrupoID": 2, "Preco": 2}
+                    ])),
+                },
+                DaxTableInput { column_types: vec![],
+                    name: "g".into(),
+                    columns: vec!["GrupoID".into(), "Grupo".into()],
+                    rows: rows(json!([{"GrupoID": 1, "Grupo": "G1"}, {"GrupoID": 2, "Grupo": "G2"}])),
+                },
+            ],
+            relationships: vec![rel("f", "ProdID", "p", "ProdID"), rel("p", "GrupoID", "g", "GrupoID")],
+            measures: vec![DaxMeasureInput {
+                name: "Total".into(),
+                table_name: "f".into(),
+                formula: "SUM(f[Valor])".into(),
+            }],
+        });
+        model
+    }
+
+    fn eval_num(model: &DaxModel, expr: &str) -> f64 {
+        match model.evaluate_dax(expr, &FilterContext::default()) {
+            Ok(v) => v.as_f64().unwrap_or_else(|| panic!("{expr} -> {v:?} (not a number)")),
+            Err(e) => panic!("{expr} -> error: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_summarize_addcolumns_selectcolumns_owned_tables() {
+        let model = table_fns_model();
+        // Group-by through one relationship hop (f -> p) and through two hops (f -> p -> g).
+        assert_eq!(eval_num(&model, "COUNTROWS(SUMMARIZE(f, p[Cat]))"), 2.0);
+        assert_eq!(eval_num(&model, "COUNTROWS(SUMMARIZE(f, g[Grupo], p[Cat]))"), 2.0);
+        assert_eq!(eval_num(&model, "COUNTROWS(SUMMARIZE(f, f[ProdID], p[Cat]))"), 3.0);
+        // Extension columns are evaluated in the group's filter context.
+        assert_eq!(
+            eval_num(&model, "MAXX(SUMMARIZE(f, p[Cat], \"V\", SUM(f[Valor])), [V])"),
+            40.0
+        );
+        assert_eq!(
+            eval_num(&model, "SUMX(SUMMARIZE(f, p[Cat], \"V\", [Total]), [V])"),
+            75.0
+        );
+        // Group-by column values resolve in row context, both qualified and bare.
+        assert_eq!(
+            model
+                .evaluate_dax(
+                    "CONCATENATEX(SUMMARIZE(f, p[Cat]), p[Cat] & [Cat], \",\", p[Cat], ASC)",
+                    &FilterContext::default()
+                )
+                .unwrap(),
+            DaxValue::Text("AA,BB".into())
+        );
+        // SUMMARIZE respects the outer filter context of its base table.
+        assert_eq!(eval_num(&model, "CALCULATE(COUNTROWS(SUMMARIZE(f, p[Cat])), p[Cat] = \"B\")"), 1.0);
+
+        // ADDCOLUMNS keeps row count and base columns; measure refs transition per row.
+        assert_eq!(eval_num(&model, "COUNTROWS(ADDCOLUMNS(VALUES(p[Cat]), \"T\", [Total]))"), 2.0);
+        assert_eq!(eval_num(&model, "MAXX(ADDCOLUMNS(VALUES(p[Cat]), \"T\", [Total]), [T])"), 40.0);
+        assert_eq!(
+            eval_num(&model, "SUMX(ADDCOLUMNS(p, \"Dobro\", p[Preco] * 2), [Dobro] + p[Preco])"),
+            18.0
+        );
+        // SELECTCOLUMNS projects without removing duplicates.
+        assert_eq!(eval_num(&model, "COUNTROWS(SELECTCOLUMNS(p, \"C\", p[Cat]))"), 3.0);
+        assert_eq!(
+            model
+                .evaluate_dax(
+                    "CONCATENATEX(SELECTCOLUMNS(p, \"C\", p[Cat]), [C], \"\")",
+                    &FilterContext::default()
+                )
+                .unwrap(),
+            DaxValue::Text("AAB".into())
+        );
+        // Malformed extension pairs are errors, not panics.
+        assert!(model.evaluate_dax("COUNTROWS(ADDCOLUMNS(p, \"X\"))", &FilterContext::default()).is_err());
+        assert!(model.evaluate_dax("COUNTROWS(SUMMARIZE(f, p[Nope]))", &FilterContext::default()).is_err());
+    }
+
+    #[test]
+    fn test_filter_topn_compose_with_synthetic_tables() {
+        let model = table_fns_model();
+        // FILTER(VALUES(col)) yields the one-column synthetic table set operations compare against.
+        assert_eq!(
+            eval_num(&model, "COUNTROWS(EXCEPT(VALUES(p[Cat]), FILTER(VALUES(p[Cat]), p[Cat] = \"A\")))"),
+            1.0
+        );
+        assert_eq!(
+            eval_num(&model, "COUNTROWS(INTERSECT(VALUES(p[Cat]), FILTER(ALL(p[Cat]), p[Cat] <> \"A\")))"),
+            1.0
+        );
+        // FILTER / TOPN over ADDCOLUMNS / SUMMARIZE / UNION.
+        assert_eq!(
+            eval_num(&model, "COUNTROWS(FILTER(ADDCOLUMNS(VALUES(p[Cat]), \"T\", [Total]), [T] > 35))"),
+            1.0
+        );
+        assert_eq!(
+            eval_num(&model, "MAXX(TOPN(1, SUMMARIZE(f, p[Cat], \"V\", [Total]), [V], ASC), [V])"),
+            35.0
+        );
+        assert_eq!(
+            eval_num(&model, "COUNTROWS(FILTER(UNION(VALUES(p[Cat]), VALUES(p[Cat])), p[Cat] = \"B\"))"),
+            2.0
+        );
+        assert_eq!(eval_num(&model, "COUNTROWS(TOPN(2, FILTER(p, p[Preco] > 1), p[Preco]))"), 2.0);
+        // Synthetic FILTER as a CALCULATE modifier filters through the column lineage
+        // (category B -> product 3 -> 40), physical FILTER through the key column.
+        assert_eq!(eval_num(&model, "CALCULATE([Total], FILTER(VALUES(p[Cat]), p[Cat] = \"B\"))"), 40.0);
+        assert_eq!(eval_num(&model, "CALCULATE([Total], FILTER(p, p[Preco] >= 2))"), 55.0);
+        // CALCULATETABLE over a synthetic table.
+        assert_eq!(
+            eval_num(&model, "COUNTROWS(CALCULATETABLE(SUMMARIZE(f, p[Cat]), p[Cat] = \"A\"))"),
+            1.0
+        );
+    }
+
+    #[test]
+    fn test_earlier_earliest_row_context_stack() {
+        let model = table_fns_model();
+        let is_err = |e: &str| model.evaluate_dax(e, &FilterContext::default()).is_err();
+        // p[Preco] = 3, 1, 2. Classic rank-by-count: 3 + 1 + 2.
+        assert_eq!(eval_num(&model, "SUMX(p, COUNTROWS(FILTER(p, p[Preco] <= EARLIER(p[Preco]))))"), 6.0);
+
+        // Three nested row contexts on p: outer {3,2}, middle {1}, inner {3,1,2}.
+        let nested = |inner: &str| {
+            format!(
+                "SUMX(FILTER(p, p[Preco] >= 2), SUMX(FILTER(p, p[Preco] <= 1), SUMX(p, {})))",
+                inner
+            )
+        };
+        assert_eq!(eval_num(&model, &nested("p[Preco]")), 12.0); // innermost: 2 * (3+1+2)
+        assert_eq!(eval_num(&model, &nested("EARLIER(p[Preco])")), 6.0); // middle: 2 * 3 * 1
+        assert_eq!(eval_num(&model, &nested("EARLIER(p[Preco], 1)")), 6.0);
+        assert_eq!(eval_num(&model, &nested("EARLIER(p[Preco], 2)")), 15.0); // outer: (3+2) * 3
+        assert_eq!(eval_num(&model, &nested("EARLIEST(p[Preco])")), 15.0);
+        assert!(is_err(&nested("EARLIER(p[Preco], 3)")));
+        assert!(is_err(&nested("EARLIER(p[Preco], 0)")));
+
+        // With two levels EARLIEST == EARLIER: 3 * (3+1+2).
+        assert_eq!(eval_num(&model, "SUMX(p, SUMX(p, EARLIEST(p[Preco])))"), 18.0);
+        // Only row contexts containing the column count as levels.
+        assert!(is_err("SUMX(p, SUMX(g, EARLIER(p[Preco])))"));
+        assert_eq!(eval_num(&model, "SUMX(p, SUMX(g, SUMX(p, EARLIER(p[Preco]))))"), 36.0);
+        // No outer row context at all.
+        assert!(is_err("SUMX(p, EARLIER(p[Preco]))"));
+        assert!(is_err("EARLIEST(p[Preco])"));
+
+        // ADDCOLUMNS pushes a row context too, and EARLIER works on extension columns.
+        assert_eq!(
+            eval_num(&model, "MAXX(ADDCOLUMNS(p, \"R\", COUNTROWS(FILTER(p, p[Preco] >= EARLIER(p[Preco])))), [R])"),
+            3.0
+        );
+        assert_eq!(
+            eval_num(
+                &model,
+                "SUMX(ADDCOLUMNS(p, \"D\", p[Preco] * 10), \
+                 COUNTROWS(FILTER(ADDCOLUMNS(p, \"D\", p[Preco] * 10), [D] < EARLIER([D]))))"
+            ),
+            3.0
+        );
+    }
+
+    #[test]
+    fn test_iterators_row_context_vs_context_transition() {
+        let model = table_fns_model();
+        // Iterators add a row context only; the filter context is unchanged...
+        assert_eq!(eval_num(&model, "SUMX(p, COUNTROWS(p))"), 9.0);
+        // ...until CALCULATE / a measure reference transitions it.
+        assert_eq!(eval_num(&model, "SUMX(p, CALCULATE(COUNTROWS(p)))"), 3.0);
+        // Context transition applies *every* row context on the stack, not only the innermost:
+        // (A,1)=15, (A,2)=20, (B,3)=40, the other (Cat, ProdID) pairs are blank. Innermost-only
+        // transition would give 150.
+        assert_eq!(eval_num(&model, "SUMX(VALUES(p[Cat]), SUMX(VALUES(p[ProdID]), [Total]))"), 75.0);
+    }
+
     #[test]
     fn test_dax_v07_rust_expanded_coverage() {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "fVendas".into(),
                     columns: vec!["Cat".into(), "Valor".into()],
                     rows: vec![
@@ -2568,7 +1197,7 @@ mod tests {
                         serde_json::json!({"Cat": "C", "Valor": 400}).as_object().unwrap().clone(),
                     ],
                 },
-                DaxTableInput {
+                DaxTableInput { column_types: vec![],
                     name: "dGrupo".into(),
                     columns: vec!["Nome".into()],
                     rows: vec![

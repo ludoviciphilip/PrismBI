@@ -8,7 +8,7 @@
 
 🇺🇸 [Read in English](./README.md) • 🇧🇷 **Português (Brasil)**
 
-[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.7.0-f59e0b?style=flat-square)](./package.json)
+[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.8.0-f59e0b?style=flat-square)](./package.json)
 [![CI](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml)
 [![Release](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
@@ -58,12 +58,21 @@ Construído com **Tauri v2 + Rust + DuckDB** no backend e **React + TypeScript +
 - **Funil & Cascata estilo Power BI:** Funil com `minSize` legível, topo `100%` e taxa de conversão no rodapé; Cascata real com variações positivas/negativas cruzando zero, linhas tracejadas conectoras e coluna `Total` final.
 - **Tabelas, Matrizes & Segmentadores:** Matriz Pivot com totais por linha/coluna, Tabela interativa com Drill-Through e Segmentadores no modo lista suspensa (`dropdown`) ou blocos clicáveis (`tiles`).
 
-### ⚡ Motor Analítico em Rust + DuckDB (`v0.7.0`)
+### ⚡ Motor Analítico em Rust + DuckDB (`v0.8.0`)
 - **DuckDB embarcado:** ingestão nativa rápida de **Excel (`.xlsx`/`.xls`)**, **CSV**, **Parquet**, **JSON** e endpoints **API REST (JSON)**, além de console SQL nativo.
 - **Atualização Real & Gestão de Tabelas:** botão **Atualizar Dados** que recarrega arquivos/fontes vinculados sem perder visuais, medidas ou relacionamentos — incluindo mapeamento de abas com nomes diferentes (ex.: aba `Fato` → `fLançamentos`), substituição de dados por outra planilha e renomeação completa de tabelas.
 - **Power Query (M) & Remapeamento Linux:** resolução automática de caminhos Windows → Linux em `.pbip` e suporte a `Table.RenameColumns`, `Table.RemoveColumns`, `Table.SelectColumns` e `Table.SelectRows`.
-- **98% de Conformidade DAX (474/484) & Motor Nativo em Rust (+165 funções):** avaliação nativa de `CALCULATE`, `SWITCH`, `RANKX`, `TREATAS`, `CONTAINSROW`, `GENERATESERIES`, `COALESCE`, `CONVERT`, família `IS*`, bit-shifts, matemática/trigonometria, texto (`FORMAT`, `MID`, `FIND`, `SEARCH`, `SUBSTITUTE`, `CONTAINSSTRING`), estatísticas/iteradores (`MEDIAN`, `PERCENTILE.*`, `STDEV.*`, `VAR.*`, `CONCATENATEX`), relacionamentos (`VALUES`, `DISTINCT`, `TOPN`, `LOOKUPVALUE`, `USERELATIONSHIP`, `CROSSFILTER`), financeiro (`PMT`, `PV`, `FV`, `NPER`, `NPV`, `IPMT`, `PPMT`, `SLN`, `SYD`, `DB`, `DDB`, `EFFECT`, `NOMINAL`, `RATE`), `PATH*` e Time Intelligence completo (`TOTALYTD`, `TOTALQTD`, `TOTALMTD`, `PARALLELPERIOD`, `DATESBETWEEN`, `DATESINPERIOD`, `FIRSTNONBLANK`/`LASTNONBLANK`, `OPENINGBALANCE*`/`CLOSINGBALANCE*`), além de 60+ DMVs `INFO.*` no motor TS. Veja a [Matriz de Compatibilidade](./docs/COMPATIBILITY.md).
+- **Conformidade DAX medida: 364/368 (98,9%) no motor Rust nativo,** num [corpus verificado de forma independente](./docs/DAX_CONFORMANCE.md) de 368 casos (valores esperados calculados por oráculos em Python, executado em todo build do CI). **Motor Rust tipado (+165 funções),** cerca de 3× mais rápido que a v0.7 num benchmark de 200 mil linhas: avaliação nativa de `CALCULATE`, `SWITCH`, `RANKX`, `TREATAS`, `CONTAINSROW`, `GENERATESERIES`, `COALESCE`, `CONVERT`, família `IS*`, bit-shifts, matemática/trigonometria, texto (`FORMAT`, `MID`, `FIND`, `SEARCH`, `SUBSTITUTE`, `CONTAINSSTRING`), estatísticas/iteradores (`MEDIAN`, `PERCENTILE.*`, `STDEV.*`, `VAR.*`, `CONCATENATEX`), relacionamentos (`VALUES`, `DISTINCT`, `TOPN`, `LOOKUPVALUE`, `USERELATIONSHIP`, `CROSSFILTER`), financeiro (`PMT`, `PV`, `FV`, `NPER`, `NPV`, `IPMT`, `PPMT`, `SLN`, `SYD`, `DB`, `DDB`, `EFFECT`, `NOMINAL`, `RATE`), `PATH*` e Time Intelligence completo (`TOTALYTD`, `TOTALQTD`, `TOTALMTD`, `PARALLELPERIOD`, `DATESBETWEEN`, `DATESINPERIOD`, `FIRSTNONBLANK`/`LASTNONBLANK`, `OPENINGBALANCE*`/`CLOSINGBALANCE*`), além de 60+ DMVs `INFO.*` no motor TS. Veja a [Matriz de Compatibilidade](./docs/COMPATIBILITY.md).
 - **Análise Interativa:** Cross-filtering bidirecional ao clicar em qualquer visual, Matriz com hierarquia expansível em 2 níveis, Drill-Through entre páginas, Cálculos Visuais e telemetria real no Performance Analyzer.
+
+### 🗄️ Conectores Nativos de Banco de Dados (`v0.8.0`)
+- **PostgreSQL, MySQL/MariaDB, SQLite, arquivos `.duckdb` e Parquet particionado (local / HTTP / S3)** via extensões do DuckDB (`ATTACH … READ_ONLY`), sem gateway externo. PostgreSQL 16 e MariaDB 11 testados contra servidores reais no CI.
+- **Navegador de schemas e tabelas, pré-visualização e editor SQL** que roda dentro do banco conectado; tabelas carregadas de banco são recarregadas pelo **Atualizar Dados**.
+- **Credenciais no chaveiro do Linux** (Secret Service): nunca em arquivos `.insight`/`.pbip` nem no `localStorage` (a chave do Gemini também migra).
+
+### 🔐 Segurança (`v0.8.0`)
+- **Atualizações assinadas:** o atualizador só instala pacotes cujo `SHA256SUMS.txt` tenha assinatura Ed25519 válida da chave embutida no app; downloads restritos às releases deste repositório. Instalações `.deb`/`.rpm` recebem o pacote certo; AUR/Flatpak são orientados ao gerenciador de pacotes.
+- **Content Security Policy** ativa no webview do Tauri.
 
 ### 🛠️ Produtividade, Tela Inicial & Distribuição Linux
 - **Tela Inicial (`WelcomeScreen`) & Auto-Updater:** escolha começar um projeto em branco ou abrir `.pbip`, `.pbix`, `.insight` e sessões recentes ao iniciar, com **atualizador integrado no app** via GitHub Releases e validação SHA-256 (in-place para **AppImage** e download direto para `.deb`/`.rpm`).

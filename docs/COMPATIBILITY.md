@@ -1,10 +1,12 @@
-# Matriz de Compatibilidade DAX, Visuais e Fontes (PrismBI `v0.7.0`)
+# Matriz de Compatibilidade DAX, Visuais e Fontes (PrismBI `v0.8.0`)
 
 Este documento resume o nível atual de compatibilidade do **PrismBI** com projetos do Microsoft Power BI (`.pbip` / `.pbix`) e a especificação pública **DAX**.
 
 ---
 
-## 1. Compatibilidade DAX (474 / 484 funções = 98%)
+## 1. Compatibilidade DAX
+
+> **Número de conformidade que vale:** [`DAX_CONFORMANCE.md`](./DAX_CONFORMANCE.md), medido num corpus de 368 casos com resultado esperado verificado de forma independente: **Rust 364/368 (98,9%)**, TS 350/368. A tabela abaixo é o inventário de funções reconhecidas por cada motor (o antigo "474/484 = 98%" contava apenas marcações do catálogo, não resultados conferidos).
 
 | Categoria | Motor Rust Nativo | Motor TypeScript / Fallback | Observações |
 | :--- | :--- | :--- | :--- |
@@ -37,3 +39,12 @@ Este documento resume o nível atual de compatibilidade do **PrismBI** com proje
 - **Projetos Power BI:** `.pbip` (leitura e round-trip `v0.7.0` com TMDL + PBIR) e `.pbix` (leitura de `DataModelSchema`, `Report/Layout` UTF-16LE e `DataMashup` multi-query).
 - **Arquivos Locais via DuckDB Nativo:** Excel (`.xlsx` / `.xls`), CSV / TSV, Parquet, JSON / NDJSON e snapshots `.insight`.
 - **APIs & Fontes Externas:** REST JSON (atualizável via botão **Atualizar Dados**).
+- **Conectores Nativos de Banco de Dados (`v0.8.0`, via `ATTACH` do DuckDB):**
+  - **`.duckdb` nativo:** suportado e testado de ponta a ponta (schemas, tabelas, pré-visualização, importação, `DETACH`) 100% offline.
+  - **SQLite:** suportado via extensão `sqlite` do DuckDB; testado de ponta a ponta contra um arquivo `.sqlite` real criado neste mesmo ambiente (requer rede na primeira execução para `INSTALL sqlite`, depois funciona offline com a extensão em cache).
+  - **PostgreSQL / MySQL & MariaDB:** suportados via `ATTACH ... (TYPE POSTGRES/MYSQL, SECRET ..., READ_ONLY)`; a senha fica num `TEMPORARY SECRET` em memória (não aparece em `duckdb_databases()` nem em mensagens de erro). Testes de integração ponta a ponta (listar → pré-visualizar → SQL → importar) rodam contra **PostgreSQL 16 e MariaDB 11 reais** no CI (`connectors_duckdb_sqlite.rs`, `--include-ignored` com as variáveis `PRISMBI_TEST_PG_*`/`PRISMBI_TEST_MYSQL_*`).
+  - **SQL livre:** roda com o banco conectado como catálogo padrão (`USE`), então `SELECT * FROM schema.tabela` funciona e o SQL salvo continua válido no **Atualizar Dados** após reconectar.
+  - **Parquet particionado / HTTP(S) / S3:** `read_parquet(..., hive_partitioning=true)` via extensão `httpfs`; geração de SQL coberta por testes unitários, não exercitada contra um bucket S3 real (requer credenciais externas).
+  - **Credenciais:** senhas nunca tocam `.insight`/`.pbip`/localStorage; ficam no chaveiro Linux Secret Service (`keyring` v3, serviço `dev.prismbi.app`), referenciadas por uma `credentialKey` opaca salva no modelo. A chave de IA (Gemini) também migra de `localStorage` para o keyring sob Tauri.
+  - **Navegador visual + editor SQL:** schema tree, pré-visualização e aba de SQL livre na nova aba "PostgreSQL / MySQL / SQLite / DuckDB" do modal de fontes de dados; **não coberto por teste de UI/e2e** (sem GUI disponível no ambiente de desenvolvimento usado) — a lógica por trás (construção de config, validação de formulário, mapeamento de payload) é coberta por testes unitários de `src/adapters/dbConnector.ts`.
+  - **"Atualizar Dados":** tabelas carregadas de um conector de banco reconectam via `db_refresh_import`, buscando a senha no keyring pela `credentialKey` — coberto por teste de store (mockando a bridge Tauri).

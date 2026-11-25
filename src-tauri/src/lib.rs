@@ -1,8 +1,14 @@
+pub mod connectors;
 pub mod dax;
 pub mod engine;
 pub mod pbi;
 pub mod updater;
 
+use connectors::{
+    CredentialStore, ConnectionManager, ConnectorConfig, DbConnectionInfo, DbSchemaInfo,
+    DbTableInfo, LinuxKeyringStore, PreviewResult,
+};
+use connectors::manager::ImportSource;
 use dax::{build_filter_context, DaxModel, DaxModelSyncPayload, NativeFilterInput};
 use engine::{DuckDbStore, EngineInfo, ImportedTablePayload, SqlQueryResult, TableSummary};
 use pbi::pbip_writer::ExportPbipPayload;
@@ -17,6 +23,14 @@ use tauri::State;
 pub struct AppState {
     pub db: DuckDbStore,
     pub dax_model: Mutex<DaxModel>,
+    /// Pacote de atualização já verificado (assinatura + SHA). O frontend só
+    /// pode pedir para instalar este, nunca uma URL arbitrária.
+    pub pending_update: Mutex<Option<updater::PendingUpdate>>,
+    /// Conexões de banco de dados ativas (ATTACH), ver `connectors::manager`.
+    pub connections: ConnectionManager,
+    /// Credenciais (senhas de conexão + chave de IA), nunca enviadas ao
+    /// frontend; ver `connectors::keyring_store`.
+    pub credentials: Box<dyn CredentialStore>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +156,7 @@ fn open_pbip_project(
                     name: t.table_name.clone(),
                     columns: t.columns.iter().map(|c| c.name.clone()).collect(),
                     rows: t.rows.clone(),
+                    column_types: vec![],
                 })
                 .collect(),
             relationships: summary
@@ -204,11 +219,11 @@ fn evaluate_dax_native(
     expression: String,
     filters: Option<Vec<NativeFilterInput>>,
 ) -> Result<NativeDaxEvalResult, String> {
-    let ctx = build_filter_context(&filters.unwrap_or_default());
     let guard = state
         .dax_model
         .lock()
         .map_err(|_| "Lock DaxModel corrompido".to_string())?;
+    let ctx = build_filter_context(&filters.unwrap_or_default(), &guard);
     let val = guard.evaluate_dax(&expression, &ctx)?;
     Ok(NativeDaxEvalResult {
         display: val.as_display_string(),
@@ -227,7 +242,7 @@ fn evaluate_dax_batch_native(
         .map_err(|_| "Lock DaxModel corrompido".to_string())?;
     let mut out = HashMap::with_capacity(items.len());
     for (key, expr, flist) in items {
-        let ctx = build_filter_context(&flist);
+        let ctx = build_filter_context(&flist, &guard);
         let val = guard.evaluate_dax(&expr, &ctx).unwrap_or(dax::DaxValue::Blank);
         out.insert(key, val.to_json());
     }
@@ -247,17 +262,187 @@ fn query_visual_native(
 }
 
 #[tauri::command]
-fn check_for_updates(current_version: String) -> Result<updater::UpdateCheckResult, String> {
-    updater::check_for_updates(&current_version)
+fn check_for_updates(
+    state: State<'_, AppState>,
+    current_version: String,
+) -> Result<updater::UpdateCheckResult, String> {
+    let (result, pending) = updater::check_for_updates(&current_version)?;
+    *state
+        .pending_update
+        .lock()
+        .map_err(|_| "Lock do updater corrompido".to_string())? = pending;
+    Ok(result)
 }
 
 #[tauri::command]
 fn download_and_install_update(
-    download_url: String,
-    asset_name: String,
-    expected_sha256: Option<String>,
+    state: State<'_, AppState>,
 ) -> Result<updater::UpdateInstallResult, String> {
-    updater::download_and_install_update(&download_url, &asset_name, expected_sha256.as_deref())
+    let pending = state
+        .pending_update
+        .lock()
+        .map_err(|_| "Lock do updater corrompido".to_string())?
+        .clone()
+        .ok_or_else(|| {
+            "Nenhuma atualização verificada pendente. Verifique atualizações novamente.".to_string()
+        })?;
+    updater::download_and_install_update(&pending)
+}
+
+// ---------------------------------------------------------------------
+// Conectores nativos de banco de dados (v0.8.0) — ver connectors::manager
+// ---------------------------------------------------------------------
+
+#[tauri::command]
+fn db_connect(
+    state: State<'_, AppState>,
+    config: ConnectorConfig,
+    persist_credential_key: Option<String>,
+) -> Result<DbConnectionInfo, String> {
+    let password = config.extract_password();
+    let info = state.connections.connect(&state.db, config)?;
+    if let (Some(key), Some(pw)) = (persist_credential_key, password) {
+        if !pw.is_empty() {
+            state.credentials.set(&key, &pw)?;
+        }
+    }
+    Ok(info)
+}
+
+#[tauri::command]
+fn db_list_schemas(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<Vec<DbSchemaInfo>, String> {
+    state.connections.list_schemas(&state.db, &connection_id)
+}
+
+#[tauri::command]
+fn db_list_tables(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schema: Option<String>,
+) -> Result<Vec<DbTableInfo>, String> {
+    state
+        .connections
+        .list_tables(&state.db, &connection_id, schema.as_deref())
+}
+
+#[tauri::command]
+fn db_preview_table(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schema: String,
+    table: String,
+    limit: Option<usize>,
+) -> Result<PreviewResult, String> {
+    state.connections.preview_table(
+        &state.db,
+        &connection_id,
+        &schema,
+        &table,
+        limit.unwrap_or(500),
+    )
+}
+
+#[tauri::command]
+fn db_query_preview(
+    state: State<'_, AppState>,
+    connection_id: String,
+    sql: String,
+    limit: Option<usize>,
+) -> Result<PreviewResult, String> {
+    state
+        .connections
+        .query_preview(&state.db, &connection_id, &sql, limit.unwrap_or(500))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(tag = "mode")]
+enum DbImportSourcePayload {
+    Table { schema: String, table: String },
+    Sql { sql: String },
+}
+
+#[tauri::command]
+fn db_import_table(
+    state: State<'_, AppState>,
+    connection_id: String,
+    source: DbImportSourcePayload,
+    target_table_name: String,
+) -> Result<ImportedTablePayload, String> {
+    let source = match source {
+        DbImportSourcePayload::Table { schema, table } => ImportSource::Table { schema, table },
+        DbImportSourcePayload::Sql { sql } => ImportSource::Sql(sql),
+    };
+    state
+        .connections
+        .import_table(&state.db, &connection_id, source, &target_table_name)
+}
+
+#[tauri::command]
+fn db_disconnect(state: State<'_, AppState>, connection_id: String) -> Result<(), String> {
+    state.connections.disconnect(&state.db, &connection_id)
+}
+
+/// Usado pelo botão "Atualizar Dados" para tabelas de origem `db`:
+/// reconecta efemeramente usando a senha guardada no keyring (identificada
+/// por `credential_key`, nunca pelo `connection_id` de sessão, que não é
+/// estável entre execuções do app), reimporta e desconecta em seguida.
+#[tauri::command]
+fn db_refresh_import(
+    state: State<'_, AppState>,
+    config: ConnectorConfig,
+    credential_key: Option<String>,
+    source: DbImportSourcePayload,
+    target_table_name: String,
+) -> Result<ImportedTablePayload, String> {
+    let password = match &credential_key {
+        Some(key) => state.credentials.get(key)?,
+        None => None,
+    };
+    let full_config = config.with_password(password);
+    let info = state.connections.connect(&state.db, full_config)?;
+    let source = match source {
+        DbImportSourcePayload::Table { schema, table } => ImportSource::Table { schema, table },
+        DbImportSourcePayload::Sql { sql } => ImportSource::Sql(sql),
+    };
+    let result = state.connections.import_table(
+        &state.db,
+        &info.connection_id,
+        source,
+        &target_table_name,
+    );
+    let _ = state.connections.disconnect(&state.db, &info.connection_id);
+    result
+}
+
+// ---------------------------------------------------------------------
+// Credenciais seguras (chaveiro Linux Secret Service) — v0.8.0
+// ---------------------------------------------------------------------
+
+#[tauri::command]
+fn credentials_set(state: State<'_, AppState>, key: String, secret: String) -> Result<(), String> {
+    state.credentials.set(&key, &secret)
+}
+
+#[tauri::command]
+fn credentials_get_exists(state: State<'_, AppState>, key: String) -> Result<bool, String> {
+    state.credentials.exists(&key)
+}
+
+#[tauri::command]
+fn credentials_delete(state: State<'_, AppState>, key: String) -> Result<(), String> {
+    state.credentials.delete(&key)
+}
+
+/// Usado exclusivamente pela migração da chave Gemini (`aiConfig.ts`):
+/// lê o valor salvo no chaveiro para reconstituir a sessão de IA em
+/// memória do frontend sem jamais persistir a chave fora do keyring.
+#[tauri::command]
+fn credentials_get(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
+    state.credentials.get(&key)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -269,6 +454,9 @@ pub fn run() {
         .manage(AppState {
             db,
             dax_model: Mutex::new(DaxModel::new()),
+            pending_update: Mutex::new(None),
+            connections: ConnectionManager::new(),
+            credentials: Box::new(LinuxKeyringStore::new()),
         })
         .invoke_handler(tauri::generate_handler![
             get_engine_info,
@@ -291,6 +479,18 @@ pub fn run() {
             query_visual_native,
             check_for_updates,
             download_and_install_update,
+            db_connect,
+            db_list_schemas,
+            db_list_tables,
+            db_preview_table,
+            db_query_preview,
+            db_import_table,
+            db_disconnect,
+            db_refresh_import,
+            credentials_set,
+            credentials_get_exists,
+            credentials_delete,
+            credentials_get,
         ])
         .run(tauri::generate_context!())
         .expect("Erro ao executar PrismBI");
