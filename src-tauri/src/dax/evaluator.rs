@@ -37,7 +37,7 @@ pub fn evaluate_ast(
         Expr::BracketRef(name) => {
             // 1. Check active row context column first
             if let Some(rc) = row_stack.last() {
-                if let Some(cidx) = rc.table.get_col_idx(name) {
+                if let Some(cidx) = bare_col_idx(rc.table, name) {
                     return Ok(rc.table.rows[rc.row_idx][cidx].clone());
                 }
             }
@@ -53,7 +53,7 @@ pub fn evaluate_ast(
             }
             // 3. Fallback search across row stack
             for rc in row_stack.iter().rev() {
-                if let Some(cidx) = rc.table.get_col_idx(name) {
+                if let Some(cidx) = bare_col_idx(rc.table, name) {
                     return Ok(rc.table.rows[rc.row_idx][cidx].clone());
                 }
             }
@@ -61,10 +61,8 @@ pub fn evaluate_ast(
         }
         Expr::TableColRef { table, column } => {
             for rc in row_stack.iter().rev() {
-                if rc.table.name.eq_ignore_ascii_case(table) {
-                    if let Some(cidx) = rc.table.get_col_idx(column) {
-                        return Ok(rc.table.rows[rc.row_idx][cidx].clone());
-                    }
+                if let Some(cidx) = row_col_idx(rc.table, table, column) {
+                    return Ok(rc.table.rows[rc.row_idx][cidx].clone());
                 }
             }
             // Try RELATED path if in row context of another table
@@ -1022,12 +1020,15 @@ fn eval_table_expr_owned<'a>(
             let (t2, i2, _) = eval_table_expr_owned(&args[1], model, ctx, row_stack, vars)?;
             let t1 = t1.as_ref();
             let t2 = t2.as_ref();
-            let mut columns: Vec<String> = t1.columns.iter().map(|c| format!("{}.{}", t1.name, c)).collect();
-            columns.extend(t2.columns.iter().map(|c| format!("{}.{}", t2.name, c)));
-            let mut col_index = HashMap::new();
-            for (idx, c) in columns.iter().enumerate() {
-                col_index.insert(c.to_lowercase(), idx);
-            }
+            // Columns keep their lineage as `Table[Column]` (already-qualified ones as-is).
+            let qualify = |t: &DaxTableData| -> Vec<String> {
+                t.columns
+                    .iter()
+                    .map(|c| if split_qualified_col(c).is_some() { c.clone() } else { qualified_col_name(&t.name, c) })
+                    .collect()
+            };
+            let mut columns = qualify(t1);
+            columns.extend(qualify(t2));
             let mut rows = Vec::with_capacity(i1.len() * i2.len());
             for &a in &i1 {
                 for &b in &i2 {
@@ -1037,13 +1038,14 @@ fn eval_table_expr_owned<'a>(
                 }
             }
             let n = rows.len();
-            let synth = DaxTableData {
-                name: format!("CROSSJOIN_{}_{}", t1.name, t2.name),
-                columns,
-                col_index,
-                rows,
-            };
+            let synth = synth_table(format!("CROSSJOIN_{}_{}", t1.name, t2.name), columns, rows);
             return Ok((TableEval::Owned(synth), (0..n).collect(), c1));
+        }
+        if upper == "SUMMARIZE" && !args.is_empty() {
+            return eval_summarize(args, model, ctx, row_stack, vars);
+        }
+        if (upper == "ADDCOLUMNS" || upper == "SELECTCOLUMNS") && !args.is_empty() {
+            return eval_add_select_columns(upper == "ADDCOLUMNS", args, model, ctx, row_stack, vars);
         }
         if name.eq_ignore_ascii_case("GENERATESERIES") {
             let start = args
@@ -1091,6 +1093,197 @@ fn eval_table_expr_owned<'a>(
     }
     let (tbl, indices, base_ctx) = eval_table_expr(expr, model, ctx, row_stack, vars)?;
     Ok((TableEval::Borrowed(tbl), indices, base_ctx))
+}
+
+/// Builds an in-memory (synthetic) table, indexing column names case-insensitively.
+fn synth_table(name: String, columns: Vec<String>, rows: Vec<Vec<DaxValue>>) -> DaxTableData {
+    let col_index = columns.iter().enumerate().map(|(i, c)| (c.to_lowercase(), i)).collect();
+    DaxTableData { name, columns, col_index, rows }
+}
+
+/// Column naming convention for synthetic tables whose columns come from *different* model
+/// tables (SUMMARIZE group-by columns, CROSSJOIN): the column is stored as `Table[Column]`,
+/// which keeps its lineage so `Table[Column]` lookups and context transition still work.
+fn qualified_col_name(table: &str, column: &str) -> String {
+    format!("{}[{}]", table, column)
+}
+
+fn split_qualified_col(name: &str) -> Option<(&str, &str)> {
+    let inner = name.strip_suffix(']')?;
+    let open = inner.find('[')?;
+    Some((&inner[..open], &inner[open + 1..]))
+}
+
+/// Index of `table[column]` within a row-context table: a table named `table` matches the
+/// bare column name; any table may also carry it as a qualified `table[column]` column.
+fn row_col_idx(tbl: &DaxTableData, table: &str, column: &str) -> Option<usize> {
+    if tbl.name.eq_ignore_ascii_case(table) {
+        if let Some(idx) = tbl.get_col_idx(column) {
+            return Some(idx);
+        }
+    }
+    tbl.get_col_idx(&qualified_col_name(table, column))
+}
+
+/// Index of a bare `[column]` reference: exact name first, then a qualified `T[column]`.
+fn bare_col_idx(tbl: &DaxTableData, column: &str) -> Option<usize> {
+    tbl.get_col_idx(column).or_else(|| {
+        tbl.columns.iter().position(|c| {
+            split_qualified_col(c).is_some_and(|(_, bare)| bare.eq_ignore_ascii_case(column))
+        })
+    })
+}
+
+/// The model `(table, column)` a row-context column originates from, if any. Extension
+/// columns (ADDCOLUMNS/SUMMARIZE "name" pairs, SELECTCOLUMNS) have no lineage.
+fn column_lineage(model: &DaxModel, tbl: &DaxTableData, idx: usize) -> Option<(String, String)> {
+    let col = tbl.columns.get(idx)?;
+    let (t, c) = split_qualified_col(col).unwrap_or((tbl.name.as_str(), col.as_str()));
+    let mt = model.get_table(t)?;
+    let cidx = mt.get_col_idx(c)?;
+    Some((mt.name.clone(), mt.columns[cidx].clone()))
+}
+
+/// Context transition for one row, narrowing only columns that have model lineage.
+fn apply_lineage_transition(model: &DaxModel, ctx: &FilterContext, rc: &RowContext<'_>) -> FilterContext {
+    let mut next = ctx.clone();
+    for idx in 0..rc.table.columns.len() {
+        if let Some((t, c)) = column_lineage(model, rc.table, idx) {
+            let mut set = HashSet::new();
+            set.insert(rc.table.rows[rc.row_idx][idx].canonical_key());
+            next.set_column_filter(&t, &c, set);
+        }
+    }
+    next
+}
+
+/// Parses trailing `"name", expression` pairs (SUMMARIZE / ADDCOLUMNS / SELECTCOLUMNS).
+fn parse_name_expr_pairs<'e>(fname: &str, pairs: &'e [Expr]) -> Result<Vec<(String, &'e Expr)>, String> {
+    if pairs.len() % 2 != 0 {
+        return Err(format!("{}: esperados pares (\"nome\", expressão)", fname));
+    }
+    pairs
+        .chunks(2)
+        .map(|pair| match &pair[0] {
+            Expr::Text(n) => Ok((n.clone(), &pair[1])),
+            _ => Err(format!("{}: nome de coluna deve ser texto entre aspas", fname)),
+        })
+        .collect()
+}
+
+/// SUMMARIZE(table, groupBy_col..., ["name", expr]...): distinct combinations of the group-by
+/// columns over the visible rows of `table` (group-by columns may live in tables reached via
+/// many-to-one relationships). Extension columns are evaluated once per group, in the filter
+/// context of that group (context transition over the group-by values).
+fn eval_summarize<'a>(
+    args: &[Expr],
+    model: &'a DaxModel,
+    ctx: &FilterContext,
+    row_stack: &[RowContext<'_>],
+    vars: &HashMap<String, DaxValue>,
+) -> Result<(TableEval<'a>, Vec<usize>, FilterContext), String> {
+    let (base, base_indices, base_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+    let base_t = base.as_ref();
+    let mut group_cols: Vec<(String, String)> = Vec::new();
+    let mut pos = 1;
+    while let Some(Expr::TableColRef { table, column }) = args.get(pos) {
+        group_cols.push((table.clone(), column.clone()));
+        pos += 1;
+    }
+    let extensions = parse_name_expr_pairs("SUMMARIZE", &args[pos..])?;
+
+    // Per group-by column: Some(idx) when it's a column of the base table itself, None when it
+    // must be fetched through relationships (RELATED-style lookup).
+    let mut sources = Vec::with_capacity(group_cols.len());
+    for (t, c) in &group_cols {
+        let direct = row_col_idx(base_t, t, c);
+        if direct.is_none() && model.get_table(t).and_then(|mt| mt.get_col_idx(c)).is_none() {
+            return Err(format!("SUMMARIZE: coluna '{}[{}]' não encontrada", t, c));
+        }
+        sources.push(direct);
+    }
+
+    let mut seen = HashSet::new();
+    let mut group_rows: Vec<Vec<DaxValue>> = Vec::new();
+    for &r_idx in &base_indices {
+        let rc = RowContext { table: base_t, row_idx: r_idx };
+        let row: Vec<DaxValue> = group_cols
+            .iter()
+            .zip(&sources)
+            .map(|((t, c), src)| match src {
+                Some(cidx) => base_t.rows[r_idx][*cidx].clone(),
+                None => resolve_related(model, &rc, t, c).unwrap_or(DaxValue::Blank),
+            })
+            .collect();
+        let key = row.iter().map(|v| v.canonical_key()).collect::<Vec<_>>().join("\u{1}");
+        if seen.insert(key) {
+            group_rows.push(row);
+        }
+    }
+
+    let mut columns: Vec<String> = group_cols.iter().map(|(t, c)| qualified_col_name(t, c)).collect();
+    let mut groups = synth_table("SUMMARIZE".to_string(), columns.clone(), group_rows);
+    if !extensions.is_empty() {
+        let mut ext_values: Vec<Vec<DaxValue>> = Vec::with_capacity(groups.rows.len());
+        for g_idx in 0..groups.rows.len() {
+            let rc = RowContext { table: &groups, row_idx: g_idx };
+            let group_ctx = apply_lineage_transition(model, &base_ctx, &rc);
+            let mut stack = row_stack.to_vec();
+            stack.push(rc);
+            let mut vals = Vec::with_capacity(extensions.len());
+            for (_, e) in &extensions {
+                vals.push(evaluate_ast(e, model, &group_ctx, &stack, vars)?);
+            }
+            ext_values.push(vals);
+        }
+        columns.extend(extensions.iter().map(|(n, _)| n.clone()));
+        let rows = groups.rows.into_iter().zip(ext_values).map(|(mut g, e)| {
+            g.extend(e);
+            g
+        });
+        groups = synth_table("SUMMARIZE".to_string(), columns, rows.collect());
+    }
+    let n = groups.rows.len();
+    Ok((TableEval::Owned(groups), (0..n).collect(), base_ctx))
+}
+
+/// ADDCOLUMNS(table, "name", expr, ...) keeps every row/column of `table` and appends the
+/// computed columns; SELECTCOLUMNS(table, "name", expr, ...) keeps only the computed columns
+/// (no de-duplication). Each expression is evaluated in the row context of the source row.
+fn eval_add_select_columns<'a>(
+    keep_base: bool,
+    args: &[Expr],
+    model: &'a DaxModel,
+    ctx: &FilterContext,
+    row_stack: &[RowContext<'_>],
+    vars: &HashMap<String, DaxValue>,
+) -> Result<(TableEval<'a>, Vec<usize>, FilterContext), String> {
+    let fname = if keep_base { "ADDCOLUMNS" } else { "SELECTCOLUMNS" };
+    let (base, base_indices, base_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+    let base_t = base.as_ref();
+    let extensions = parse_name_expr_pairs(fname, &args[1..])?;
+
+    let mut columns = if keep_base { base_t.columns.clone() } else { Vec::new() };
+    for (n, _) in &extensions {
+        if columns.iter().any(|c| c.eq_ignore_ascii_case(n)) {
+            return Err(format!("{}: coluna '{}' duplicada", fname, n));
+        }
+        columns.push(n.clone());
+    }
+    let mut rows = Vec::with_capacity(base_indices.len());
+    for &r_idx in &base_indices {
+        let mut row = if keep_base { base_t.rows[r_idx].clone() } else { Vec::new() };
+        let mut stack = row_stack.to_vec();
+        stack.push(RowContext { table: base_t, row_idx: r_idx });
+        for (_, e) in &extensions {
+            row.push(evaluate_ast(e, model, &base_ctx, &stack, vars)?);
+        }
+        rows.push(row);
+    }
+    // ADDCOLUMNS keeps the base name so base columns keep their lineage.
+    let name = if keep_base { base_t.name.clone() } else { "SELECTCOLUMNS".to_string() };
+    let n = rows.len();
+    Ok((TableEval::Owned(synth_table(name, columns, rows)), (0..n).collect(), base_ctx))
 }
 
 fn eval_table_expr<'a>(
@@ -2261,22 +2454,48 @@ fn resolve_related(
     target_table: &str,
     target_col: &str,
 ) -> Option<DaxValue> {
-    for rel in &model.relationships {
-        if !rel.is_active {
-            continue;
-        }
-        if rel.from_table.eq_ignore_ascii_case(&rc.table.name)
-            && rel.to_table.eq_ignore_ascii_case(target_table)
-        {
-            let fk_idx = rc.table.get_col_idx(&rel.from_column)?;
-            let fk_key = rc.table.rows[rc.row_idx][fk_idx].canonical_key();
-            let to_tbl = model.get_table(target_table)?;
-            let pk_idx = to_tbl.get_col_idx(&rel.to_column)?;
+    resolve_related_hops(model, rc, target_table, target_col, 4)
+}
+
+/// RELATED lookup following active many-to-one relationships from the row's table; a
+/// direct hop to `target_table` wins, otherwise chains (fact -> dim -> sub-dim) are walked
+/// depth-first up to `hops_left` relationships.
+fn resolve_related_hops(
+    model: &DaxModel,
+    rc: &RowContext<'_>,
+    target_table: &str,
+    target_col: &str,
+    hops_left: usize,
+) -> Option<DaxValue> {
+    if hops_left == 0 {
+        return None;
+    }
+    let outgoing = || {
+        model
+            .relationships
+            .iter()
+            .filter(|rel| rel.is_active && rel.from_table.eq_ignore_ascii_case(&rc.table.name))
+    };
+    // Row of the "one" side matched by the current row's foreign key.
+    let follow = |rel: &crate::dax::DaxRelationshipInput| -> Option<(&DaxTableData, usize)> {
+        let fk_idx = rc.table.get_col_idx(&rel.from_column)?;
+        let fk_key = rc.table.rows[rc.row_idx][fk_idx].canonical_key();
+        let to_tbl = model.get_table(&rel.to_table)?;
+        let pk_idx = to_tbl.get_col_idx(&rel.to_column)?;
+        let row = to_tbl.rows.iter().position(|row| row[pk_idx].canonical_key() == fk_key)?;
+        Some((to_tbl, row))
+    };
+    for rel in outgoing().filter(|rel| rel.to_table.eq_ignore_ascii_case(target_table)) {
+        if let Some((to_tbl, row)) = follow(rel) {
             let val_idx = to_tbl.get_col_idx(target_col)?;
-            for row in &to_tbl.rows {
-                if row[pk_idx].canonical_key() == fk_key {
-                    return Some(row[val_idx].clone());
-                }
+            return Some(to_tbl.rows[row][val_idx].clone());
+        }
+    }
+    for rel in outgoing().filter(|rel| !rel.to_table.eq_ignore_ascii_case(target_table)) {
+        if let Some((to_tbl, row)) = follow(rel) {
+            let next = RowContext { table: to_tbl, row_idx: row };
+            if let Some(v) = resolve_related_hops(model, &next, target_table, target_col, hops_left - 1) {
+                return Some(v);
             }
         }
     }
@@ -2926,6 +3145,118 @@ mod tests {
             .as_f64()
             .unwrap();
         assert!((by_delivery - 1600.0).abs() < 1e-6);
+    }
+
+    fn rows(v: serde_json::Value) -> Vec<serde_json::Map<String, serde_json::Value>> {
+        v.as_array().unwrap().iter().map(|r| r.as_object().unwrap().clone()).collect()
+    }
+
+    fn rel(from: &str, from_col: &str, to: &str, to_col: &str) -> DaxRelationshipInput {
+        DaxRelationshipInput {
+            from_table: from.into(),
+            from_column: from_col.into(),
+            to_table: to.into(),
+            to_column: to_col.into(),
+            cross_filter_direction: "single".into(),
+            is_active: true,
+        }
+    }
+
+    /// fact f (4 sales) -> dim p (3 products) -> sub-dim g (2 groups).
+    fn table_fns_model() -> DaxModel {
+        let mut model = DaxModel::new();
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput {
+                    name: "f".into(),
+                    columns: vec!["ProdID".into(), "Valor".into()],
+                    rows: rows(json!([
+                        {"ProdID": 1, "Valor": 10}, {"ProdID": 1, "Valor": 5},
+                        {"ProdID": 2, "Valor": 20}, {"ProdID": 3, "Valor": 40}
+                    ])),
+                },
+                DaxTableInput {
+                    name: "p".into(),
+                    columns: vec!["ProdID".into(), "Cat".into(), "GrupoID".into(), "Preco".into()],
+                    rows: rows(json!([
+                        {"ProdID": 1, "Cat": "A", "GrupoID": 1, "Preco": 3},
+                        {"ProdID": 2, "Cat": "A", "GrupoID": 1, "Preco": 1},
+                        {"ProdID": 3, "Cat": "B", "GrupoID": 2, "Preco": 2}
+                    ])),
+                },
+                DaxTableInput {
+                    name: "g".into(),
+                    columns: vec!["GrupoID".into(), "Grupo".into()],
+                    rows: rows(json!([{"GrupoID": 1, "Grupo": "G1"}, {"GrupoID": 2, "Grupo": "G2"}])),
+                },
+            ],
+            relationships: vec![rel("f", "ProdID", "p", "ProdID"), rel("p", "GrupoID", "g", "GrupoID")],
+            measures: vec![DaxMeasureInput {
+                name: "Total".into(),
+                table_name: "f".into(),
+                formula: "SUM(f[Valor])".into(),
+            }],
+        });
+        model
+    }
+
+    fn eval_num(model: &DaxModel, expr: &str) -> f64 {
+        match model.evaluate_dax(expr, &FilterContext::default()) {
+            Ok(v) => v.as_f64().unwrap_or_else(|| panic!("{expr} -> {v:?} (not a number)")),
+            Err(e) => panic!("{expr} -> error: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_summarize_addcolumns_selectcolumns_owned_tables() {
+        let model = table_fns_model();
+        // Group-by through one relationship hop (f -> p) and through two hops (f -> p -> g).
+        assert_eq!(eval_num(&model, "COUNTROWS(SUMMARIZE(f, p[Cat]))"), 2.0);
+        assert_eq!(eval_num(&model, "COUNTROWS(SUMMARIZE(f, g[Grupo], p[Cat]))"), 2.0);
+        assert_eq!(eval_num(&model, "COUNTROWS(SUMMARIZE(f, f[ProdID], p[Cat]))"), 3.0);
+        // Extension columns are evaluated in the group's filter context.
+        assert_eq!(
+            eval_num(&model, "MAXX(SUMMARIZE(f, p[Cat], \"V\", SUM(f[Valor])), [V])"),
+            40.0
+        );
+        assert_eq!(
+            eval_num(&model, "SUMX(SUMMARIZE(f, p[Cat], \"V\", [Total]), [V])"),
+            75.0
+        );
+        // Group-by column values resolve in row context, both qualified and bare.
+        assert_eq!(
+            model
+                .evaluate_dax(
+                    "CONCATENATEX(SUMMARIZE(f, p[Cat]), p[Cat] & [Cat], \",\", p[Cat], ASC)",
+                    &FilterContext::default()
+                )
+                .unwrap(),
+            DaxValue::Text("AA,BB".into())
+        );
+        // SUMMARIZE respects the outer filter context of its base table.
+        assert_eq!(eval_num(&model, "CALCULATE(COUNTROWS(SUMMARIZE(f, p[Cat])), p[Cat] = \"B\")"), 1.0);
+
+        // ADDCOLUMNS keeps row count and base columns; measure refs transition per row.
+        assert_eq!(eval_num(&model, "COUNTROWS(ADDCOLUMNS(VALUES(p[Cat]), \"T\", [Total]))"), 2.0);
+        assert_eq!(eval_num(&model, "MAXX(ADDCOLUMNS(VALUES(p[Cat]), \"T\", [Total]), [T])"), 40.0);
+        assert_eq!(
+            eval_num(&model, "SUMX(ADDCOLUMNS(p, \"Dobro\", p[Preco] * 2), [Dobro] + p[Preco])"),
+            18.0
+        );
+        // SELECTCOLUMNS projects without removing duplicates.
+        assert_eq!(eval_num(&model, "COUNTROWS(SELECTCOLUMNS(p, \"C\", p[Cat]))"), 3.0);
+        assert_eq!(
+            model
+                .evaluate_dax(
+                    "CONCATENATEX(SELECTCOLUMNS(p, \"C\", p[Cat]), [C], \"\")",
+                    &FilterContext::default()
+                )
+                .unwrap(),
+            DaxValue::Text("AAB".into())
+        );
+        // Malformed extension pairs are errors, not panics.
+        assert!(model.evaluate_dax("COUNTROWS(ADDCOLUMNS(p, \"X\"))", &FilterContext::default()).is_err());
+        assert!(model.evaluate_dax("COUNTROWS(SUMMARIZE(f, p[Nope]))", &FilterContext::default()).is_err());
     }
 
     #[test]
