@@ -16,6 +16,7 @@ import {
   UserDefinedFunction,
   DaxQueryTab,
 } from '../types/bi';
+import { EtlQuery } from '../types/etl';
 import { migrateProjectState, CURRENT_ENGINE_VERSION } from './migrations';
 import { APP_VERSION } from '../version';
 
@@ -46,6 +47,8 @@ export interface ProjectState {
   snapToGrid?: boolean;
   language?: string;
   currency?: string;
+  /** Consultas de ETL por tabela (v0.9.0+). Chave = tableId. */
+  appliedSteps?: Record<string, EtlQuery>;
   updatedAt: string;
 }
 
