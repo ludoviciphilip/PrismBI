@@ -37,9 +37,11 @@ import {
   syncModelToRust,
   refreshTableNative,
   refreshPbipTables,
+  dbRefreshImport,
   NativeImportedTable,
   UpdateCheckResult,
 } from '../bridge/tauriBridge';
+import { buildTableFromDbImport } from '../adapters/dbConnector';
 
 export interface RecentProjectEntry {
   id: string;
@@ -1114,6 +1116,31 @@ export const useBiStore = create<BiState>((set, get) => {
       const nowTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
       try {
         const sc = target.sourceConfig;
+        if (sc?.type === 'db' && sc.db && isTauriRuntime()) {
+          const dbConfig = sc.db;
+          const payload = await dbRefreshImport(
+            dbConfig.config as any,
+            dbConfig.credentialKey,
+            dbConfig.source,
+            target.name
+          );
+          const cols = nativePayloadToColumns(payload, target.id);
+          get().replaceTableData(target.id, cols, payload.rows, {
+            ...sc,
+            lastRefreshedAt: new Date().toISOString(),
+          });
+          await pushModelToRustAsync(get().tables, get().relationships, get().measures);
+          set(s => ({
+            dataVersion: s.dataVersion + 1,
+            refreshStatus: {
+              type: 'success',
+              message: `Tabela "${target.name}" atualizada via banco de dados (${payload.totalRows.toLocaleString('pt-BR')} linhas).`,
+              timestamp: nowTime,
+            },
+          }));
+          return { ok: true, message: `Tabela "${target.name}" atualizada.` };
+        }
+
         if (sc?.type === 'rest' && sc.url) {
           const resp = await fetch(sc.url);
           if (!resp.ok) throw new Error(`HTTP ${resp.status} ao consultar ${sc.url}`);
@@ -1235,7 +1262,25 @@ export const useBiStore = create<BiState>((set, get) => {
           const sc = tbl.sourceConfig;
           if (!sc) continue;
 
-          if (sc.type === 'rest' && sc.url) {
+          if (sc.type === 'db' && sc.db && isTauriRuntime()) {
+            try {
+              const dbConfig = sc.db;
+              const payload = await dbRefreshImport(
+                dbConfig.config as any,
+                dbConfig.credentialKey,
+                dbConfig.source,
+                tbl.name
+              );
+              const cols = nativePayloadToColumns(payload, tbl.id);
+              get().replaceTableData(tbl.id, cols, payload.rows, {
+                ...sc,
+                lastRefreshedAt: new Date().toISOString(),
+              });
+              refreshedTables.push(tbl.name);
+            } catch (err: any) {
+              warnings.push(`${tbl.name}: ${err?.message || String(err)}`);
+            }
+          } else if (sc.type === 'rest' && sc.url) {
             try {
               const resp = await fetch(sc.url);
               if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
