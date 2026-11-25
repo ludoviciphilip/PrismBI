@@ -1,5 +1,14 @@
 import { Table, Column, Relationship, DataType } from '../types/bi';
 
+/**
+ * NOTE (v0.8.0): este conector simulado NÃO é mais usado pelos caminhos de
+ * produção (`DataSourceModal` agora usa `NativeDbConnectorPanel` com os
+ * conectores reais DuckDB ATTACH — ver `adapters/dbConnector.ts` e
+ * `connectors::manager` no backend Rust). O módulo é mantido apenas pelos
+ * seus próprios testes unitários (`drillthrough_and_postgres_mock.test.ts`)
+ * como referência de dados de demonstração; não importe isso em UI nova.
+ */
+
 export interface PostgresColumnDef {
   name: string;
   pgType: string;
