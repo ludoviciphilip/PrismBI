@@ -327,7 +327,16 @@ fn eval_call(
                 "TOTALQTD" => "QTD",
                 _ => "YTD",
             };
-            apply_period_to_date(model, ctx, &mut next_ctx, table, column, mode);
+            let year_end = if fname == "TOTALYTD" {
+                args.get(2)
+                    .map(|e| evaluate_ast(e, model, ctx, row_stack, vars))
+                    .transpose()?
+                    .map(|v| parse_fiscal_year_end(&v.as_display_string()))
+                    .unwrap_or((12, 31))
+            } else {
+                (12, 31)
+            };
+            apply_period_to_date(model, ctx, &mut next_ctx, table, column, mode, year_end);
             for filter_expr in &args[2..] {
                 apply_calculate_modifier(filter_expr, model, ctx, &mut next_ctx, row_stack, vars)?;
             }
@@ -1196,7 +1205,16 @@ fn apply_calculate_modifier(
                             "DATESQTD" => "QTD",
                             _ => "YTD",
                         };
-                        apply_period_to_date(model, outer_ctx, next_ctx, table, column, mode);
+                        let year_end = if upper == "DATESYTD" {
+                            args.get(1)
+                                .map(|e| evaluate_ast(e, model, outer_ctx, row_stack, vars))
+                                .transpose()?
+                                .map(|v| parse_fiscal_year_end(&v.as_display_string()))
+                                .unwrap_or((12, 31))
+                        } else {
+                            (12, 31)
+                        };
+                        apply_period_to_date(model, outer_ctx, next_ctx, table, column, mode, year_end);
                     }
                     return Ok(());
                 }
@@ -1265,6 +1283,20 @@ fn apply_calculate_modifier(
                                 .map(|&i| tbl.rows[i][0].canonical_key())
                                 .collect();
                             next_ctx.set_column_filter(&tbl.name, first_col, allowed);
+                        }
+                    }
+                    return Ok(());
+                }
+                "FIRSTNONBLANK" | "LASTNONBLANK" => {
+                    if let Some(Expr::TableColRef { table, column }) = args.first() {
+                        let picked = eval_call(&upper, args, model, outer_ctx, row_stack, vars)?;
+                        if let Some(tbl) = model.get_table(table) {
+                            let mut allowed = HashSet::new();
+                            if !picked.is_blank() {
+                                allowed.insert(picked.canonical_key());
+                            }
+                            next_ctx.clear_table(&tbl.name);
+                            next_ctx.set_column_filter(&tbl.name, column, allowed);
                         }
                     }
                     return Ok(());
@@ -1452,6 +1484,29 @@ fn apply_complete_period_shift(
     next_ctx.set_column_filter(&tbl.name, col_name, allowed);
 }
 
+fn parse_fiscal_year_end(s: &str) -> (u32, u32) {
+    let parts: Vec<&str> = s.trim().splitn(2, '-').collect();
+    if parts.len() == 2 {
+        if let (Ok(m), Ok(d)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+            if (1..=12).contains(&m) && (1..=31).contains(&d) {
+                return (m, d);
+            }
+        }
+    }
+    (12, 31)
+}
+
+/// Fiscal year "label" (the calendar year in which the fiscal year ends) for a date,
+/// given a fiscal year_end (month, day). Dates after the fiscal year end belong to the
+/// fiscal year ending the following calendar year.
+fn fiscal_end_year(y: i32, m: u32, d: u32, year_end: (u32, u32)) -> i32 {
+    if (m, d) <= year_end {
+        y
+    } else {
+        y + 1
+    }
+}
+
 fn apply_period_to_date(
     model: &DaxModel,
     outer_ctx: &FilterContext,
@@ -1459,6 +1514,7 @@ fn apply_period_to_date(
     table_name: &str,
     col_name: &str,
     mode: &str, // "MTD" | "QTD" | "YTD"
+    year_end: (u32, u32),
 ) {
     let Some(tbl) = model.get_table(table_name) else { return };
     let Some(cidx) = tbl.get_col_idx(col_name) else { return };
@@ -1478,6 +1534,7 @@ fn apply_period_to_date(
         return;
     };
     let max_q = (max_m - 1) / 3;
+    let max_fy = fiscal_end_year(max_y, max_m, max_d, year_end);
 
     let mut allowed = HashSet::new();
     for row in &tbl.rows {
@@ -1486,7 +1543,9 @@ fn apply_period_to_date(
             let in_period = match mode {
                 "MTD" => y == max_y && m == max_m && d <= max_d,
                 "QTD" => y == max_y && ((m - 1) / 3) == max_q && (m, d) <= (max_m, max_d),
-                _ => y == max_y && (m, d) <= (max_m, max_d),
+                _ => {
+                    fiscal_end_year(y, m, d, year_end) == max_fy && (y, m, d) <= (max_y, max_m, max_d)
+                }
             };
             if in_period {
                 allowed.insert(row[cidx].canonical_key());
