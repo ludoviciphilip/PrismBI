@@ -296,8 +296,16 @@ fn download_and_install_update(
 fn db_connect(
     state: State<'_, AppState>,
     config: ConnectorConfig,
+    persist_credential_key: Option<String>,
 ) -> Result<DbConnectionInfo, String> {
-    state.connections.connect(&state.db, config)
+    let password = config.extract_password();
+    let info = state.connections.connect(&state.db, config)?;
+    if let (Some(key), Some(pw)) = (persist_credential_key, password) {
+        if !pw.is_empty() {
+            state.credentials.set(&key, &pw)?;
+        }
+    }
+    Ok(info)
 }
 
 #[tauri::command]
@@ -377,6 +385,38 @@ fn db_disconnect(state: State<'_, AppState>, connection_id: String) -> Result<()
     state.connections.disconnect(&state.db, &connection_id)
 }
 
+/// Usado pelo botão "Atualizar Dados" para tabelas de origem `db`:
+/// reconecta efemeramente usando a senha guardada no keyring (identificada
+/// por `credential_key`, nunca pelo `connection_id` de sessão, que não é
+/// estável entre execuções do app), reimporta e desconecta em seguida.
+#[tauri::command]
+fn db_refresh_import(
+    state: State<'_, AppState>,
+    config: ConnectorConfig,
+    credential_key: Option<String>,
+    source: DbImportSourcePayload,
+    target_table_name: String,
+) -> Result<ImportedTablePayload, String> {
+    let password = match &credential_key {
+        Some(key) => state.credentials.get(key)?,
+        None => None,
+    };
+    let full_config = config.with_password(password);
+    let info = state.connections.connect(&state.db, full_config)?;
+    let source = match source {
+        DbImportSourcePayload::Table { schema, table } => ImportSource::Table { schema, table },
+        DbImportSourcePayload::Sql { sql } => ImportSource::Sql(sql),
+    };
+    let result = state.connections.import_table(
+        &state.db,
+        &info.connection_id,
+        source,
+        &target_table_name,
+    );
+    let _ = state.connections.disconnect(&state.db, &info.connection_id);
+    result
+}
+
 // ---------------------------------------------------------------------
 // Credenciais seguras (chaveiro Linux Secret Service) — v0.8.0
 // ---------------------------------------------------------------------
@@ -445,6 +485,7 @@ pub fn run() {
             db_query_preview,
             db_import_table,
             db_disconnect,
+            db_refresh_import,
             credentials_set,
             credentials_get_exists,
             credentials_delete,

@@ -122,6 +122,56 @@ impl ConnectorConfig {
         }
     }
 
+    /// Extrai a senha em texto puro deste config (se houver), para ser
+    /// persistida no keyring pelo backend logo após um `db_connect` bem
+    /// sucedido. Nunca deve ser reenviada ao frontend.
+    pub fn extract_password(&self) -> Option<String> {
+        match self {
+            ConnectorConfig::Postgres { password, .. } => password.clone(),
+            ConnectorConfig::Mysql { password, .. } => password.clone(),
+            _ => None,
+        }
+    }
+
+    /// Retorna uma cópia com a senha injetada, usada ao reconectar durante
+    /// "Atualizar Dados" com a credencial recuperada do keyring (o
+    /// frontend nunca vê nem guarda essa senha).
+    pub fn with_password(&self, password: Option<String>) -> ConnectorConfig {
+        match self.clone() {
+            ConnectorConfig::Postgres {
+                host,
+                port,
+                database,
+                user,
+                schema,
+                ssl_mode,
+                ..
+            } => ConnectorConfig::Postgres {
+                host,
+                port,
+                database,
+                user,
+                password,
+                schema,
+                ssl_mode,
+            },
+            ConnectorConfig::Mysql {
+                host,
+                port,
+                database,
+                user,
+                ..
+            } => ConnectorConfig::Mysql {
+                host,
+                port,
+                database,
+                user,
+                password,
+            },
+            other => other,
+        }
+    }
+
     /// Monta a instrução SQL `ATTACH ... (TYPE ..., READ_ONLY)` para este
     /// conector, usando `alias` (já sanitizado/gerado internamente, nunca
     /// vindo diretamente do usuário) como nome do catálogo anexado.
@@ -436,5 +486,29 @@ mod tests {
             .required_extension(),
             Some("httpfs")
         );
+    }
+
+    #[test]
+    fn extract_and_with_password_roundtrip() {
+        let cfg = ConnectorConfig::Postgres {
+            host: "h".to_string(),
+            port: 5432,
+            database: "d".to_string(),
+            user: "u".to_string(),
+            password: Some("real-secret".to_string()),
+            schema: None,
+            ssl_mode: None,
+        };
+        assert_eq!(cfg.extract_password().as_deref(), Some("real-secret"));
+        let redacted = cfg.redacted();
+        assert_eq!(redacted.extract_password(), None);
+        let restored = redacted.with_password(Some("from-keyring".to_string()));
+        assert_eq!(restored.extract_password().as_deref(), Some("from-keyring"));
+    }
+
+    #[test]
+    fn sqlite_has_no_extractable_password() {
+        let cfg = ConnectorConfig::Sqlite { path: "x".into() };
+        assert_eq!(cfg.extract_password(), None);
     }
 }
