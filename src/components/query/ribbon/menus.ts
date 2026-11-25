@@ -4,6 +4,7 @@
 // os testes de "menu config -> EtlStep builders" iteram esta estrutura.
 
 import { DistributiveOmit, EtlStep, EtlType } from '../../../types/etl';
+import { CheckCheck, Check, X, RefreshCw, Code2 } from 'lucide-react';
 import {
   OpDef,
   ParamFieldSpec,
@@ -46,8 +47,8 @@ export interface RibbonCtx {
 }
 
 export type MenuNode =
-  | { kind: 'action'; id: string; label: string; icon?: any; run: (ctx: RibbonCtx) => void; enabled?: (ctx: RibbonCtx) => boolean; disabledReason?: string }
-  | { kind: 'submenu'; id: string; label: string; icon?: any; items: MenuNode[]; enabled?: (ctx: RibbonCtx) => boolean; disabledReason?: string };
+  | { kind: 'action'; id: string; label: string; icon?: any; tooltip?: string; run: (ctx: RibbonCtx) => void; enabled?: (ctx: RibbonCtx) => boolean; disabledReason?: string }
+  | { kind: 'submenu'; id: string; label: string; icon?: any; tooltip?: string; items: MenuNode[]; enabled?: (ctx: RibbonCtx) => boolean; disabledReason?: string };
 
 export interface RibbonGroupDef {
   title: string;
@@ -173,22 +174,24 @@ function dateMenu(mode: 'inplace' | 'new'): MenuNode[] {
 // ---------------------------------------------------------------------------
 // Ações simples (sem parâmetro, sem diálogo) que só montam o EtlStep direto
 // ---------------------------------------------------------------------------
-const action = (id: string, label: string, run: (ctx: RibbonCtx) => void, enabled?: (ctx: RibbonCtx) => boolean, disabledReason?: string): MenuNode => ({
+const action = (id: string, label: string, run: (ctx: RibbonCtx) => void, enabled?: (ctx: RibbonCtx) => boolean, disabledReason?: string, icon?: any, tooltip?: string): MenuNode => ({
   kind: 'action',
   id,
   label,
   run,
   enabled,
   disabledReason,
+  icon,
+  tooltip,
 });
 
-const dialogAction = (id: string, label: string, dialog: RibbonDialogKind, enabled?: (ctx: RibbonCtx) => boolean, disabledReason?: string): MenuNode =>
-  action(id, label, ctx => ctx.openDialog(dialog), enabled, disabledReason);
+const dialogAction = (id: string, label: string, dialog: RibbonDialogKind, enabled?: (ctx: RibbonCtx) => boolean, disabledReason?: string, icon?: any): MenuNode =>
+  action(id, label, ctx => ctx.openDialog(dialog), enabled, disabledReason, icon);
 
 // ---------------------------------------------------------------------------
 // Aba "Página Inicial"
 // ---------------------------------------------------------------------------
-export function homeTab(extra: { onCloseAndApply: () => void; onRefreshPreview: () => void }): RibbonTabDef {
+export function homeTab(extra: { onCloseAndApply: () => void; onApply: () => void; onClose: () => void; onRefreshPreview: () => void }): RibbonTabDef {
   return {
     id: 'home',
     label: 'Página Inicial',
@@ -196,9 +199,19 @@ export function homeTab(extra: { onCloseAndApply: () => void; onRefreshPreview: 
       {
         title: 'Geral',
         items: [
-          action('closeApply', 'Fechar e Aplicar', extra.onCloseAndApply),
-          action('refreshPreview', 'Atualizar Visualização', extra.onRefreshPreview),
-          dialogAction('advancedEditor', 'Editor Avançado', 'advancedEditor'),
+          action('closeApply', 'Fechar e Aplicar', extra.onCloseAndApply, undefined, undefined, CheckCheck),
+          action('apply', 'Aplicar', extra.onApply, undefined, undefined, Check),
+          action('close', 'Fechar', extra.onClose, undefined, undefined, X),
+          action(
+            'refreshPreview',
+            'Atualizar Visualização',
+            extra.onRefreshPreview,
+            undefined,
+            undefined,
+            RefreshCw,
+            'Relê a fonte e atualiza só a visualização (preview). Não muda o relatório — use "Fechar e Aplicar" para isso.',
+          ),
+          dialogAction('advancedEditor', 'Editor Avançado', 'advancedEditor', undefined, undefined, Code2),
         ],
       },
       {

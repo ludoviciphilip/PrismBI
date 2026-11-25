@@ -41,7 +41,7 @@ function run(node: MenuNode, ctx: RibbonCtx) {
   node.run(ctx);
 }
 
-const homeTabDef = () => homeTab({ onCloseAndApply: vi.fn(), onRefreshPreview: vi.fn() });
+const homeTabDef = () => homeTab({ onCloseAndApply: vi.fn(), onApply: vi.fn(), onClose: vi.fn(), onRefreshPreview: vi.fn() });
 
 describe('Home tab: direct-step actions produce the exact contract JSON', () => {
   it.each([

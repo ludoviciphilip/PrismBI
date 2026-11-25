@@ -81,6 +81,10 @@ export const ReportView: React.FC = () => {
     setCanvasSizeModalOpen: s.setCanvasSizeModalOpen,
     isDarkMode: s.isDarkMode,
   })));
+  const hasPendingQueryChanges = useBiStore(s => s.hasPendingQueryChanges());
+  const setActiveView = useBiStore(s => s.setActiveView);
+  const applyAllDirtyQueries = useBiStore(s => s.applyAllDirtyQueries);
+  const [applyingPending, setApplyingPending] = useState(false);
 
   const activePage = pages.find(p => p.id === activePageId) || pages[0];
   const { width: canvasWidth, height: canvasHeight, label: canvasSizeLabel } = getEffectiveCanvasSize(activePage);
@@ -223,6 +227,30 @@ export const ReportView: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-slate-200/70 dark:bg-slate-950 select-none">
+      {/* Power Query: alterações pendentes (consultas sujas ainda não aplicadas) */}
+      {hasPendingQueryChanges && (
+        <div
+          data-testid="pending-query-changes-bar"
+          className="bg-amber-300 dark:bg-amber-700 text-amber-950 dark:text-amber-50 px-4 py-2 flex items-center justify-between shadow-md shrink-0 z-30 border-b border-amber-400 dark:border-amber-600 text-xs font-medium"
+        >
+          <span>Há alterações pendentes nas suas consultas que não foram aplicadas.</span>
+          <button
+            data-testid="apply-pending-changes-btn"
+            disabled={applyingPending}
+            onClick={async () => {
+              setApplyingPending(true);
+              try {
+                await applyAllDirtyQueries();
+              } finally {
+                setApplyingPending(false);
+              }
+            }}
+            className="px-3 py-1 bg-slate-950 text-white rounded-lg text-xs font-bold hover:bg-slate-800 transition-all shadow-xs cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {applyingPending ? 'Aplicando…' : 'Aplicar alterações'}
+          </button>
+        </div>
+      )}
       {/* Active Drill-Through Top Navigation Banner */}
       {activeDrillthrough && (
         <div className="bg-gradient-to-r from-amber-500 via-amber-600 to-amber-700 text-slate-950 px-4 py-2 flex items-center justify-between shadow-md shrink-0 z-30 border-b border-amber-600">

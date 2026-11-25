@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, Filter as FilterIcon } from 'lucide-react';
 import { useBiStore } from '../../store/useBiStore';
 import { EtlStep, EtlPreviewResult, Cond, DistributiveOmit, EtlType } from '../../types/etl';
-import { etlPreview, etlToM, etlFromM, etlStepM, ETL_BROWSER_FALLBACK_NOTICE } from '../../services/etl/etlClient';
+import { etlPreview, etlToM, etlFromM, etlStepM, etlLoadRaw, ETL_BROWSER_FALLBACK_NOTICE } from '../../services/etl/etlClient';
 import { editStepFormula, FormulaBarEditError } from '../../services/etl/formulaBarEdit';
 import { isTauriRuntime } from '../../bridge/tauriBridge';
 import { ColumnTypeIcon, etlTypeFromDuckType } from './ColumnTypeIcon';
@@ -61,8 +61,14 @@ export const PowerQueryView: React.FC = () => {
     renameQueryStep,
     selectQueryStep,
     selectedStepByTable,
-    closeAndApplyQuery,
-    refreshTableData,
+    applyAllDirtyQueries,
+    isQueryDirty,
+    setActiveView,
+    sourcePbipPath,
+    addTable,
+    renameTable,
+    duplicateTable,
+    deleteTable,
   } = useBiStore();
 
   const [selectedTableId, setSelectedTableId] = useState<string>(tables[0]?.id || '');
@@ -79,6 +85,10 @@ export const PowerQueryView: React.FC = () => {
   const [activeTabId, setActiveTabId] = useState('home');
   const [paramDialog, setParamDialog] = useState<{ title: string; fields: ParamFieldSpec[]; onSubmit: (v: Record<string, any>) => void } | null>(null);
   const [toggles, setToggles] = useState<ViewToggles>({ formulaBar: true, quality: true, distribution: true, profile: true });
+  const [applyProgress, setApplyProgress] = useState<{ name: string; index: number; total: number } | null>(null);
+  const [applyError, setApplyError] = useState<{ name: string; message: string } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const query = getOrInitQuery(selectedTableId);
@@ -100,6 +110,77 @@ export const PowerQueryView: React.FC = () => {
     etlPreview({ query, uptoStep: uptoStep >= 0 ? uptoStep : undefined, limit: 200 })
       .then(setPreview)
       .catch((e: any) => setPreview({ columns: [], rows: [], rowCount: 0, warnings: [e?.message || 'Erro ao gerar preview'] }));
+  };
+
+  // "Atualizar Visualização": só a prévia (Power BI não muda o relatório aqui).
+  // Relê a fonte bruta (etl_load_raw) antes de reconstruir o preview, para que
+  // mudanças na fonte (novo arquivo, etc.) apareçam mesmo sem "Fechar e Aplicar".
+  const handleRefreshPreview = async () => {
+    if (!selectedTableId) return;
+    setRefreshing(true);
+    try {
+      const table = tables.find(t => t.id === selectedTableId);
+      const pbipRoot = table?.sourceConfig?.pbipRoot || sourcePbipPath || undefined;
+      await etlLoadRaw({ query: query.name, source: query.source, pbipRoot });
+    } catch {
+      // Sem fonte nova para reler (ex.: tabela só de memória) — segue com o preview atual.
+    }
+    runPreview();
+    setLastRefreshedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+    setRefreshing(false);
+  };
+
+  const buildAppliedToast = (applied: { name: string; rowCount: number; truncated: boolean }[]) => {
+    const lines = applied.map(a => `${a.name}: ${a.rowCount.toLocaleString('pt-BR')} linhas`);
+    const truncatedLines = applied
+      .filter(a => a.truncated)
+      .map(a => `Tabela ${a.name}: apenas as primeiras 5.000 de ${a.rowCount.toLocaleString('pt-BR')} linhas foram carregadas no modelo.`);
+    return [...lines, ...truncatedLines].join(' · ');
+  };
+
+  // "Aplicar": aplica todas as consultas sujas (em ordem de dependência) e fica no editor.
+  const handleApply = async () => {
+    setApplyError(null);
+    setApplyProgress({ name: '', index: 0, total: 1 });
+    try {
+      const result = await applyAllDirtyQueries(info => setApplyProgress(info));
+      if (result.errors) {
+        setApplyError({ name: result.errors.name, message: result.errors.message });
+        showToast(`Falha ao aplicar "${result.errors.name}": ${result.errors.message}`);
+        return;
+      }
+      if (result.applied.length) showToast(`Consulta(s) aplicada(s): ${buildAppliedToast(result.applied)}`);
+      else showToast('Nenhuma alteração pendente para aplicar');
+    } finally {
+      setApplyProgress(null);
+    }
+  };
+
+  // "Fechar e Aplicar": aplica tudo e volta para o relatório (como o Power BI).
+  const handleCloseAndApply = async () => {
+    setApplyError(null);
+    setApplyProgress({ name: '', index: 0, total: 1 });
+    try {
+      const result = await applyAllDirtyQueries(info => setApplyProgress(info));
+      if (result.errors) {
+        setApplyError({ name: result.errors.name, message: result.errors.message });
+        showToast(`Falha ao aplicar "${result.errors.name}": ${result.errors.message}`);
+        return; // mantém o editor aberto para corrigir a etapa com erro
+      }
+      setApplyProgress(null);
+      setActiveView('report');
+      if (result.applied.length) showToast(`Consulta(s) aplicada(s): ${buildAppliedToast(result.applied)}`);
+      else showToast('Consulta aplicada');
+      return;
+    } finally {
+      setApplyProgress(null);
+    }
+  };
+
+  // "Fechar": volta para o relatório sem aplicar — a barra de alterações pendentes
+  // (no ReportView) avisa se ainda houver consultas sujas.
+  const handleClose = () => {
+    setActiveView('report');
   };
 
   useEffect(() => {
@@ -168,7 +249,37 @@ export const PowerQueryView: React.FC = () => {
     id: t.id,
     name: t.originalName || t.name,
     stepCount: (appliedSteps[t.id]?.steps || []).length,
+    dirty: isQueryDirty(t.id),
   }));
+
+  const handleRenameQuery = (id: string) => {
+    const table = tables.find(t => t.id === id);
+    const name = window.prompt('Novo nome da consulta', table?.originalName || table?.name || '');
+    if (name) renameTable(id, name);
+  };
+
+  const handleDuplicateQuery = (id: string) => {
+    const copy = duplicateTable(id);
+    if (copy) setSelectedTableId(copy.id);
+  };
+
+  const handleReferenceQuery = (id: string) => {
+    const source = getOrInitQuery(id);
+    const newId = newStepId().replace('step_', 'tbl_');
+    const newName = `${source.name} (referência)`;
+    addTable({ id: newId, name: newName, originalName: newName, columns: [], rows: [] });
+    setQuery(newId, { name: newName, source: { kind: 'table', table: source.name }, steps: [] });
+    setSelectedTableId(newId);
+  };
+
+  const handleDeleteQuery = (id: string) => {
+    const table = tables.find(t => t.id === id);
+    if (window.confirm(`Excluir a consulta "${table?.originalName || table?.name}"? Essa ação não pode ser desfeita.`)) {
+      deleteTable(id);
+      if (selectedTableId === id) setSelectedTableId(tables.find(t => t.id !== id)?.id || '');
+    }
+  };
+
 
   const addStep = (step: DistributiveOmit<EtlStep, 'id'>) => {
     addQueryStep(selectedTableId, { ...step, id: newStepId() } as EtlStep);
@@ -253,7 +364,7 @@ export const PowerQueryView: React.FC = () => {
   };
 
   const tabs: RibbonTabDef[] = [
-    homeTab({ onCloseAndApply: () => closeAndApplyQuery(selectedTableId).then(() => showToast('Consulta aplicada')), onRefreshPreview: () => runPreview() }),
+    homeTab({ onCloseAndApply: () => void handleCloseAndApply(), onApply: () => void handleApply(), onClose: handleClose, onRefreshPreview: () => void handleRefreshPreview() }),
     transformTab(),
     addColumnTab(),
     viewTab(toggles, key => setToggles(t => ({ ...t, [key]: !t[key] }))),
@@ -336,7 +447,7 @@ export const PowerQueryView: React.FC = () => {
   const profile = profileColumn ? computeColumnProfile(preview.rows, profileColumn, columnTypes[profileColumn]) : null;
 
   return (
-    <div className="flex flex-col h-full bg-slate-50 dark:bg-slate-950 text-xs" data-testid="power-query-view">
+    <div className="flex flex-col flex-1 w-full h-full min-w-0 bg-slate-50 dark:bg-slate-950 text-xs" data-testid="power-query-view">
       <Ribbon tabs={tabs} activeTabId={activeTabId} onTabChange={setActiveTabId} ctx={ribbonCtx} />
 
       {toggles.formulaBar && (
@@ -369,8 +480,41 @@ export const PowerQueryView: React.FC = () => {
         </div>
       )}
 
+      {applyError && (
+        <div
+          data-testid="apply-error-banner"
+          className="px-3 py-2 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-200 text-[11px] border-b border-red-200 dark:border-red-800 flex items-center justify-between"
+        >
+          <span>
+            Falha ao aplicar a consulta <strong>{applyError.name}</strong>: {applyError.message}
+          </span>
+          <button onClick={() => setApplyError(null)} className="cursor-pointer underline">
+            Dispensar
+          </button>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 px-3 py-0.5 text-[10px] text-slate-400 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900">
+        {refreshing ? (
+          <span data-testid="refresh-spinner" className="flex items-center gap-1">
+            <span className="w-2.5 h-2.5 rounded-full border-2 border-slate-300 border-t-amber-500 animate-spin" />
+            Atualizando visualização…
+          </span>
+        ) : lastRefreshedAt ? (
+          <span data-testid="refresh-status">Visualização atualizada às {lastRefreshedAt}</span>
+        ) : null}
+      </div>
+
       <div className="flex flex-1 min-h-0">
-        <ConsultasPane queries={queryEntries} selectedId={selectedTableId} onSelect={setSelectedTableId} />
+        <ConsultasPane
+          queries={queryEntries}
+          selectedId={selectedTableId}
+          onSelect={setSelectedTableId}
+          onRename={handleRenameQuery}
+          onDuplicate={handleDuplicateQuery}
+          onReference={handleReferenceQuery}
+          onDelete={handleDeleteQuery}
+        />
 
         <div className="flex-1 flex flex-col min-w-0">
           <div className="flex-1 overflow-auto">
@@ -479,6 +623,20 @@ export const PowerQueryView: React.FC = () => {
       </div>
 
       {toast && <div className="fixed bottom-4 right-4 bg-slate-900 text-white px-3 py-2 rounded-lg shadow-xl text-[11px]">{toast}</div>}
+
+      {applyProgress && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" data-testid="apply-progress-modal">
+          <div className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl px-6 py-5 min-w-[320px] text-center">
+            <div className="mx-auto mb-3 w-6 h-6 rounded-full border-2 border-slate-300 border-t-amber-500 animate-spin" />
+            <div className="text-[12px] font-semibold text-slate-700 dark:text-slate-200">
+              {applyProgress.total > 1 || applyProgress.name
+                ? `Aplicando alterações da consulta… ${applyProgress.name} (${applyProgress.index}/${applyProgress.total})`
+                : 'Aplicando alterações da consulta…'}
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {paramDialog && (
         <ParamDialog
