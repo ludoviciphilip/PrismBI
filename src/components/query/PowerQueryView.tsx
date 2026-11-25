@@ -1,34 +1,26 @@
-import React, { useEffect, useRef, useState } from 'react';
-import {
-  RefreshCw,
-  CheckCircle,
-  Code2,
-  Filter as FilterIcon,
-  Rows,
-  Columns as ColumnsIcon,
-  Type,
-  Combine,
-  Replace,
-  Group,
-  PanelsTopLeft,
-  GitMerge,
-  ListPlus,
-  SplitSquareHorizontal,
-  AlignVerticalJustifyCenter,
-  ListOrdered,
-  Sparkles,
-  ChevronDown,
-  Trash2,
-} from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, Filter as FilterIcon } from 'lucide-react';
 import { useBiStore } from '../../store/useBiStore';
-import { EtlStep, EtlPreviewResult, Cond, DistributiveOmit } from '../../types/etl';
+import { EtlStep, EtlPreviewResult, Cond, DistributiveOmit, EtlType } from '../../types/etl';
 import { etlPreview, etlToM, etlFromM, etlStepM, ETL_BROWSER_FALLBACK_NOTICE } from '../../services/etl/etlClient';
 import { editStepFormula, FormulaBarEditError } from '../../services/etl/formulaBarEdit';
 import { isTauriRuntime } from '../../bridge/tauriBridge';
-import { ColumnTypeIcon } from './ColumnTypeIcon';
+import { ColumnTypeIcon, etlTypeFromDuckType } from './ColumnTypeIcon';
 import { ColumnFilterMenu } from './ColumnFilterMenu';
 import { ColumnContextMenu, ColumnMenuAction } from './ColumnContextMenu';
 import { StepsPanel } from './StepsPanel';
+import { ConsultasPane, QueryListEntry } from './ConsultasPane';
+import { useColumnSelection } from './hooks/useColumnSelection';
+import { planClearSort } from './sortUtils';
+import { computeColumnQuality } from './profiling/quality';
+import { computeColumnDistribution } from './profiling/distribution';
+import { computeColumnProfile } from './profiling/profile';
+import { QualityBar } from './profiling/QualityBar';
+import { DistributionBar } from './profiling/DistributionBar';
+import { ProfilePanel } from './profiling/ProfilePanel';
+import { Ribbon } from './ribbon/Ribbon';
+import { homeTab, transformTab, addColumnTab, viewTab, RibbonCtx, RibbonDialogKind, RibbonTabDef, ViewToggles } from './ribbon/menus';
+import { ParamFieldSpec } from './ribbon/opDefs';
 import { ChangeTypeDialog } from './dialogs/ChangeTypeDialog';
 import { FilterRowsDialog } from './dialogs/FilterRowsDialog';
 import { GroupByDialog } from './dialogs/GroupByDialog';
@@ -42,6 +34,9 @@ import { IndexColumnDialog } from './dialogs/IndexColumnDialog';
 import { AppendQueriesDialog } from './dialogs/AppendQueriesDialog';
 import { PivotDialog } from './dialogs/PivotDialog';
 import { AdvancedEditorModal } from './dialogs/AdvancedEditorModal';
+import { ParamDialog } from './dialogs/ParamDialog';
+import { ChooseColumnsDialog } from './dialogs/ChooseColumnsDialog';
+import { GoToColumnDialog } from './dialogs/GoToColumnDialog';
 
 let idCounter = 0;
 function newStepId(): string {
@@ -49,21 +44,7 @@ function newStepId(): string {
   return `step_${Date.now().toString(36)}_${idCounter}`;
 }
 
-type DialogKind =
-  | 'changeType'
-  | 'filterRows'
-  | 'groupBy'
-  | 'mergeQueries'
-  | 'splitColumn'
-  | 'mergeColumns'
-  | 'replaceValues'
-  | 'customColumn'
-  | 'conditionalColumn'
-  | 'indexColumn'
-  | 'appendQueries'
-  | 'pivot'
-  | 'advancedEditor'
-  | null;
+type DialogKind = RibbonDialogKind | null;
 
 export const PowerQueryView: React.FC = () => {
   const {
@@ -95,6 +76,9 @@ export const PowerQueryView: React.FC = () => {
   const [advancedM, setAdvancedM] = useState('');
   const [advancedWarnings, setAdvancedWarnings] = useState<string[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+  const [activeTabId, setActiveTabId] = useState('home');
+  const [paramDialog, setParamDialog] = useState<{ title: string; fields: ParamFieldSpec[]; onSubmit: (v: Record<string, any>) => void } | null>(null);
+  const [toggles, setToggles] = useState<ViewToggles>({ formulaBar: true, quality: true, distribution: true, profile: true });
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const query = getOrInitQuery(selectedTableId);
@@ -111,17 +95,17 @@ export const PowerQueryView: React.FC = () => {
     if (selectedTableId) void ensureQuery(selectedTableId);
   }, [selectedTableId, ensureQuery]);
 
+  const runPreview = () => {
+    if (!selectedTableId) return;
+    etlPreview({ query, uptoStep: uptoStep >= 0 ? uptoStep : undefined, limit: 200 })
+      .then(setPreview)
+      .catch((e: any) => setPreview({ columns: [], rows: [], rowCount: 0, warnings: [e?.message || 'Erro ao gerar preview'] }));
+  };
+
   useEffect(() => {
     if (!selectedTableId) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(async () => {
-      try {
-        const result = await etlPreview({ query, uptoStep: uptoStep >= 0 ? uptoStep : undefined, limit: 200 });
-        setPreview(result);
-      } catch (e: any) {
-        setPreview({ columns: [], rows: [], rowCount: 0, warnings: [e?.message || 'Erro ao gerar preview'] });
-      }
-    }, 300);
+    debounceRef.current = setTimeout(runPreview, 300);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
@@ -160,10 +144,31 @@ export const PowerQueryView: React.FC = () => {
     ? preview.columns
     : (tables.find(t => t.id === selectedTableId)?.columns || []).map(c => ({ name: c.name, type: c.dataType }));
   const columnNames = columns.map(c => c.name);
+  const columnTypes: Record<string, EtlType> = useMemo(() => {
+    const map: Record<string, EtlType> = {};
+    columns.forEach(c => {
+      map[c.name] = (['text', 'integer', 'decimal', 'currency', 'date', 'datetime', 'boolean'].includes(c.type) ? (c.type as EtlType) : etlTypeFromDuckType(c.type));
+    });
+    return map;
+  }, [columns]);
+
+  const { selected: selectedColumns, isSelected, handleColumnClick, clearSelection, setSelected: setSelectedColumns } = useColumnSelection(columnNames);
+
+  // Troca de consulta: limpa a seleção múltipla para não vazar colunas de outra tabela.
+  useEffect(() => {
+    clearSelection();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTableId]);
 
   const otherTables = tables
     .filter(t => t.id !== selectedTableId)
     .map(t => ({ id: t.id, name: t.originalName || t.name, columns: t.columns.map(c => c.name) }));
+
+  const queryEntries: QueryListEntry[] = tables.map(t => ({
+    id: t.id,
+    name: t.originalName || t.name,
+    stepCount: (appliedSteps[t.id]?.steps || []).length,
+  }));
 
   const addStep = (step: DistributiveOmit<EtlStep, 'id'>) => {
     addQueryStep(selectedTableId, { ...step, id: newStepId() } as EtlStep);
@@ -224,134 +229,134 @@ export const PowerQueryView: React.FC = () => {
     }
   };
 
-  const headerContextActions = (col: string): ColumnMenuAction[] => [
-    { label: 'Remover', onClick: () => addStep({ op: 'removeColumns', columns: [col], name: 'Colunas Removidas' }) },
-    { label: 'Remover Outras Colunas', onClick: () => addStep({ op: 'selectColumns', columns: [col], name: 'Outras Colunas Removidas' }) },
-    { label: 'Duplicar', onClick: () => addStep({ op: 'duplicateColumn', column: col, newColumn: `${col} - Cópia`, name: `Duplicar ${col}` }) },
-    {
-      label: 'Renomear',
-      onClick: () => {
-        const name = window.prompt('Novo nome da coluna', col);
-        if (name) addStep({ op: 'renameColumns', renames: [[col, name]], name: 'Nome Alterado' });
-      },
+  const handleSort = (column: string, sort: { column: string; descending: boolean } | null) => {
+    if (sort) {
+      addStep({ op: 'sort', by: [{ column, descending: sort.descending }], name: 'Classificado' });
+      return;
+    }
+    const plan = planClearSort(query.steps, column);
+    if (!plan) return;
+    if (plan.action === 'remove') removeQueryStep(selectedTableId, plan.stepId);
+    else updateQueryStep(selectedTableId, plan.stepId, { by: plan.by } as Partial<EtlStep>);
+  };
+
+  const ribbonCtx: RibbonCtx = {
+    selectedColumns,
+    columnTypes,
+    allColumns: columnNames,
+    addStep,
+    openDialog: kind => {
+      if (kind === 'chooseColumns' || kind === 'goToColumn') setActiveColumn(selectedColumns[0] || activeColumn);
+      setDialog(kind);
     },
-    {
-      label: 'Alterar Tipo',
-      onClick: () => {},
-      submenu: [
-        { label: 'Texto', onClick: () => addStep({ op: 'changeType', columns: [{ column: col, type: 'text' }], name: 'Tipo Alterado' }) },
-        { label: 'Número Inteiro', onClick: () => addStep({ op: 'changeType', columns: [{ column: col, type: 'integer' }], name: 'Tipo Alterado' }) },
-        { label: 'Decimal', onClick: () => addStep({ op: 'changeType', columns: [{ column: col, type: 'decimal' }], name: 'Tipo Alterado' }) },
-        { label: 'Data', onClick: () => addStep({ op: 'changeType', columns: [{ column: col, type: 'date' }], name: 'Tipo Alterado' }) },
-        {
-          label: '(mais opções…)',
-          onClick: () => {
-            setActiveColumn(col);
-            setDialog('changeType');
-          },
-        },
-      ],
-    },
-    {
-      label: 'Substituir Valores',
-      onClick: () => {
-        setActiveColumn(col);
-        setDialog('replaceValues');
-      },
-    },
-    {
-      label: 'Preencher',
-      onClick: () => {},
-      submenu: [
-        { label: 'Para Baixo', onClick: () => addStep({ op: 'fillDown', columns: [col], name: 'Preenchido para Baixo' }) },
-        { label: 'Para Cima', onClick: () => addStep({ op: 'fillUp', columns: [col], name: 'Preenchido para Cima' }) },
-      ],
-    },
-    {
-      label: 'Dividir Coluna',
-      onClick: () => {
-        setActiveColumn(col);
-        setDialog('splitColumn');
-      },
-    },
-    {
-      label: 'Agrupar Por',
-      onClick: () => {
-        setActiveColumn(col);
-        setDialog('groupBy');
-      },
-    },
-    {
-      label: 'Unpivot',
-      onClick: () =>
-        addStep({
-          op: 'unpivotOtherColumns',
-          keep: [col],
-          attributeColumn: 'Atributo',
-          valueColumn: 'Valor',
-          name: 'Unpivot de Outras Colunas',
-        }),
-    },
+    openParamDialog: (title, fields, onSubmit) => setParamDialog({ title, fields, onSubmit }),
+  };
+
+  const tabs: RibbonTabDef[] = [
+    homeTab({ onCloseAndApply: () => closeAndApplyQuery(selectedTableId).then(() => showToast('Consulta aplicada')), onRefreshPreview: () => runPreview() }),
+    transformTab(),
+    addColumnTab(),
+    viewTab(toggles, key => setToggles(t => ({ ...t, [key]: !t[key] }))),
   ];
+
+  const headerContextActions = (col: string): ColumnMenuAction[] => {
+    const cols = selectedColumns.includes(col) && selectedColumns.length > 1 ? selectedColumns : [col];
+    return [
+      { label: 'Remover', onClick: () => addStep({ op: 'removeColumns', columns: cols, name: 'Colunas Removidas' }) },
+      { label: 'Remover Outras Colunas', onClick: () => addStep({ op: 'selectColumns', columns: cols, name: 'Outras Colunas Removidas' }) },
+      { label: 'Duplicar', onClick: () => addStep({ op: 'duplicateColumn', column: col, newColumn: `${col} - Cópia`, name: `Duplicar ${col}` }) },
+      {
+        label: 'Renomear',
+        onClick: () => {
+          const name = window.prompt('Novo nome da coluna', col);
+          if (name) addStep({ op: 'renameColumns', renames: [[col, name]], name: 'Nome Alterado' });
+        },
+      },
+      {
+        label: 'Alterar Tipo',
+        onClick: () => {},
+        submenu: [
+          { label: 'Texto', onClick: () => addStep({ op: 'changeType', columns: cols.map(c => ({ column: c, type: 'text' as const })), name: 'Tipo Alterado' }) },
+          { label: 'Número Inteiro', onClick: () => addStep({ op: 'changeType', columns: cols.map(c => ({ column: c, type: 'integer' as const })), name: 'Tipo Alterado' }) },
+          { label: 'Decimal', onClick: () => addStep({ op: 'changeType', columns: cols.map(c => ({ column: c, type: 'decimal' as const })), name: 'Tipo Alterado' }) },
+          { label: 'Data', onClick: () => addStep({ op: 'changeType', columns: cols.map(c => ({ column: c, type: 'date' as const })), name: 'Tipo Alterado' }) },
+          {
+            label: '(mais opções…)',
+            onClick: () => {
+              setActiveColumn(col);
+              setDialog('changeType');
+            },
+          },
+        ],
+      },
+      {
+        label: 'Substituir Valores',
+        onClick: () => {
+          setActiveColumn(col);
+          setDialog('replaceValues');
+        },
+      },
+      {
+        label: 'Preencher',
+        onClick: () => {},
+        submenu: [
+          { label: 'Para Baixo', onClick: () => addStep({ op: 'fillDown', columns: cols, name: 'Preenchido para Baixo' }) },
+          { label: 'Para Cima', onClick: () => addStep({ op: 'fillUp', columns: cols, name: 'Preenchido para Cima' }) },
+        ],
+      },
+      {
+        label: 'Dividir Coluna',
+        onClick: () => {
+          setActiveColumn(col);
+          setDialog('splitColumn');
+        },
+      },
+      {
+        label: 'Agrupar Por',
+        onClick: () => {
+          setActiveColumn(col);
+          setDialog('groupBy');
+        },
+      },
+      {
+        label: 'Unpivot',
+        onClick: () =>
+          addStep({
+            op: 'unpivotOtherColumns',
+            keep: cols,
+            attributeColumn: 'Atributo',
+            valueColumn: 'Valor',
+            name: 'Unpivot de Outras Colunas',
+          }),
+      },
+    ];
+  };
+
+  const profileColumn = activeColumn && columnNames.includes(activeColumn) ? activeColumn : columnNames[0];
+  const profile = profileColumn ? computeColumnProfile(preview.rows, profileColumn, columnTypes[profileColumn]) : null;
 
   return (
     <div className="flex flex-col h-full bg-slate-50 dark:bg-slate-950 text-xs" data-testid="power-query-view">
-      <div className="border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 flex items-center gap-4 flex-wrap">
-        <RibbonGroup title="Página Inicial">
-          <RibbonButton icon={RefreshCw} label="Atualizar Dados" onClick={() => refreshTableData(selectedTableId).then(() => showToast('Dados atualizados'))} />
-          <RibbonButton icon={CheckCircle} label="Fechar e Aplicar" onClick={() => closeAndApplyQuery(selectedTableId).then(() => showToast('Consulta aplicada'))} />
-          <RibbonButton icon={Code2} label="Editor Avançado" onClick={openAdvancedEditor} />
-          <RibbonButton icon={GitMerge} label="Mesclar Consultas" onClick={() => setDialog('mergeQueries')} />
-          <RibbonButton icon={ListPlus} label="Acrescentar Consultas" onClick={() => setDialog('appendQueries')} />
-        </RibbonGroup>
-        <RibbonGroup title="Transformar">
-          <RibbonButton icon={PanelsTopLeft} label="1ª Linha como Cabeçalho" onClick={() => addStep({ op: 'promoteHeaders', name: 'Cabeçalho Promovido' })} />
-          <RibbonButton icon={Rows} label="Remover Linhas em Branco" onClick={() => addStep({ op: 'removeBlankRows', name: 'Linhas em Branco Removidas' })} />
-          <RibbonButton icon={Trash2} label="Remover Duplicadas" onClick={() => addStep({ op: 'removeDuplicates', name: 'Duplicadas Removidas' })} />
-          <RibbonButton icon={Type} label="Alterar Tipo" onClick={() => activeColumn && setDialog('changeType')} disabled={!activeColumn} />
-          <RibbonButton icon={SplitSquareHorizontal} label="Dividir Coluna" onClick={() => activeColumn && setDialog('splitColumn')} disabled={!activeColumn} />
-          <RibbonButton icon={Combine} label="Mesclar Colunas" onClick={() => setDialog('mergeColumns')} />
-          <RibbonButton icon={Replace} label="Substituir Valores" onClick={() => activeColumn && setDialog('replaceValues')} disabled={!activeColumn} />
-          <RibbonButton icon={Group} label="Agrupar Por" onClick={() => setDialog('groupBy')} />
-          <RibbonButton icon={AlignVerticalJustifyCenter} label="Dinamizar Coluna" onClick={() => setDialog('pivot')} />
-          <RibbonButton icon={FilterIcon} label="Filtrar Linhas" onClick={() => setDialog('filterRows')} />
-        </RibbonGroup>
-        <RibbonGroup title="Adicionar Coluna">
-          <RibbonButton icon={Sparkles} label="Coluna Personalizada" onClick={() => setDialog('customColumn')} />
-          <RibbonButton icon={ColumnsIcon} label="Coluna Condicional" onClick={() => setDialog('conditionalColumn')} />
-          <RibbonButton icon={ListOrdered} label="Coluna de Índice" onClick={() => setDialog('indexColumn')} />
-        </RibbonGroup>
-        <div className="ml-auto">
-          <select
-            value={selectedTableId}
-            onChange={e => setSelectedTableId(e.target.value)}
-            className="border border-slate-300 dark:border-slate-700 rounded-lg px-2 py-1 bg-slate-50 dark:bg-slate-800 font-semibold"
-          >
-            {tables.map(t => (
-              <option key={t.id} value={t.id}>
-                {t.originalName || t.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
+      <Ribbon tabs={tabs} activeTabId={activeTabId} onTabChange={setActiveTabId} ctx={ribbonCtx} />
 
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
-        <span className="font-mono text-slate-400">fx</span>
-        <input
-          value={formulaBarText}
-          onChange={e => {
-            setFormulaBarText(e.target.value);
-            setFormulaBarError(null);
-          }}
-          onKeyDown={e => {
-            if (e.key === 'Enter') void applyFormulaBarEdit(formulaBarText);
-          }}
-          className={`flex-1 bg-slate-50 dark:bg-slate-800 border rounded px-2 py-1 font-mono text-[11px] text-slate-700 dark:text-slate-200 ${
-            formulaBarError ? 'border-red-500' : 'border-slate-200 dark:border-slate-700'
-          }`}
-        />
-      </div>
+      {toggles.formulaBar && (
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+          <span className="font-mono text-slate-400">fx</span>
+          <input
+            value={formulaBarText}
+            onChange={e => {
+              setFormulaBarText(e.target.value);
+              setFormulaBarError(null);
+            }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') void applyFormulaBarEdit(formulaBarText);
+            }}
+            className={`flex-1 bg-slate-50 dark:bg-slate-800 border rounded px-2 py-1 font-mono text-[11px] text-slate-700 dark:text-slate-200 ${
+              formulaBarError ? 'border-red-500' : 'border-slate-200 dark:border-slate-700'
+            }`}
+          />
+        </div>
+      )}
       {formulaBarError && (
         <div className="px-3 py-1 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-200 text-[11px] border-b border-red-200 dark:border-red-800">
           {formulaBarError}
@@ -365,79 +370,97 @@ export const PowerQueryView: React.FC = () => {
       )}
 
       <div className="flex flex-1 min-h-0">
-        <div className="flex-1 overflow-auto">
-          <table className="min-w-full border-collapse text-[11px]">
-            <thead>
-              <tr>
-                {columns.map(col => (
-                  <th
-                    key={col.name}
-                    className={`relative border-b border-r border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 px-2 py-1.5 text-left cursor-pointer ${
-                      activeColumn === col.name ? 'ring-1 ring-inset ring-amber-400' : ''
-                    }`}
-                    onClick={() => setActiveColumn(col.name)}
-                  >
-                    <div className="flex items-center gap-1">
-                      <ColumnTypeIcon type={col.type} />
-                      <span className="font-semibold">{col.name}</span>
-                      <button
-                        data-testid={`filter-btn-${col.name}`}
+        <ConsultasPane queries={queryEntries} selectedId={selectedTableId} onSelect={setSelectedTableId} />
+
+        <div className="flex-1 flex flex-col min-w-0">
+          <div className="flex-1 overflow-auto">
+            <table className="min-w-full border-collapse text-[11px]">
+              <thead>
+                <tr>
+                  {columns.map(col => {
+                    const quality = toggles.quality ? computeColumnQuality(preview.rows, col.name) : null;
+                    const distribution = toggles.distribution ? computeColumnDistribution(preview.rows, col.name) : null;
+                    const selectedHere = isSelected(col.name);
+                    return (
+                      <th
+                        key={col.name}
+                        data-testid={`col-header-${col.name}`}
+                        className={`relative border-b border-r border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 px-2 py-1.5 text-left cursor-pointer align-top ${
+                          selectedHere ? 'ring-2 ring-inset ring-amber-400 bg-amber-50 dark:bg-amber-900/30' : activeColumn === col.name ? 'ring-1 ring-inset ring-amber-300' : ''
+                        }`}
                         onClick={e => {
-                          e.stopPropagation();
-                          setOpenMenu(openMenu?.column === col.name && openMenu.type === 'filter' ? null : { type: 'filter', column: col.name });
-                        }}
-                        className="ml-auto"
-                      >
-                        <FilterIcon className="w-3 h-3 text-slate-400" />
-                      </button>
-                      <button
-                        data-testid={`menu-btn-${col.name}`}
-                        onClick={e => {
-                          e.stopPropagation();
-                          setOpenMenu(openMenu?.column === col.name && openMenu.type === 'context' ? null : { type: 'context', column: col.name });
+                          handleColumnClick(col.name, { ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey });
+                          setActiveColumn(col.name);
                         }}
                       >
-                        <ChevronDown className="w-3 h-3 text-slate-400" />
-                      </button>
-                    </div>
-                    {openMenu?.column === col.name && openMenu.type === 'filter' && (
-                      <ColumnFilterMenu
-                        column={col.name}
-                        rows={preview.rows}
-                        onClose={() => setOpenMenu(null)}
-                        onApply={(condition: Cond) => addStep({ op: 'filterRows', condition, name: 'Linhas Filtradas' })}
-                        onSort={sort =>
-                          sort
-                            ? addStep({ op: 'sort', by: [{ column: sort.column, descending: sort.descending }], name: 'Classificado' })
-                            : undefined
-                        }
-                      />
-                    )}
-                    {openMenu?.column === col.name && openMenu.type === 'context' && (
-                      <ColumnContextMenu column={col.name} onClose={() => setOpenMenu(null)} actions={headerContextActions(col.name)} />
-                    )}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {preview.rows.map((row, i) => (
-                <tr key={i} className="odd:bg-white even:bg-slate-50 dark:odd:bg-slate-950 dark:even:bg-slate-900">
-                  {columns.map(col => (
-                    <td key={col.name} className="border-r border-b border-slate-100 dark:border-slate-800 px-2 py-1 whitespace-nowrap">
-                      {String(row[col.name] ?? '')}
-                    </td>
-                  ))}
+                        <div className="flex items-center gap-1">
+                          <ColumnTypeIcon type={col.type} />
+                          <span className="font-semibold">{col.name}</span>
+                          <button
+                            data-testid={`filter-btn-${col.name}`}
+                            onClick={e => {
+                              e.stopPropagation();
+                              setOpenMenu(openMenu?.column === col.name && openMenu.type === 'filter' ? null : { type: 'filter', column: col.name });
+                            }}
+                            className="ml-auto"
+                          >
+                            <FilterIcon className="w-3 h-3 text-slate-400" />
+                          </button>
+                          <button
+                            data-testid={`menu-btn-${col.name}`}
+                            onClick={e => {
+                              e.stopPropagation();
+                              setOpenMenu(openMenu?.column === col.name && openMenu.type === 'context' ? null : { type: 'context', column: col.name });
+                            }}
+                          >
+                            <ChevronDown className="w-3 h-3 text-slate-400" />
+                          </button>
+                        </div>
+                        {quality && <QualityBar quality={quality} />}
+                        {distribution && <DistributionBar distribution={distribution} />}
+                        {openMenu?.column === col.name && openMenu.type === 'filter' && (
+                          <ColumnFilterMenu
+                            column={col.name}
+                            rows={preview.rows}
+                            onClose={() => setOpenMenu(null)}
+                            onApply={(condition: Cond) => addStep({ op: 'filterRows', condition, name: 'Linhas Filtradas' })}
+                            onSort={sort => handleSort(col.name, sort)}
+                          />
+                        )}
+                        {openMenu?.column === col.name && openMenu.type === 'context' && (
+                          <ColumnContextMenu column={col.name} onClose={() => setOpenMenu(null)} actions={headerContextActions(col.name)} />
+                        )}
+                      </th>
+                    );
+                  })}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          {preview.failedStep && (
-            <div className="px-3 py-2 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-200 border-t border-red-200 dark:border-red-800">
-              Etapa com erro ({preview.failedStep.index + 1}): {preview.failedStep.message}
-            </div>
-          )}
-          <div className="px-3 py-1 text-slate-400">{preview.rowCount} linhas</div>
+              </thead>
+              <tbody>
+                {preview.rows.map((row, i) => (
+                  <tr key={i} className="odd:bg-white even:bg-slate-50 dark:odd:bg-slate-950 dark:even:bg-slate-900">
+                    {columns.map(col => (
+                      <td
+                        key={col.name}
+                        className={`border-r border-b border-slate-100 dark:border-slate-800 px-2 py-1 whitespace-nowrap ${
+                          isSelected(col.name) ? 'bg-amber-50/60 dark:bg-amber-900/10' : ''
+                        }`}
+                      >
+                        {String(row[col.name] ?? '')}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {preview.failedStep && (
+              <div className="px-3 py-2 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-200 border-t border-red-200 dark:border-red-800">
+                Etapa com erro ({preview.failedStep.index + 1}): {preview.failedStep.message}
+              </div>
+            )}
+            <div className="px-3 py-1 text-slate-400">{preview.rowCount} linhas</div>
+          </div>
+
+          {toggles.profile && profile && profileColumn && <ProfilePanel column={profileColumn} type={columnTypes[profileColumn]} profile={profile} />}
         </div>
 
         <div className="w-64 border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shrink-0">
@@ -456,6 +479,18 @@ export const PowerQueryView: React.FC = () => {
       </div>
 
       {toast && <div className="fixed bottom-4 right-4 bg-slate-900 text-white px-3 py-2 rounded-lg shadow-xl text-[11px]">{toast}</div>}
+
+      {paramDialog && (
+        <ParamDialog
+          title={paramDialog.title}
+          fields={paramDialog.fields}
+          onClose={() => setParamDialog(null)}
+          onApply={values => {
+            paramDialog.onSubmit(values);
+            setParamDialog(null);
+          }}
+        />
+      )}
 
       {dialog === 'changeType' && (
         <ChangeTypeDialog
@@ -500,17 +535,17 @@ export const PowerQueryView: React.FC = () => {
       )}
       {dialog === 'splitColumn' && (
         <SplitColumnDialog
-          column={activeColumn}
+          column={activeColumn || selectedColumns[0] || ''}
           onClose={() => {
             setDialog(null);
             setEditingStepId(null);
           }}
-          onApply={args => updateOrAddStep({ op: 'splitColumn', column: activeColumn, ...args })}
+          onApply={args => updateOrAddStep({ op: 'splitColumn', column: activeColumn || selectedColumns[0], ...args })}
         />
       )}
       {dialog === 'mergeColumns' && (
         <MergeColumnsDialog
-          columns={columnNames}
+          columns={selectedColumns.length >= 2 ? selectedColumns : columnNames}
           onClose={() => {
             setDialog(null);
             setEditingStepId(null);
@@ -525,7 +560,7 @@ export const PowerQueryView: React.FC = () => {
             setDialog(null);
             setEditingStepId(null);
           }}
-          onApply={args => updateOrAddStep({ op: 'replaceValues', columns: [activeColumn], ...args })}
+          onApply={args => updateOrAddStep({ op: 'replaceValues', columns: selectedColumns.length ? selectedColumns : [activeColumn], ...args })}
         />
       )}
       {dialog === 'customColumn' && (
@@ -577,6 +612,23 @@ export const PowerQueryView: React.FC = () => {
           onApply={args => updateOrAddStep({ op: 'pivot', ...args })}
         />
       )}
+      {dialog === 'chooseColumns' && (
+        <ChooseColumnsDialog
+          columns={columnNames}
+          onClose={() => setDialog(null)}
+          onApply={cols => addStep({ op: 'selectColumns', columns: cols, name: 'Colunas Escolhidas' })}
+        />
+      )}
+      {dialog === 'goToColumn' && (
+        <GoToColumnDialog
+          columns={columnNames}
+          onClose={() => setDialog(null)}
+          onSelect={col => {
+            setActiveColumn(col);
+            setSelectedColumns([col]);
+          }}
+        />
+      )}
       {dialog === 'advancedEditor' && <AdvancedEditorModal m={advancedM} warnings={advancedWarnings} onClose={() => setDialog(null)} onApply={applyAdvancedEditor} />}
     </div>
   );
@@ -599,27 +651,3 @@ function defaultStepName(op: string): string {
   };
   return names[op] || op;
 }
-
-const RibbonGroup: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
-  <div className="flex flex-col">
-    <div className="flex items-center gap-1">{children}</div>
-    <div className="text-center text-[10px] text-slate-400 mt-1">{title}</div>
-  </div>
-);
-
-const RibbonButton: React.FC<{ icon: React.FC<{ className?: string }>; label: string; onClick: () => void; disabled?: boolean }> = ({
-  icon: Icon,
-  label,
-  onClick,
-  disabled,
-}) => (
-  <button
-    onClick={onClick}
-    disabled={disabled}
-    title={label}
-    className="flex flex-col items-center justify-center gap-0.5 px-2 py-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed min-w-[56px]"
-  >
-    <Icon className="w-4 h-4 text-slate-600 dark:text-slate-300" />
-    <span className="text-[9px] text-slate-500 dark:text-slate-400 leading-tight text-center">{label}</span>
-  </button>
-);
