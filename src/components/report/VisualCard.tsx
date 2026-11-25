@@ -392,6 +392,18 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     visual.type !== 'scatter' &&
     !(visual.dataConfig.visualCalculations?.length || visual.visualCalculations?.length);
 
+  // Visuals that fall back to supportsNativeRustQuery === false (table,
+  // scatter, visuals with quick-measure-style visualCalculations, or any
+  // non-Tauri run) compute their aggregation in JS off `table.rows`, which
+  // is only a PREVIEW_ROW_LIMIT-capped sample for DuckDB-backed tables —
+  // see docs/RUST_ENGINE_2.md §3 step 2. Rather than silently showing a
+  // wrong total, surface that the numbers are a sample.
+  const isSampleTruncated =
+    !supportsNativeRustQuery &&
+    visual.type !== 'action-button' &&
+    visual.type !== 'textbox' &&
+    Boolean(tables.find(t => t.id === visual.dataConfig.tableId)?.rowsTruncated);
+
   const nativeCacheKey = useMemo(() => {
     if (!supportsNativeRustQuery) return '';
     // Sort/limit are applied client-side after the native query, so they don't invalidate it.
@@ -1308,6 +1320,14 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           <span className="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate" title={visual.title}>
             {visual.title}
           </span>
+          {isSampleTruncated && (
+            <span
+              className="shrink-0 text-[10px] font-medium text-amber-700 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 rounded px-1 py-0.5"
+              title="Este visual calcula no navegador (não no motor DAX nativo) e a tabela tem mais linhas do que a amostra pré-visualizada: o total pode não refletir todas as linhas."
+            >
+              ⚠ amostra de 5.000 linhas
+            </span>
+          )}
         </div>
 
         {/* Action Buttons */}
