@@ -10,7 +10,7 @@ pub mod keyring_store;
 pub mod manager;
 
 pub use config::{ConnectorConfig, ConnectorKind};
-pub use keyring_store::{CredentialStore, InMemoryCredentialStore, LinuxKeyringStore};
+pub use keyring_store::{CredentialStore, InMemoryCredentialStore, NativeKeyringStore};
 pub use manager::{
     ConnectionManager, DbConnectionInfo, DbSchemaInfo, DbTableInfo, PreviewResult,
 };

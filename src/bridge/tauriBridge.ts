@@ -418,7 +418,7 @@ export interface UpdateCheckResult {
   signatureVerified?: boolean;
   /** O backend guardou um pacote verificado pronto para instalar. */
   canInstall?: boolean;
-  installKind?: 'appImage' | 'deb' | 'rpm' | 'managed' | 'unknown';
+  installKind?: 'appImage' | 'deb' | 'rpm' | 'managed' | 'unknown' | 'msiInstalled' | 'portable';
   installBlockedReason?: string | null;
   isAppimage: boolean;
   appimagePath?: string | null;

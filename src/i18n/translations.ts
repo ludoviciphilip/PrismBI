@@ -153,7 +153,7 @@ export const translations: Record<SupportedLanguage, Translations> = {
       tabLabel: 'PostgreSQL / MySQL / SQLite / DuckDB',
       nativeBadge: 'Nativo',
       securityNotice:
-        'Conector nativo via DuckDB (ATTACH). Senhas nunca ficam em arquivos do projeto — são guardadas no chaveiro nativo do Linux (Secret Service) e nunca retornam ao frontend.',
+        'Conector nativo via DuckDB (ATTACH). Senhas nunca ficam em arquivos do projeto — são guardadas no chaveiro nativo do sistema operacional (Secret Service no Linux, Credential Manager no Windows) e nunca retornam ao frontend.',
       connect: 'Conectar',
       connecting: 'Conectando...',
       disconnect: 'Desconectar',
@@ -316,7 +316,7 @@ export const translations: Record<SupportedLanguage, Translations> = {
       tabLabel: 'PostgreSQL / MySQL / SQLite / DuckDB',
       nativeBadge: 'Native',
       securityNotice:
-        'Native connector via DuckDB (ATTACH). Passwords are never stored in project files — they live in the Linux native keyring (Secret Service) and are never sent back to the frontend.',
+        'Native connector via DuckDB (ATTACH). Passwords are never stored in project files — they live in the OS native keyring (Secret Service on Linux, Credential Manager on Windows) and are never sent back to the frontend.',
       connect: 'Connect',
       connecting: 'Connecting...',
       disconnect: 'Disconnect',
@@ -479,7 +479,7 @@ export const translations: Record<SupportedLanguage, Translations> = {
       tabLabel: 'PostgreSQL / MySQL / SQLite / DuckDB',
       nativeBadge: 'Nativo',
       securityNotice:
-        'Conector nativo vía DuckDB (ATTACH). Las contraseñas nunca se guardan en archivos del proyecto — se guardan en el llavero nativo de Linux (Secret Service) y nunca se devuelven al frontend.',
+        'Conector nativo vía DuckDB (ATTACH). Las contraseñas nunca se guardan en archivos del proyecto — se guardan en el llavero nativo del sistema operativo (Secret Service en Linux, Credential Manager en Windows) y nunca se devuelven al frontend.',
       connect: 'Conectar',
       connecting: 'Conectando...',
       disconnect: 'Desconectar',

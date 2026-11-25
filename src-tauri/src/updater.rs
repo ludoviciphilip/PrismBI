@@ -18,6 +18,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -46,6 +47,13 @@ pub enum InstallKind {
     /// Instalado por gerenciador que não deve ser contornado (AUR/pacman, Flatpak).
     Managed,
     Unknown,
+    /// Windows: instalado pelo `.msi` (Program Files ou LocalAppData\Programs).
+    /// O updater baixa o novo `.msi` e roda `msiexec /i ... /passive`.
+    MsiInstalled,
+    /// Windows: executável solto (ZIP portátil), fora de uma instalação MSI.
+    /// Igual ao caminho "managed/unknown" do Linux: baixa para Downloads e
+    /// avisa o usuário, sem autoinstalar.
+    Portable,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +150,7 @@ pub fn is_newer_version(current: &str, latest: &str) -> bool {
 }
 
 /// Detecta o tipo de instalação a partir do ambiente e de marcadores do SO.
+#[cfg(unix)]
 pub fn detect_install_kind() -> InstallKind {
     let appimage = std::env::var("APPIMAGE").ok();
     let flatpak = std::env::var("FLATPAK_ID").ok();
@@ -152,6 +161,23 @@ pub fn detect_install_kind() -> InstallKind {
         exe.as_deref(),
         &|p| Path::new(p).exists(),
     )
+}
+
+/// Detecta o tipo de instalação no Windows: MSI (Program Files /
+/// LocalAppData\Programs) vs. portátil (qualquer outro local).
+#[cfg(windows)]
+pub fn detect_install_kind() -> InstallKind {
+    let exe = std::env::current_exe().ok();
+    let program_files = std::env::var("ProgramFiles").ok();
+    let program_files_x86 = std::env::var("ProgramFiles(x86)").ok();
+    let local_appdata_programs = std::env::var("LOCALAPPDATA")
+        .ok()
+        .map(|l| format!("{}\\Programs", l.trim_end_matches(['\\', '/'])));
+    let program_dirs: Vec<&str> = [program_files.as_deref(), program_files_x86.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    classify_install_windows(exe.as_deref(), &program_dirs, local_appdata_programs.as_deref())
 }
 
 /// Versão pura de `detect_install_kind` (testável).
@@ -191,16 +217,48 @@ pub fn classify_install(
     InstallKind::Unknown
 }
 
+/// Versão pura de `detect_install_kind` no Windows (testável em qualquer SO):
+/// MSI quando o executável está sob Program Files / Program Files (x86) ou
+/// `%LOCALAPPDATA%\Programs`; caso contrário, instalação portátil.
+pub fn classify_install_windows(
+    exe: Option<&Path>,
+    program_dirs: &[&str],
+    local_appdata_programs: Option<&str>,
+) -> InstallKind {
+    let Some(exe) = exe else {
+        return InstallKind::Portable;
+    };
+    let exe_str = exe.to_string_lossy().replace('/', "\\").to_lowercase();
+    for pf in program_dirs {
+        if !pf.is_empty() && exe_str.starts_with(&pf.replace('/', "\\").to_lowercase()) {
+            return InstallKind::MsiInstalled;
+        }
+    }
+    if let Some(lad) = local_appdata_programs {
+        if !lad.is_empty() && exe_str.starts_with(&lad.replace('/', "\\").to_lowercase()) {
+            return InstallKind::MsiInstalled;
+        }
+    }
+    InstallKind::Portable
+}
+
 fn extension_for(kind: InstallKind) -> Option<&'static str> {
     match kind {
         InstallKind::AppImage | InstallKind::Unknown => Some(".appimage"),
         InstallKind::Deb => Some(".deb"),
         InstallKind::Rpm => Some(".rpm"),
-        InstallKind::Managed => None,
+        InstallKind::MsiInstalled => Some(".msi"),
+        InstallKind::Managed | InstallKind::Portable => None,
     }
 }
 
-fn pick_linux_asset(assets: &[GithubAsset], kind: InstallKind) -> Option<&GithubAsset> {
+fn pick_asset(assets: &[GithubAsset], kind: InstallKind) -> Option<&GithubAsset> {
+    if kind == InstallKind::Portable {
+        return assets.iter().find(|a| {
+            let n = a.name.to_lowercase();
+            n.ends_with(".zip") && n.contains("portable")
+        });
+    }
     let ext = extension_for(kind)?;
     assets.iter().find(|a| a.name.to_lowercase().ends_with(ext))
 }
@@ -353,7 +411,7 @@ pub fn check_for_updates(
     let install_kind = detect_install_kind();
     let update_available = is_newer_version(current_version, &latest_clean);
 
-    let chosen = pick_linux_asset(&release.assets, install_kind);
+    let chosen = pick_asset(&release.assets, install_kind);
     let find = |name: &str| {
         release
             .assets
@@ -431,6 +489,7 @@ pub fn download_and_install_update(pending: &PendingUpdate) -> Result<UpdateInst
     }
 
     if pending.install_kind == InstallKind::AppImage {
+        #[cfg(unix)]
         if let Some(target) = std::env::var("APPIMAGE").ok().filter(|s| !s.trim().is_empty()) {
             let target_path = PathBuf::from(target.trim());
             let tmp_path = PathBuf::from(format!("{}.new", target.trim()));
@@ -449,13 +508,34 @@ pub fn download_and_install_update(pending: &PendingUpdate) -> Result<UpdateInst
         }
     }
 
-    let home = std::env::var("HOME").map_err(|_| "HOME não definido".to_string())?;
-    let downloads_dir = PathBuf::from(&home).join("Downloads");
+    #[cfg(windows)]
+    if pending.install_kind == InstallKind::MsiInstalled {
+        let temp_dir = std::env::temp_dir();
+        fs::create_dir_all(&temp_dir)
+            .map_err(|e| format!("Falha ao preparar pasta temporária: {}", e))?;
+        let msi_path = temp_dir.join(&safe_name);
+        fs::write(&msi_path, &bytes)
+            .map_err(|e| format!("Falha ao salvar instalador MSI: {}", e))?;
+        std::process::Command::new("msiexec")
+            .args(["/i", &msi_path.to_string_lossy(), "/passive", "/norestart"])
+            .spawn()
+            .map_err(|e| format!("Falha ao iniciar o instalador MSI: {}", e))?;
+        return Ok(UpdateInstallResult {
+            installed: true,
+            needs_restart: true,
+            saved_path: Some(msi_path.to_string_lossy().to_string()),
+            message: "Instalador iniciado (msiexec /passive). O PrismBI será fechado para concluir a atualização.".to_string(),
+        });
+    }
+
+    let downloads_dir = dirs::download_dir()
+        .ok_or_else(|| "Não foi possível localizar a pasta Downloads do usuário.".to_string())?;
     fs::create_dir_all(&downloads_dir)
         .map_err(|e| format!("Falha ao criar pasta Downloads: {}", e))?;
     let dest_path = downloads_dir.join(&safe_name);
     fs::write(&dest_path, &bytes)
         .map_err(|e| format!("Falha ao salvar pacote em Downloads: {}", e))?;
+    #[cfg(unix)]
     if safe_name.to_lowercase().ends_with(".appimage") {
         let _ = fs::set_permissions(&dest_path, fs::Permissions::from_mode(0o755));
     }
@@ -464,6 +544,9 @@ pub fn download_and_install_update(pending: &PendingUpdate) -> Result<UpdateInst
     let hint = match pending.install_kind {
         InstallKind::Deb => format!(" Instale com: sudo apt install '{}'", saved_str),
         InstallKind::Rpm => format!(" Instale com: sudo dnf install '{}'", saved_str),
+        InstallKind::Portable => {
+            " Descompacte o ZIP e substitua o executável antigo pelo novo.".to_string()
+        }
         _ => String::new(),
     };
     Ok(UpdateInstallResult {
@@ -554,15 +637,19 @@ mod tests {
             asset("PrismBI_0.8.0_amd64.deb"),
             asset("PrismBI_0.8.0_amd64.AppImage"),
             asset("PrismBI-0.8.0-1.x86_64.rpm"),
+            asset("PrismBI_0.9.1_x64.msi"),
+            asset("PrismBI_0.9.1_x64-portable.zip"),
         ];
-        let pick = |k| pick_linux_asset(&assets, k).map(|a| a.name.clone());
+        let pick = |k| pick_asset(&assets, k).map(|a| a.name.clone());
         assert!(pick(InstallKind::AppImage).unwrap().ends_with(".AppImage"));
         assert!(pick(InstallKind::Unknown).unwrap().ends_with(".AppImage"));
         assert!(pick(InstallKind::Deb).unwrap().ends_with(".deb"));
         assert!(pick(InstallKind::Rpm).unwrap().ends_with(".rpm"));
+        assert!(pick(InstallKind::MsiInstalled).unwrap().ends_with(".msi"));
+        assert!(pick(InstallKind::Portable).unwrap().ends_with("-portable.zip"));
         assert!(pick(InstallKind::Managed).is_none());
         // .deb instalado nunca recebe AppImage por engano (bug da v0.7).
-        assert!(pick_linux_asset(&assets[1..2], InstallKind::Deb).is_none());
+        assert!(pick_asset(&assets[1..2], InstallKind::Deb).is_none());
     }
 
     #[test]
@@ -596,6 +683,45 @@ mod tests {
         assert_eq!(
             classify_install(None, None, Some(Path::new("/home/u/dev/target/debug/prismbi")), &|_| true),
             InstallKind::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_install_windows_msi_vs_portable() {
+        let program_files = r"C:\Program Files";
+        let program_files_x86 = r"C:\Program Files (x86)";
+        let local_appdata_programs = r"C:\Users\ana\AppData\Local\Programs";
+        let dirs = [program_files, program_files_x86];
+
+        let msi_exe = Path::new(r"C:\Program Files\PrismBI\prismbi.exe");
+        assert_eq!(
+            classify_install_windows(Some(msi_exe), &dirs, Some(local_appdata_programs)),
+            InstallKind::MsiInstalled
+        );
+
+        let msi_exe_localappdata =
+            Path::new(r"C:\Users\ana\AppData\Local\Programs\PrismBI\prismbi.exe");
+        assert_eq!(
+            classify_install_windows(Some(msi_exe_localappdata), &dirs, Some(local_appdata_programs)),
+            InstallKind::MsiInstalled
+        );
+
+        // Case-insensitive, e com '/' em vez de '\\'.
+        let msi_exe_mixed_case = Path::new(r"c:/program files/PrismBI/prismbi.exe");
+        assert_eq!(
+            classify_install_windows(Some(msi_exe_mixed_case), &dirs, Some(local_appdata_programs)),
+            InstallKind::MsiInstalled
+        );
+
+        let portable_exe = Path::new(r"D:\Downloads\PrismBI\prismbi.exe");
+        assert_eq!(
+            classify_install_windows(Some(portable_exe), &dirs, Some(local_appdata_programs)),
+            InstallKind::Portable
+        );
+
+        assert_eq!(
+            classify_install_windows(None, &dirs, Some(local_appdata_programs)),
+            InstallKind::Portable
         );
     }
 
