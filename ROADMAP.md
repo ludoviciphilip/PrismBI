@@ -2,6 +2,8 @@
 
 Este documento descreve a evolução planejada para o **PrismBI**, uma aplicação desktop nativa para Linux construída com **Tauri v2 + Rust + DuckDB + React/TypeScript + Apache ECharts**, focada em produtividade e compatibilidade com projetos do Power BI (`.pbip` / `.pbix`).
 
+> **Política de Versionamento (Pré-1.0):** Enquanto o app evolui até a estabilidade plena de produção, seguimos versionamento incremental em `0.x.0` (`0.8.0`, `0.9.0`, `0.10.0`, `0.11.0`, `0.12.0`, `0.13.0`...), reservando a `v1.0.0` apenas para quando o conjunto completo de recursos estiver consolidado, testado em alta escala e estável.
+
 ---
 
 ## `v0.2.0` — Fundação Nativa & Primeiro Projeto `.pbip` (Concluído)
@@ -59,6 +61,51 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 
 ---
 
-## `v0.8.0 → v1.0.0` — Conectores Enterprise & Paridade 100%
-- Conectores nativos DuckDB para PostgreSQL, SQLite e DuckLake / Iceberg sem gateway externo.
-- Editor Power Query visual com preview passo a passo e exportação direta em `.pbix`.
+## `v0.8.0` — Conectores Nativos de Banco de Dados (via DuckDB) & Credenciais Seguras (Próxima)
+- [ ] Conectores nativos reais em DuckDB para **PostgreSQL**, **SQLite**, **MySQL/MariaDB**, arquivos **`.duckdb`** e **Parquet particionado / HTTP / S3** (sem depender de gateway externo).
+- [ ] Navegador visual de schemas e tabelas com editor SQL nativo e pré-visualização antes da carga.
+- [ ] Integração com o botão **Atualizar Dados** para recarregar diretamente a partir do banco conectado.
+- [ ] Armazenamento seguro de credenciais utilizando o chaveiro nativo do Linux (`Secret Service` / `keyring`), evitando senhas em texto puro em arquivos `.insight` ou `.pbip`.
+
+---
+
+## `v0.9.0` — Power Query Visual (ETL) & Round-Trip Real de Scripts `M`
+- [ ] Editor ETL visual passo a passo com preview em tempo real: **Alterar Tipo**, **Filtrar Linhas**, **Dividir/Mesclar Colunas**, **Substituir Valores**, **Preencher Abaixo/Acima**, **Unpivot / Pivot**, **Agrupar Por (`GroupBy`)**, **Coluna Condicional/Personalizada**, **Mesclar (`Merge/Join`)** e **Acrescentar (`Append`)**.
+- [ ] Geração e leitura bidirecional (round-trip) dos scripts **Power Query (`M`)** correspondentes na importação e exportação de projetos `.pbip`.
+
+---
+
+## `v0.10.0` — Fidelidade Avançada de Relatórios & Interatividade Profissional
+- [ ] **Formatação Condicional** em Tabelas, Matrizes, Cartões e Barras (regras, gradientes por medida DAX e barras de dados).
+- [ ] **Bookmarks (Indicadores)** e botões de ação vinculados a Bookmarks para alternar estado de visuais, filtros e páginas com 1 clique.
+- [ ] **Report Page Tooltips** (páginas configuradas como tooltip dinâmico ao passar o cursor nos gráficos).
+- [ ] **Slicers Avançados:** filtro de intervalo de datas (*Between* / *Relative Date*), busca interna nos itens e **Sincronização de Slicers** entre páginas.
+- [ ] **Drill-Down hierárquico em gráficos** (ex.: Ano → Trimestre → Mês → Dia) e suporte a **3+ níveis expansíveis na Matriz**.
+
+---
+
+## `v0.11.0` — Escalabilidade Real (1M–10M+ linhas): Persistência Colunar & SQL Pushdown
+- [ ] Formato de projeto colunar comprimido (cache local DuckDB/Parquet ao lado dos metadados) para abrir milhões de linhas em menos de 1 segundo com baixo consumo de RAM.
+- [ ] **Pushdown para DuckDB SQL** em agregações, joins e filtros pesados antes da camada DAX.
+- [ ] **Tabelas Calculadas e Colunas Calculadas** (`CALENDAR`, `SUMMARIZE`, `ADDCOLUMNS`, `UNION`) executadas nativamente em Rust.
+- [ ] Migração para Rust das funções avançadas de tabela e janela (`WINDOW`, `OFFSET`, `INDEX`, `RANK`, `ROWNUMBER`, `CALCULATETABLE`, `SUMMARIZECOLUMNS`).
+
+---
+
+## `v0.12.0` — Integração Desktop Linux, Produtividade & CLI/Automação
+- [ ] **Associação nativa de arquivos no Linux:** abrir `.pbip`, `.pbix` e `.insight` com duplo clique no gerenciador de arquivos (via argumentos CLI no Tauri).
+- [ ] **Command Palette (`Ctrl+K`)** para busca rápida de páginas, medidas, tabelas, visuais e ações, além de suporte a **múltiplas janelas**.
+- [ ] **Exportação Profissional & CLI Headless:** PDF multi-página em alta resolução, PNG por visual, exportação CSV/Excel dos dados filtrados de qualquer visual e subcomandos CLI (`prismbi refresh` / `prismbi export`) para automação via cron/servidor.
+- [ ] **IA 100% Local (Ollama) + BYOK:** gerar/explicar medidas DAX e diagnosticar modelos usando LLMs locais sem enviar dados para a nuvem.
+
+---
+
+## `v0.13.0` — Hardening, Testes E2E, Benchmarks & Canais Oficiais (Pré-1.0)
+- [ ] Suite completa de **testes E2E automatizados** cobrindo importação `.pbip`/`.pbix`, atualização de dados, filtros, temas claro/escuro e exportação.
+- [ ] Benchmarks reproduzíveis para 10k, 100k e 1M+ linhas, zero warnings em `tsc --strict` e `cargo clippy`, e revisão 100% da localização (`EN`, `PT`, `ES`).
+- [ ] Publicação oficial no **Flathub** e atualização automatizada do **AUR (`prismbi-bin`)** no pipeline de release.
+
+---
+
+## `v1.0.0` — Release Estável (Production-Ready)
+- [ ] Estabilidade garantida do formato de projeto, paridade consolidada para uso diário em produção e ciclo de manutenção sem breaking changes imprevistos.
