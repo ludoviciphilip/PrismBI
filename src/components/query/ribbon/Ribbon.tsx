@@ -2,13 +2,14 @@ import React, { useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronRight } from 'lucide-react';
 import { MenuNode, RibbonCtx, RibbonTabDef } from './menus';
+import { FALLBACK_RIBBON_ICON, ribbonIconFor } from './icons';
 
 /** Um botão do ribbon: ação direta ou abre um dropdown ▸ com submenus aninhados. */
 const RibbonNodeButton: React.FC<{ node: MenuNode; ctx: RibbonCtx; onAction?: () => void }> = ({ node, ctx, onAction }) => {
   const [open, setOpen] = useState(false);
   const enabled = node.enabled ? node.enabled(ctx) : true;
   const title = !enabled ? node.disabledReason || 'Indisponível' : node.tooltip;
-  const Icon = node.icon;
+  const Icon = ribbonIconFor(node);
 
   if (node.kind === 'action') {
     return (
@@ -75,7 +76,7 @@ const TopLevelButton: React.FC<{ node: MenuNode; ctx: RibbonCtx }> = ({ node, ct
   const btnRef = useRef<HTMLButtonElement>(null);
   const enabled = node.enabled ? node.enabled(ctx) : true;
   const title = !enabled ? node.disabledReason || 'Indisponível' : node.tooltip;
-  const Icon = node.icon;
+  const Icon = ribbonIconFor(node) ?? FALLBACK_RIBBON_ICON;
   const baseBtnClasses =
     'flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg cursor-pointer min-w-[64px] max-w-[96px] ' +
     'hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-slate-200 dark:active:bg-slate-700 ' +

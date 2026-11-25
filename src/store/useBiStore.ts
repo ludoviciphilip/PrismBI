@@ -416,6 +416,16 @@ interface BiState {
 
 const defaultPageId = 'page_executivo';
 
+/** "Linhas Filtradas" -> "Linhas Filtradas1" se já existir (como o Power BI). */
+export function uniqueStepName(name: string, existing: string[]): string {
+  const taken = new Set(existing.map(n => n.toLowerCase()));
+  if (!taken.has(name.toLowerCase()) && name.toLowerCase() !== 'source') return name;
+  for (let i = 1; ; i++) {
+    const candidate = `${name}${i}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
 /** Nenhuma chamada ao backend pode deixar "Atualizando..." preso para sempre. */
 const REFRESH_STEP_TIMEOUT_MS = 120_000;
 function withTimeout<T>(p: Promise<T>, label: string, ms = REFRESH_STEP_TIMEOUT_MS): Promise<T> {
@@ -2474,6 +2484,9 @@ export const useBiStore = create<BiState>((set, get) => {
 
     addQueryStep: (tableId, step) => {
       const query = get().getOrInitQuery(tableId);
+      // Nomes de etapa são identificadores no M (#"Linhas Filtradas"): repetir
+      // um nome faz a etapa referenciar a si mesma. Igual ao Power BI: sufixo 1, 2…
+      step = { ...step, name: uniqueStepName(step.name, query.steps.map(s => s.name)) };
       get().setQuery(tableId, { ...query, steps: [...query.steps, step] });
       set({ selectedStepByTable: { ...get().selectedStepByTable, [tableId]: step.id } });
     },
@@ -2510,7 +2523,8 @@ export const useBiStore = create<BiState>((set, get) => {
     },
 
     renameQueryStep: (tableId, stepId, name) => {
-      get().updateQueryStep(tableId, stepId, { name });
+      const others = get().getOrInitQuery(tableId).steps.filter(s => s.id !== stepId).map(s => s.name);
+      get().updateQueryStep(tableId, stepId, { name: uniqueStepName(name.trim() || 'Etapa', others) });
     },
 
     selectQueryStep: (tableId, stepId) => {
