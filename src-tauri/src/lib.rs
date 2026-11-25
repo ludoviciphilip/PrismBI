@@ -17,6 +17,9 @@ use tauri::State;
 pub struct AppState {
     pub db: DuckDbStore,
     pub dax_model: Mutex<DaxModel>,
+    /// Pacote de atualização já verificado (assinatura + SHA). O frontend só
+    /// pode pedir para instalar este, nunca uma URL arbitrária.
+    pub pending_update: Mutex<Option<updater::PendingUpdate>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,17 +250,31 @@ fn query_visual_native(
 }
 
 #[tauri::command]
-fn check_for_updates(current_version: String) -> Result<updater::UpdateCheckResult, String> {
-    updater::check_for_updates(&current_version)
+fn check_for_updates(
+    state: State<'_, AppState>,
+    current_version: String,
+) -> Result<updater::UpdateCheckResult, String> {
+    let (result, pending) = updater::check_for_updates(&current_version)?;
+    *state
+        .pending_update
+        .lock()
+        .map_err(|_| "Lock do updater corrompido".to_string())? = pending;
+    Ok(result)
 }
 
 #[tauri::command]
 fn download_and_install_update(
-    download_url: String,
-    asset_name: String,
-    expected_sha256: Option<String>,
+    state: State<'_, AppState>,
 ) -> Result<updater::UpdateInstallResult, String> {
-    updater::download_and_install_update(&download_url, &asset_name, expected_sha256.as_deref())
+    let pending = state
+        .pending_update
+        .lock()
+        .map_err(|_| "Lock do updater corrompido".to_string())?
+        .clone()
+        .ok_or_else(|| {
+            "Nenhuma atualização verificada pendente. Verifique atualizações novamente.".to_string()
+        })?;
+    updater::download_and_install_update(&pending)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -269,6 +286,7 @@ pub fn run() {
         .manage(AppState {
             db,
             dax_model: Mutex::new(DaxModel::new()),
+            pending_update: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_engine_info,

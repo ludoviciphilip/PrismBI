@@ -3,7 +3,7 @@ import pkg from '../package.json';
 declare const __APP_BUILD_DATE__: string | undefined;
 
 /**
- * InsightHub Official Application Version
+ * PrismBI Official Application Version
  * Strictly dynamic from package.json version.
  * Decoupled from internal migration schema version (which is numeric V10).
  */

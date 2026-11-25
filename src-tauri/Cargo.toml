@@ -24,6 +24,17 @@ encoding_rs = "0.8"
 walkdir = "2"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 sha2 = "0.10"
+ed25519-dalek = "2"
 
 [dev-dependencies]
 tempfile = "3"
+
+# Debuginfo completo de DuckDB/arrow/gtk gerava ~4 GB por build de debug
+# (libprismbi_lib.a + .so) e o target/ chegou a 107 GB. Só tabelas de linha
+# para o crate do app (backtraces úteis) e nada para dependências.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+opt-level = 1

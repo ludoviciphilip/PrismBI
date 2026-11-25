@@ -1,11 +1,52 @@
+//! Atualizador via GitHub Releases.
+//!
+//! Modelo de confiança (v0.8):
+//! 1. O CI assina `SHA256SUMS.txt` com uma chave Ed25519 cuja parte privada
+//!    só existe no secret `PRISMBI_UPDATE_SIGNING_KEY`; a assinatura crua
+//!    (64 bytes) é publicada como `SHA256SUMS.txt.sig`.
+//! 2. O app embute só a chave pública (`UPDATE_PUBLIC_KEY_HEX`) e verifica a
+//!    assinatura antes de confiar em qualquer hash.
+//! 3. O frontend nunca informa URL nem hash: `check_for_updates` guarda o
+//!    pacote verificado em `PendingUpdate` no estado do backend e
+//!    `download_and_install_update` só instala esse pacote.
+//! 4. A URL de download precisa pertencer às releases deste repositório.
+//!
+//! Assim, um XSS no webview ou uma release adulterada sem a chave privada não
+//! conseguem trocar o binário do usuário.
+
+use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const GITHUB_LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/ludoviciphilip/PrismBI/releases/latest";
+
+/// Prefixo obrigatório para qualquer binário baixado pelo updater.
+pub const TRUSTED_DOWNLOAD_PREFIX: &str =
+    "https://github.com/ludoviciphilip/PrismBI/releases/download/";
+
+/// Chave pública Ed25519 (32 bytes, hex) que assina `SHA256SUMS.txt`.
+pub const UPDATE_PUBLIC_KEY_HEX: &str =
+    "efbc7fdbf5234578df4e71300a8e6d16fc6f518b075e6357c4c2b4ee17a2a3f6";
+
+const SUMS_ASSET: &str = "SHA256SUMS.txt";
+const SUMS_SIG_ASSET: &str = "SHA256SUMS.txt.sig";
+
+/// Como o PrismBI em execução foi instalado; decide qual pacote baixar e se
+/// a substituição in-place é permitida.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstallKind {
+    AppImage,
+    Deb,
+    Rpm,
+    /// Instalado por gerenciador que não deve ser contornado (AUR/pacman, Flatpak).
+    Managed,
+    Unknown,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +61,13 @@ pub struct UpdateCheckResult {
     pub download_url: String,
     pub asset_size: u64,
     pub expected_sha256: Option<String>,
+    /// `true` só quando `SHA256SUMS.txt` tem assinatura válida da chave oficial.
+    pub signature_verified: bool,
+    /// `true` quando o backend tem um pacote verificado pronto para instalar.
+    pub can_install: bool,
+    pub install_kind: InstallKind,
+    /// Motivo legível quando há atualização mas `can_install` é falso.
+    pub install_blocked_reason: Option<String>,
     pub is_appimage: bool,
     pub appimage_path: Option<String>,
 }
@@ -31,6 +79,24 @@ pub struct UpdateInstallResult {
     pub needs_restart: bool,
     pub saved_path: Option<String>,
     pub message: String,
+}
+
+/// Pacote verificado aguardando instalação (vive só no backend).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUpdate {
+    pub asset_name: String,
+    pub download_url: String,
+    pub sha256: String,
+    pub install_kind: InstallKind,
+}
+
+/// Resultado da avaliação pura de uma release.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReleaseVerdict {
+    pub pending: Option<PendingUpdate>,
+    pub signature_verified: bool,
+    pub sha256: Option<String>,
+    pub blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -68,64 +134,85 @@ pub fn is_newer_version(current: &str, latest: &str) -> bool {
     for i in 0..max_len {
         let a = *cur.get(i).unwrap_or(&0);
         let b = *lat.get(i).unwrap_or(&0);
-        if b > a {
-            return true;
-        }
-        if b < a {
-            return false;
+        if b != a {
+            return b > a;
         }
     }
     false
 }
 
-fn pick_linux_asset<'a>(assets: &'a [GithubAsset], is_appimage: bool) -> Option<&'a GithubAsset> {
-    if is_appimage {
-        if let Some(a) = assets
-            .iter()
-            .find(|a| a.name.to_lowercase().ends_with(".appimage"))
-        {
-            return Some(a);
-        }
-    }
+/// Detecta o tipo de instalação a partir do ambiente e de marcadores do SO.
+pub fn detect_install_kind() -> InstallKind {
+    let appimage = std::env::var("APPIMAGE").ok();
+    let flatpak = std::env::var("FLATPAK_ID").ok();
+    let exe = std::env::current_exe().ok();
+    classify_install(
+        appimage.as_deref(),
+        flatpak.as_deref(),
+        exe.as_deref(),
+        &|p| Path::new(p).exists(),
+    )
+}
 
-    if let Some(a) = assets
-        .iter()
-        .find(|a| a.name.to_lowercase().ends_with(".appimage"))
+/// Versão pura de `detect_install_kind` (testável).
+pub fn classify_install(
+    appimage_env: Option<&str>,
+    flatpak_env: Option<&str>,
+    exe: Option<&Path>,
+    exists: &dyn Fn(&str) -> bool,
+) -> InstallKind {
+    if appimage_env.map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        return InstallKind::AppImage;
+    }
+    if flatpak_env.map(|s| !s.trim().is_empty()).unwrap_or(false) {
+        return InstallKind::Managed;
+    }
+    let in_system = exe
+        .map(|p| p.starts_with("/usr") || p.starts_with("/opt"))
+        .unwrap_or(false);
+    if !in_system {
+        return InstallKind::Unknown;
+    }
+    // Pacote do AUR/pacman: atualizar por fora quebraria o banco do pacman.
+    if exists("/var/lib/pacman/local") {
+        return InstallKind::Managed;
+    }
+    if exists("/var/lib/dpkg/info/prismbi.list") || exists("/etc/debian_version") {
+        return InstallKind::Deb;
+    }
+    if exists("/etc/redhat-release") || exists("/etc/fedora-release") || exists("/etc/SuSE-release")
     {
-        return Some(a);
+        return InstallKind::Rpm;
     }
+    InstallKind::Unknown
+}
 
-    if let Some(a) = assets
-        .iter()
-        .find(|a| a.name.to_lowercase().ends_with(".deb"))
-    {
-        return Some(a);
+fn extension_for(kind: InstallKind) -> Option<&'static str> {
+    match kind {
+        InstallKind::AppImage | InstallKind::Unknown => Some(".appimage"),
+        InstallKind::Deb => Some(".deb"),
+        InstallKind::Rpm => Some(".rpm"),
+        InstallKind::Managed => None,
     }
+}
 
-    if let Some(a) = assets
-        .iter()
-        .find(|a| a.name.to_lowercase().ends_with(".rpm"))
-    {
-        return Some(a);
-    }
-
-    assets.first()
+fn pick_linux_asset(assets: &[GithubAsset], kind: InstallKind) -> Option<&GithubAsset> {
+    let ext = extension_for(kind)?;
+    assets.iter().find(|a| a.name.to_lowercase().ends_with(ext))
 }
 
 pub fn parse_sha256sums(body: &str, asset_name: &str) -> Option<String> {
+    let base_target = Path::new(asset_name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(asset_name);
     for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        let mut parts = line.split_whitespace();
+        let (Some(hash), Some(name)) = (parts.next(), parts.next()) else {
             continue;
-        }
-        let mut parts = trimmed.split_whitespace();
-        let hash = parts.next()?;
-        let name = parts.next().map(|s| s.trim_start_matches('*'))?;
-        let base_target = std::path::Path::new(asset_name)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(asset_name);
-        let base_line = std::path::Path::new(name)
+        };
+        let name = name.trim_start_matches('*');
+        let base_line = Path::new(name)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or(name);
@@ -139,15 +226,115 @@ pub fn parse_sha256sums(body: &str, asset_name: &str) -> Option<String> {
     None
 }
 
-pub fn check_for_updates(current_version: &str) -> Result<UpdateCheckResult, String> {
+fn decode_hex<const N: usize>(hex: &str) -> Option<[u8; N]> {
+    let hex = hex.trim();
+    if hex.len() != N * 2 || !hex.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; N];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Verifica a assinatura Ed25519 crua (64 bytes, saída de
+/// `openssl pkeyutl -sign -rawin`) de `message` com a chave pública em hex.
+pub fn verify_detached_signature(message: &[u8], signature: &[u8], public_key_hex: &str) -> bool {
+    let Some(pk_bytes) = decode_hex::<32>(public_key_hex) else {
+        return false;
+    };
+    let Ok(key) = VerifyingKey::from_bytes(&pk_bytes) else {
+        return false;
+    };
+    let Ok(sig_bytes) = <[u8; 64]>::try_from(signature) else {
+        return false;
+    };
+    key.verify_strict(message, &Signature::from_bytes(&sig_bytes))
+        .is_ok()
+}
+
+pub fn is_trusted_download_url(url: &str) -> bool {
+    match url.strip_prefix(TRUSTED_DOWNLOAD_PREFIX) {
+        Some(rest) => !rest.is_empty() && !rest.contains("..") && !rest.contains("://"),
+        None => false,
+    }
+}
+
+/// Decide se dá para instalar a partir dos dados já baixados (pura/testável).
+pub fn evaluate_release(
+    update_available: bool,
+    install_kind: InstallKind,
+    asset: Option<(&str, &str)>,
+    sums: Option<&str>,
+    sums_sig: Option<&[u8]>,
+    public_key_hex: &str,
+) -> ReleaseVerdict {
+    let blocked = |reason: &str| ReleaseVerdict {
+        blocked_reason: Some(reason.to_string()),
+        ..Default::default()
+    };
+    if !update_available {
+        return ReleaseVerdict::default();
+    }
+    if install_kind == InstallKind::Managed {
+        return blocked("Instalação gerenciada (AUR/pacman ou Flatpak): atualize pelo gerenciador de pacotes.");
+    }
+    let Some((asset_name, url)) = asset else {
+        return blocked("A release não tem pacote para este tipo de instalação.");
+    };
+    let signature_verified = match (sums, sums_sig) {
+        (Some(s), Some(sig)) => verify_detached_signature(s.as_bytes(), sig, public_key_hex),
+        _ => false,
+    };
+    let sha256 = sums.and_then(|s| parse_sha256sums(s, asset_name));
+    let reason = if !signature_verified {
+        Some("Release sem assinatura válida (SHA256SUMS.txt.sig): baixe manualmente pela página da release.")
+    } else if sha256.is_none() {
+        Some("SHA256SUMS.txt não lista este pacote.")
+    } else if !is_trusted_download_url(url) {
+        Some("URL de download fora das releases oficiais.")
+    } else {
+        None
+    };
+    let pending = match (reason, &sha256) {
+        (None, Some(sha)) => Some(PendingUpdate {
+            asset_name: asset_name.to_string(),
+            download_url: url.to_string(),
+            sha256: sha.clone(),
+            install_kind,
+        }),
+        _ => None,
+    };
+    ReleaseVerdict {
+        pending,
+        signature_verified,
+        sha256,
+        blocked_reason: reason.map(str::to_string),
+    }
+}
+
+fn http_get_bytes(url: &str, user_agent: &str, limit: u64) -> Result<Vec<u8>, String> {
+    ureq::get(url)
+        .header("User-Agent", user_agent)
+        .call()
+        .map_err(|e| format!("Falha ao baixar {}: {}", url, e))?
+        .into_body()
+        .into_with_config()
+        .limit(limit)
+        .read_to_vec()
+        .map_err(|e| format!("Falha ao ler {}: {}", url, e))
+}
+
+pub fn check_for_updates(
+    current_version: &str,
+) -> Result<(UpdateCheckResult, Option<PendingUpdate>), String> {
     let user_agent = format!("PrismBI/{}", current_version.trim());
-    let resp = ureq::get(GITHUB_LATEST_RELEASE_URL)
+    let body = ureq::get(GITHUB_LATEST_RELEASE_URL)
         .header("User-Agent", &user_agent)
         .header("Accept", "application/vnd.github+json")
         .call()
-        .map_err(|e| format!("Falha ao consultar GitHub Releases: {}", e))?;
-
-    let body = resp
+        .map_err(|e| format!("Falha ao consultar GitHub Releases: {}", e))?
         .into_body()
         .into_with_config()
         .limit(4 * 1024 * 1024)
@@ -159,107 +346,96 @@ pub fn check_for_updates(current_version: &str) -> Result<UpdateCheckResult, Str
 
     let latest_clean = release.tag_name.trim().trim_start_matches(['v', 'V']).to_string();
     let appimage_path = std::env::var("APPIMAGE").ok().filter(|s| !s.trim().is_empty());
-    let is_appimage = appimage_path.is_some();
+    let install_kind = detect_install_kind();
     let update_available = is_newer_version(current_version, &latest_clean);
 
-    let chosen_asset = pick_linux_asset(&release.assets, is_appimage);
-    let asset_name = chosen_asset.map(|a| a.name.clone()).unwrap_or_default();
-    let download_url = chosen_asset
-        .map(|a| a.browser_download_url.clone())
-        .unwrap_or_else(|| release.html_url.clone());
-    let asset_size = chosen_asset.map(|a| a.size).unwrap_or(0);
-
-    let expected_sha256 = if update_available && !asset_name.is_empty() {
-        if let Some(sums_asset) = release
+    let chosen = pick_linux_asset(&release.assets, install_kind);
+    let find = |name: &str| {
+        release
             .assets
             .iter()
-            .find(|a| a.name.eq_ignore_ascii_case("SHA256SUMS.txt"))
-        {
-            ureq::get(&sums_asset.browser_download_url)
-                .header("User-Agent", &user_agent)
-                .call()
-                .ok()
-                .and_then(|r| {
-                    r.into_body()
-                        .into_with_config()
-                        .limit(1024 * 1024)
-                        .read_to_string()
-                        .ok()
-                })
-                .and_then(|txt| parse_sha256sums(&txt, &asset_name))
-        } else {
-            None
-        }
-    } else {
-        None
+            .find(|a| a.name.eq_ignore_ascii_case(name))
+            .map(|a| a.browser_download_url.clone())
     };
 
-    Ok(UpdateCheckResult {
+    let (sums, sums_sig) = if update_available && chosen.is_some() {
+        let sums = find(SUMS_ASSET)
+            .and_then(|u| http_get_bytes(&u, &user_agent, 1024 * 1024).ok())
+            .and_then(|b| String::from_utf8(b).ok());
+        let sig = find(SUMS_SIG_ASSET).and_then(|u| http_get_bytes(&u, &user_agent, 4096).ok());
+        (sums, sig)
+    } else {
+        (None, None)
+    };
+
+    let verdict = evaluate_release(
+        update_available,
+        install_kind,
+        chosen.map(|a| (a.name.as_str(), a.browser_download_url.as_str())),
+        sums.as_deref(),
+        sums_sig.as_deref(),
+        UPDATE_PUBLIC_KEY_HEX,
+    );
+
+    let result = UpdateCheckResult {
         current_version: current_version.trim().trim_start_matches(['v', 'V']).to_string(),
         latest_version: latest_clean,
         update_available,
-        release_url: release.html_url,
+        release_url: release.html_url.clone(),
         release_notes: release.body,
         published_at: release.published_at,
-        asset_name,
-        download_url,
-        asset_size,
-        expected_sha256,
-        is_appimage,
+        asset_name: chosen.map(|a| a.name.clone()).unwrap_or_default(),
+        download_url: chosen
+            .map(|a| a.browser_download_url.clone())
+            .unwrap_or_else(|| release.html_url.clone()),
+        asset_size: chosen.map(|a| a.size).unwrap_or(0),
+        expected_sha256: verdict.sha256,
+        signature_verified: verdict.signature_verified,
+        can_install: verdict.pending.is_some(),
+        install_kind,
+        install_blocked_reason: verdict.blocked_reason,
+        is_appimage: install_kind == InstallKind::AppImage,
         appimage_path,
-    })
+    };
+    Ok((result, verdict.pending))
 }
 
-pub fn download_and_install_update(
-    download_url: &str,
-    asset_name: &str,
-    expected_sha256: Option<&str>,
-) -> Result<UpdateInstallResult, String> {
-    if !download_url.starts_with("https://") {
-        return Err("URL de download inválida: apenas HTTPS é permitido.".to_string());
+pub fn download_and_install_update(pending: &PendingUpdate) -> Result<UpdateInstallResult, String> {
+    // Defesa em profundidade: o PendingUpdate já foi validado, mas revalida.
+    if !is_trusted_download_url(&pending.download_url) {
+        return Err("URL de download fora das releases oficiais do PrismBI.".to_string());
     }
-
-    let safe_name = PathBuf::from(asset_name)
+    let safe_name = Path::new(&pending.asset_name)
         .file_name()
         .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("PrismBI-update")
+        .filter(|s| !s.is_empty() && !s.starts_with('.'))
+        .ok_or_else(|| "Nome de pacote inválido.".to_string())?
         .to_string();
 
-    let resp = ureq::get(download_url)
-        .header("User-Agent", "PrismBI-Updater/0.7.0")
-        .call()
-        .map_err(|e| format!("Erro ao baixar atualização: {}", e))?;
-
-    let bytes = resp
-        .into_body()
-        .into_with_config()
-        .limit(512 * 1024 * 1024)
-        .read_to_vec()
-        .map_err(|e| format!("Erro ao ler pacote de atualização: {}", e))?;
+    let bytes = http_get_bytes(
+        &pending.download_url,
+        concat!("PrismBI-Updater/", env!("CARGO_PKG_VERSION")),
+        512 * 1024 * 1024,
+    )?;
 
     let actual_sha = format!("{:x}", Sha256::digest(&bytes));
-    if let Some(expected) = expected_sha256.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()) {
-        if actual_sha != expected {
-            return Err(format!(
-                "Falha na verificação SHA-256! Esperado: {}, obtido: {}",
-                expected, actual_sha
-            ));
-        }
+    if actual_sha != pending.sha256 {
+        return Err(format!(
+            "Falha na verificação SHA-256! Esperado: {}, obtido: {}",
+            pending.sha256, actual_sha
+        ));
     }
 
-    if let Ok(appimage_env) = std::env::var("APPIMAGE") {
-        let appimage_trimmed = appimage_env.trim();
-        if !appimage_trimmed.is_empty() && safe_name.to_lowercase().ends_with(".appimage") {
-            let target_path = PathBuf::from(appimage_trimmed);
-            let tmp_path = PathBuf::from(format!("{}.new", appimage_trimmed));
+    if pending.install_kind == InstallKind::AppImage {
+        if let Some(target) = std::env::var("APPIMAGE").ok().filter(|s| !s.trim().is_empty()) {
+            let target_path = PathBuf::from(target.trim());
+            let tmp_path = PathBuf::from(format!("{}.new", target.trim()));
             fs::write(&tmp_path, &bytes)
                 .map_err(|e| format!("Falha ao gravar AppImage temporário: {}", e))?;
             fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o755))
                 .map_err(|e| format!("Falha ao definir permissão de execução no AppImage: {}", e))?;
             fs::rename(&tmp_path, &target_path)
                 .map_err(|e| format!("Falha ao substituir AppImage atual: {}", e))?;
-
             return Ok(UpdateInstallResult {
                 installed: true,
                 needs_restart: true,
@@ -269,26 +445,30 @@ pub fn download_and_install_update(
         }
     }
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let home = std::env::var("HOME").map_err(|_| "HOME não definido".to_string())?;
     let downloads_dir = PathBuf::from(&home).join("Downloads");
     fs::create_dir_all(&downloads_dir)
         .map_err(|e| format!("Falha ao criar pasta Downloads: {}", e))?;
     let dest_path = downloads_dir.join(&safe_name);
     fs::write(&dest_path, &bytes)
         .map_err(|e| format!("Falha ao salvar pacote em Downloads: {}", e))?;
-
     if safe_name.to_lowercase().ends_with(".appimage") {
         let _ = fs::set_permissions(&dest_path, fs::Permissions::from_mode(0o755));
     }
 
     let saved_str = dest_path.to_string_lossy().to_string();
+    let hint = match pending.install_kind {
+        InstallKind::Deb => format!(" Instale com: sudo apt install '{}'", saved_str),
+        InstallKind::Rpm => format!(" Instale com: sudo dnf install '{}'", saved_str),
+        _ => String::new(),
+    };
     Ok(UpdateInstallResult {
         installed: false,
         needs_restart: false,
         saved_path: Some(saved_str.clone()),
         message: format!(
-            "Pacote baixado e verificado (SHA-256) em: {}",
-            saved_str
+            "Pacote baixado e verificado (assinatura + SHA-256) em: {}.{}",
+            saved_str, hint
         ),
     })
 }
@@ -297,43 +477,117 @@ pub fn download_and_install_update(
 mod tests {
     use super::*;
 
+    // Vetores reais gerados com a chave oficial via
+    // `openssl pkeyutl -sign -inkey update-signing.pem -rawin -in <arquivo>`.
+    const ABC_SIG_HEX: &str = "0412a1c0cf16899e76c93ffd1decbc52311ddf3660f736412b82b9e7392be9712d5483e0f4ea2c8666ddb7c06edf8157658c3257701537702914bf1679b72403";
+    /// Assina exatamente `"a"*64 + "  P.AppImage\n"`.
+    const LISTED_SIG_HEX: &str = "16a028abdaf87244ffe6b1193be3029f0c629182899a411134d000131a0955cf983f651b727d74086a0516890e950663ef27b0e468659ebe434c833d1908a805";
+
+    fn sig(hex: &str) -> Vec<u8> {
+        decode_hex::<64>(hex).unwrap().to_vec()
+    }
+
+    fn listed_sums() -> String {
+        format!("{}  P.AppImage\n", "a".repeat(64))
+    }
+
+    fn trusted(name: &str) -> String {
+        format!("{}v0.8.0/{}", TRUSTED_DOWNLOAD_PREFIX, name)
+    }
+
+    fn asset(name: &str) -> GithubAsset {
+        GithubAsset {
+            name: name.into(),
+            browser_download_url: trusted(name),
+            size: 1,
+        }
+    }
+
     #[test]
     fn test_is_newer_version() {
         assert!(is_newer_version("0.6.0", "0.7.0"));
         assert!(is_newer_version("v0.6.9", "v0.7.0"));
         assert!(is_newer_version("0.7.0", "1.0.0"));
+        assert!(is_newer_version("0.9.0", "0.10.0"));
         assert!(!is_newer_version("0.7.0", "0.7.0"));
         assert!(!is_newer_version("0.8.0", "0.7.5"));
     }
 
     #[test]
-    fn test_pick_linux_asset() {
+    fn signature_from_openssl_verifies_with_embedded_key() {
+        assert!(verify_detached_signature(b"abc", &sig(ABC_SIG_HEX), UPDATE_PUBLIC_KEY_HEX));
+    }
+
+    #[test]
+    fn signature_rejects_tampered_message_wrong_key_or_bad_sizes() {
+        let s = sig(ABC_SIG_HEX);
+        assert!(!verify_detached_signature(b"abd", &s, UPDATE_PUBLIC_KEY_HEX));
+        assert!(!verify_detached_signature(b"abc", &s[..63], UPDATE_PUBLIC_KEY_HEX));
+        assert!(!verify_detached_signature(b"abc", &s, "00"));
+        let other_key = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+        assert!(!verify_detached_signature(b"abc", &s, other_key));
+    }
+
+    #[test]
+    fn trusted_url_allowlist() {
+        assert!(is_trusted_download_url(&trusted("PrismBI_0.8.0_amd64.AppImage")));
+        assert!(!is_trusted_download_url("https://evil.example/PrismBI.AppImage"));
+        assert!(!is_trusted_download_url(
+            "https://github.com/ludoviciphilip/PrismBI-fork/releases/download/x/a"
+        ));
+        assert!(!is_trusted_download_url(
+            "https://github.com/ludoviciphilip/PrismBI/releases/download/../../evil/a"
+        ));
+        assert!(!is_trusted_download_url(
+            "http://github.com/ludoviciphilip/PrismBI/releases/download/v1/a"
+        ));
+        assert!(!is_trusted_download_url(TRUSTED_DOWNLOAD_PREFIX));
+    }
+
+    #[test]
+    fn pick_asset_matches_install_kind() {
         let assets = vec![
-            GithubAsset {
-                name: "PrismBI_0.7.0_amd64.deb".into(),
-                browser_download_url: "https://example.com/deb".into(),
-                size: 100,
-            },
-            GithubAsset {
-                name: "PrismBI_0.7.0_amd64.AppImage".into(),
-                browser_download_url: "https://example.com/appimage".into(),
-                size: 200,
-            },
+            asset("PrismBI_0.8.0_amd64.deb"),
+            asset("PrismBI_0.8.0_amd64.AppImage"),
+            asset("PrismBI-0.8.0-1.x86_64.rpm"),
         ];
+        let pick = |k| pick_linux_asset(&assets, k).map(|a| a.name.clone());
+        assert!(pick(InstallKind::AppImage).unwrap().ends_with(".AppImage"));
+        assert!(pick(InstallKind::Unknown).unwrap().ends_with(".AppImage"));
+        assert!(pick(InstallKind::Deb).unwrap().ends_with(".deb"));
+        assert!(pick(InstallKind::Rpm).unwrap().ends_with(".rpm"));
+        assert!(pick(InstallKind::Managed).is_none());
+        // .deb instalado nunca recebe AppImage por engano (bug da v0.7).
+        assert!(pick_linux_asset(&assets[1..2], InstallKind::Deb).is_none());
+    }
 
+    #[test]
+    fn classify_install_kinds() {
+        let none = |_: &str| false;
+        let usr = Path::new("/usr/bin/prismbi");
         assert_eq!(
-            pick_linux_asset(&assets, true).unwrap().name,
-            "PrismBI_0.7.0_amd64.AppImage"
+            classify_install(Some("/home/u/P.AppImage"), None, Some(usr), &none),
+            InstallKind::AppImage
         );
         assert_eq!(
-            pick_linux_asset(&assets, false).unwrap().name,
-            "PrismBI_0.7.0_amd64.AppImage"
+            classify_install(None, Some("dev.prismbi.app"), Some(usr), &none),
+            InstallKind::Managed
         );
-
-        let deb_only = vec![assets[0].clone()];
         assert_eq!(
-            pick_linux_asset(&deb_only, true).unwrap().name,
-            "PrismBI_0.7.0_amd64.deb"
+            classify_install(None, None, Some(usr), &|p| p == "/var/lib/pacman/local"),
+            InstallKind::Managed
+        );
+        assert_eq!(
+            classify_install(None, None, Some(usr), &|p| p == "/etc/debian_version"),
+            InstallKind::Deb
+        );
+        assert_eq!(
+            classify_install(None, None, Some(usr), &|p| p == "/etc/fedora-release"),
+            InstallKind::Rpm
+        );
+        assert_eq!(
+            classify_install(None, None, Some(Path::new("/home/u/dev/target/debug/prismbi")), &|_| true),
+            InstallKind::Unknown
         );
     }
 
@@ -341,14 +595,71 @@ mod tests {
     fn test_parse_sha256sums() {
         let sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let body = format!(
-            "{}  PrismBI_0.7.0_amd64.deb\n{}  dist/PrismBI_0.7.0_amd64.AppImage\n",
+            "{}  PrismBI_0.7.0_amd64.deb\n\n{}  dist/PrismBI_0.7.0_amd64.AppImage\n",
             "0".repeat(64),
             sha
         );
-        assert_eq!(
-            parse_sha256sums(&body, "PrismBI_0.7.0_amd64.AppImage"),
-            Some(sha.to_string())
-        );
+        assert_eq!(parse_sha256sums(&body, "PrismBI_0.7.0_amd64.AppImage"), Some(sha.to_string()));
         assert_eq!(parse_sha256sums(&body, "missing.rpm"), None);
+    }
+
+    #[test]
+    fn evaluate_release_happy_path_produces_pending_update() {
+        let sums = listed_sums();
+        let url = trusted("P.AppImage");
+        let v = evaluate_release(
+            true,
+            InstallKind::AppImage,
+            Some(("P.AppImage", &url)),
+            Some(&sums),
+            Some(&sig(LISTED_SIG_HEX)),
+            UPDATE_PUBLIC_KEY_HEX,
+        );
+        assert!(v.signature_verified);
+        assert_eq!(v.blocked_reason, None);
+        let p = v.pending.expect("deveria haver pacote pendente");
+        assert_eq!(p.sha256, "a".repeat(64));
+        assert_eq!(p.download_url, url);
+    }
+
+    #[test]
+    fn evaluate_release_without_signature_never_installs() {
+        // Caso da v0.7.0: SHA256SUMS.txt existe, mas não há .sig.
+        let sums = listed_sums();
+        let url = trusted("P.AppImage");
+        let v = evaluate_release(true, InstallKind::AppImage, Some(("P.AppImage", &url)), Some(&sums), None, UPDATE_PUBLIC_KEY_HEX);
+        assert!(!v.signature_verified && v.pending.is_none());
+        assert_eq!(v.sha256.as_deref(), Some("a".repeat(64).as_str()));
+        assert!(v.blocked_reason.unwrap().contains("assinatura"));
+
+        // Hash trocado por atacante: assinatura deixa de bater.
+        let forged = format!("{}  P.AppImage\n", "b".repeat(64));
+        let v = evaluate_release(true, InstallKind::AppImage, Some(("P.AppImage", &url)), Some(&forged), Some(&sig(LISTED_SIG_HEX)), UPDATE_PUBLIC_KEY_HEX);
+        assert!(!v.signature_verified && v.pending.is_none());
+    }
+
+    #[test]
+    fn evaluate_release_rejects_untrusted_url_even_if_signed() {
+        let sums = listed_sums();
+        let v = evaluate_release(
+            true,
+            InstallKind::AppImage,
+            Some(("P.AppImage", "https://evil.example/P.AppImage")),
+            Some(&sums),
+            Some(&sig(LISTED_SIG_HEX)),
+            UPDATE_PUBLIC_KEY_HEX,
+        );
+        assert!(v.signature_verified && v.pending.is_none());
+        assert!(v.blocked_reason.unwrap().contains("URL"));
+    }
+
+    #[test]
+    fn evaluate_release_blocks_managed_and_handles_no_update() {
+        let v = evaluate_release(true, InstallKind::Managed, None, None, None, UPDATE_PUBLIC_KEY_HEX);
+        assert!(v.pending.is_none() && v.blocked_reason.unwrap().contains("gerenciador"));
+        assert_eq!(
+            evaluate_release(false, InstallKind::AppImage, None, None, None, UPDATE_PUBLIC_KEY_HEX),
+            ReleaseVerdict::default()
+        );
     }
 }

@@ -408,6 +408,12 @@ export interface UpdateCheckResult {
   downloadUrl: string;
   assetSize: number;
   expectedSha256?: string | null;
+  /** SHA256SUMS.txt com assinatura Ed25519 válida da chave oficial. */
+  signatureVerified?: boolean;
+  /** O backend guardou um pacote verificado pronto para instalar. */
+  canInstall?: boolean;
+  installKind?: 'appImage' | 'deb' | 'rpm' | 'managed' | 'unknown';
+  installBlockedReason?: string | null;
   isAppimage: boolean;
   appimagePath?: string | null;
 }
@@ -423,14 +429,10 @@ export async function checkForUpdatesNative(currentVersion: string): Promise<Upd
   return await invoke<UpdateCheckResult>('check_for_updates', { currentVersion });
 }
 
-export async function downloadAndInstallUpdateNative(
-  downloadUrl: string,
-  assetName: string,
-  expectedSha256?: string | null
-): Promise<UpdateInstallResult> {
-  return await invoke<UpdateInstallResult>('download_and_install_update', {
-    downloadUrl,
-    assetName,
-    expectedSha256: expectedSha256 ?? null,
-  });
+/**
+ * Instala o pacote que o backend verificou no último `checkForUpdatesNative`.
+ * Por segurança o frontend não escolhe URL nem hash.
+ */
+export async function downloadAndInstallUpdateNative(): Promise<UpdateInstallResult> {
+  return await invoke<UpdateInstallResult>('download_and_install_update');
 }
