@@ -169,6 +169,9 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({
         y: 80 + Math.floor(idx / 3) * 240,
         columns: cols,
         rows,
+        duckdbTable: loaded?.tableName,
+        rowsTruncated: loaded?.truncated,
+        totalRows: loaded?.totalRows,
       };
     });
 
@@ -475,7 +478,7 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({
                           {t.columns.length} colunas • {t.measures.length} medidas
                           {(() => {
                             const lt = summary.loadedTables?.find(x => x.tableName.toLowerCase() === t.name.toLowerCase());
-                            return lt ? ` • ${lt.totalRows.toLocaleString('pt-BR')} linhas carregadas` : '';
+                            return lt ? ` • ${lt.totalRows.toLocaleString('pt-BR')} linhas no modelo` : '';
                           })()}
                         </span>
                       </div>

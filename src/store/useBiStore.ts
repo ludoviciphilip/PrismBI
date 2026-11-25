@@ -187,7 +187,8 @@ interface BiState {
     targetTableId: string,
     newColumns: Column[],
     newRows: Record<string, any>[],
-    newSourceConfig?: TableSourceConfig
+    newSourceConfig?: TableSourceConfig,
+    meta?: { duckdbTable?: string; rowsTruncated?: boolean; totalRows?: number }
   ) => boolean;
   refreshTable: (tableId: string) => Promise<{ ok: boolean; message: string }>;
   refreshAllData: () => Promise<{ refreshedTables: string[]; warnings: string[]; error?: string }>;
@@ -713,8 +714,13 @@ async function pushModelToRustAsync(
       tables: tables.map(t => ({
         name: t.name,
         columns: t.columns.map(c => c.name),
-        rows: t.rows || [],
+        // DuckDB-backed tables (duckdbTable set) send no rows: Rust loads
+        // every row straight from DuckDB instead of this 5000-row preview.
+        // Tables without a backing DuckDB table (sample data, manual entry,
+        // inline REST, calculated tables) still send their full `rows`.
+        rows: t.duckdbTable ? [] : (t.rows || []),
         columnTypes: t.columns.map(c => c.dataType ?? null),
+        duckdbTable: t.duckdbTable,
       })),
       relationships: relationships.map(r => ({
         fromTable: r.fromTable,
@@ -1094,7 +1100,7 @@ export const useBiStore = create<BiState>((set, get) => {
       return { ok: true };
     },
 
-    replaceTableData: (targetTableId, newColumns, newRows, newSourceConfig) => {
+    replaceTableData: (targetTableId, newColumns, newRows, newSourceConfig, meta) => {
       const target = get().tables.find(
         t =>
           t.id === targetTableId ||
@@ -1125,6 +1131,9 @@ export const useBiStore = create<BiState>((set, get) => {
               columns: mergedColumns,
               rows: newRows,
               sourceConfig: updatedSourceConfig,
+              duckdbTable: meta?.duckdbTable ?? t.duckdbTable,
+              rowsTruncated: meta?.rowsTruncated ?? t.rowsTruncated,
+              totalRows: meta?.totalRows ?? t.totalRows,
             }
           : t
       );
@@ -1172,13 +1181,17 @@ export const useBiStore = create<BiState>((set, get) => {
           get().replaceTableData(target.id, cols, payload.rows, {
             ...sc,
             lastRefreshedAt: new Date().toISOString(),
+          }, {
+            duckdbTable: payload.tableName,
+            rowsTruncated: payload.truncated,
+            totalRows: payload.totalRows,
           });
           await withTimeout(pushModelToRustAsync(get().tables, get().relationships, get().measures), 'Sincronizar modelo');
           set(s => ({
             dataVersion: s.dataVersion + 1,
             refreshStatus: {
               type: 'success',
-              message: `Tabela "${target.name}" atualizada via banco de dados (${payload.totalRows.toLocaleString('pt-BR')} linhas).`,
+              message: `Tabela "${target.name}" atualizada via banco de dados (${payload.totalRows.toLocaleString('pt-BR')} linhas no modelo).`,
               timestamp: nowTime,
             },
           }));
@@ -1226,13 +1239,17 @@ export const useBiStore = create<BiState>((set, get) => {
             filePath: payload.sourcePath || sc.filePath,
             sheetName: payload.sheetName || sc.sheetName,
             lastRefreshedAt: new Date().toISOString(),
+          }, {
+            duckdbTable: payload.tableName,
+            rowsTruncated: payload.truncated,
+            totalRows: payload.totalRows,
           });
           await withTimeout(pushModelToRustAsync(get().tables, get().relationships, get().measures), 'Sincronizar modelo');
           set(s => ({
             dataVersion: s.dataVersion + 1,
             refreshStatus: {
               type: 'success',
-              message: `Tabela "${target.name}" atualizada (${payload.totalRows.toLocaleString('pt-BR')} linhas).`,
+              message: `Tabela "${target.name}" atualizada (${payload.totalRows.toLocaleString('pt-BR')} linhas no modelo).`,
               timestamp: nowTime,
             },
           }));
@@ -1254,13 +1271,17 @@ export const useBiStore = create<BiState>((set, get) => {
               sheetName: matched.sheetName || sc?.sheetName,
               mScript: sc?.mScript,
               pbipRoot: sc?.pbipRoot || get().sourcePbipPath || undefined,
+            }, {
+              duckdbTable: matched.tableName,
+              rowsTruncated: matched.truncated,
+              totalRows: matched.totalRows,
             });
             await withTimeout(pushModelToRustAsync(get().tables, get().relationships, get().measures), 'Sincronizar modelo');
             set(s => ({
               dataVersion: s.dataVersion + 1,
               refreshStatus: {
                 type: 'success',
-                message: `Tabela "${target.name}" atualizada do projeto .pbip (${matched.totalRows.toLocaleString('pt-BR')} linhas).`,
+                message: `Tabela "${target.name}" atualizada do projeto .pbip (${matched.totalRows.toLocaleString('pt-BR')} linhas no modelo).`,
                 timestamp: nowTime,
               },
             }));
