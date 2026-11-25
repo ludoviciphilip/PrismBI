@@ -76,7 +76,7 @@ export function getEffectiveSort(visual: Visual, fields: SortableField[]): Effec
   }
   if (visual.type === 'table' || visual.type === 'slicer') return { order: dc.sortOrder ?? 'asc' };
   if (dc.limit && dc.limit > 0 && dc.yAxisFields?.[0]) return { field: dc.yAxisFields[0], order: 'desc' };
-  return { field: effectiveCategoryField(dc), order: 'asc' };
+  return { field: effectiveCategoryField(dc), order: dc.sortOrder ?? 'asc' };
 }
 
 /** dataConfig patch for choosing a sort field from the menu. */

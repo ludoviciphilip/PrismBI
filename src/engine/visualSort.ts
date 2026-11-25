@@ -196,9 +196,10 @@ function categoryKey(spec: VisualSortSpec, cat: string): unknown {
 /**
  * Sorts categories (+ the aligned series data) and then applies the limit.
  *
- * Without an explicit (resolvable) sortField: categories are ordered ascending
- * by the axis (honouring sortByColumn), or — when a TopN limit is set — by the
- * first series descending, so TopN keeps the largest values.
+ * Without an explicit (resolvable) sortField: categories are ordered by the
+ * axis (honouring sortByColumn) in `sortOrder` direction (default ascending),
+ * or — when a TopN limit is set — by the first series descending, so TopN
+ * keeps the largest values.
  */
 export function applyVisualSort<T extends CategorySeriesData>(data: T, spec: VisualSortSpec): T {
   const dir: SortDirection = spec.sortOrder === 'desc' ? 'desc' : 'asc';
@@ -221,7 +222,7 @@ export function applyVisualSort<T extends CategorySeriesData>(data: T, spec: Vis
   } else if (limit && series.length > 0 && categories.length > limit) {
     perm = sortPermutation(categories, (_, i) => series[0].data[i], 'desc');
   } else {
-    perm = sortPermutation(categories, c => categoryKey(spec, c), 'asc');
+    perm = sortPermutation(categories, c => categoryKey(spec, c), dir);
   }
 
   if (limit) perm = perm.slice(0, limit);

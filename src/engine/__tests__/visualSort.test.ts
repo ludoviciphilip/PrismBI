@@ -127,6 +127,8 @@ describe('visualSort — applyVisualSort', () => {
     expect(applyVisualSort(monthData, { ...spec, sortField: 'NomeMes', sortOrder: 'desc' }).categories[0]).toBe('Dezembro');
     // No sortField -> default axis order still honours sortByColumn.
     expect(applyVisualSort(monthData, spec).categories).toEqual(['Janeiro', 'Fevereiro', 'Março', 'Dezembro']);
+    // sortOrder without sortField sorts the axis in that direction.
+    expect(applyVisualSort(monthData, { ...spec, sortOrder: 'desc' }).categories[0]).toBe('Dezembro');
   });
 
   it('applies the TopN limit AFTER sorting', () => {
