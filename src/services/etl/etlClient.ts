@@ -60,6 +60,12 @@ export async function etlFromM(args: { name: string; m: string }): Promise<EtlFr
   return browserFromM(args.name, args.m);
 }
 
+/** Rodada 2: expressão M só da etapa `index`, como a barra de fórmulas do Power Query. */
+export async function etlStepM(args: { query: EtlQuery; index: number }): Promise<string> {
+  if (isTauriRuntime()) return invoke('etl_step_m', args);
+  return browserStepM(args.query, args.index);
+}
+
 // ---------------------------------------------------------------------------
 // Fallback de navegador
 // ---------------------------------------------------------------------------
@@ -671,6 +677,16 @@ function condToM(cond: Cond): string {
     default:
       return 'true';
   }
+}
+
+/** Fallback de navegador para etl_step_m: reaproveita stepToM/browserToM. */
+function browserStepM(query: EtlQuery, index: number): string {
+  if (index < 0) return `Fonte = ${sourceToM(query.source)}`;
+  const step = query.steps[index];
+  if (!step) throw new Error(`Passo ${index} não existe`);
+  const prev = index === 0 ? 'Fonte' : `#"${query.steps[index - 1].name}"`;
+  const body = stepToM(step).replace(/\bPrev\b/g, prev);
+  return `#"${step.name}" = ${body}`;
 }
 
 function browserToM(query: EtlQuery): string {

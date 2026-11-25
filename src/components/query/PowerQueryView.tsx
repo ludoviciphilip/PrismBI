@@ -22,7 +22,8 @@ import {
 } from 'lucide-react';
 import { useBiStore } from '../../store/useBiStore';
 import { EtlStep, EtlPreviewResult, Cond, DistributiveOmit } from '../../types/etl';
-import { etlPreview, etlToM, etlFromM, ETL_BROWSER_FALLBACK_NOTICE } from '../../services/etl/etlClient';
+import { etlPreview, etlToM, etlFromM, etlStepM, ETL_BROWSER_FALLBACK_NOTICE } from '../../services/etl/etlClient';
+import { editStepFormula, FormulaBarEditError } from '../../services/etl/formulaBarEdit';
 import { isTauriRuntime } from '../../bridge/tauriBridge';
 import { ColumnTypeIcon } from './ColumnTypeIcon';
 import { ColumnFilterMenu } from './ColumnFilterMenu';
@@ -90,6 +91,7 @@ export const PowerQueryView: React.FC = () => {
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [preview, setPreview] = useState<EtlPreviewResult>({ columns: [], rows: [], rowCount: 0, warnings: [] });
   const [formulaBarText, setFormulaBarText] = useState('');
+  const [formulaBarError, setFormulaBarError] = useState<string | null>(null);
   const [advancedM, setAdvancedM] = useState('');
   const [advancedWarnings, setAdvancedWarnings] = useState<string[]>([]);
   const [toast, setToast] = useState<string | null>(null);
@@ -127,16 +129,32 @@ export const PowerQueryView: React.FC = () => {
   }, [JSON.stringify(query), uptoStep, selectedTableId]);
 
   useEffect(() => {
-    const step = query.steps.find(s => s.id === selectedStepId);
-    if (!step) {
+    const idx = query.steps.findIndex(s => s.id === selectedStepId);
+    if (idx < 0) {
       setFormulaBarText('');
+      setFormulaBarError(null);
       return;
     }
-    etlToM({ query: { ...query, steps: [step] } })
-      .then(setFormulaBarText)
+    etlStepM({ query, index: idx })
+      .then(m => {
+        setFormulaBarText(m);
+        setFormulaBarError(null);
+      })
       .catch(() => setFormulaBarText(''));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStepId, selectedTableId]);
+
+  const applyFormulaBarEdit = async (text: string) => {
+    const idx = query.steps.findIndex(s => s.id === selectedStepId);
+    if (idx < 0) return;
+    try {
+      const { query: nextQuery } = await editStepFormula(query, idx, text);
+      setQuery(selectedTableId, nextQuery);
+      setFormulaBarError(null);
+    } catch (e: any) {
+      setFormulaBarError(e instanceof FormulaBarEditError ? e.message : e?.message ?? 'Erro ao editar a fórmula');
+    }
+  };
 
   const columns = preview.columns.length
     ? preview.columns
@@ -321,11 +339,24 @@ export const PowerQueryView: React.FC = () => {
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
         <span className="font-mono text-slate-400">fx</span>
         <input
-          readOnly
           value={formulaBarText}
-          className="flex-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-2 py-1 font-mono text-[11px] text-slate-700 dark:text-slate-200"
+          onChange={e => {
+            setFormulaBarText(e.target.value);
+            setFormulaBarError(null);
+          }}
+          onKeyDown={e => {
+            if (e.key === 'Enter') void applyFormulaBarEdit(formulaBarText);
+          }}
+          className={`flex-1 bg-slate-50 dark:bg-slate-800 border rounded px-2 py-1 font-mono text-[11px] text-slate-700 dark:text-slate-200 ${
+            formulaBarError ? 'border-red-500' : 'border-slate-200 dark:border-slate-700'
+          }`}
         />
       </div>
+      {formulaBarError && (
+        <div className="px-3 py-1 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-200 text-[11px] border-b border-red-200 dark:border-red-800">
+          {formulaBarError}
+        </div>
+      )}
 
       {!isTauriRuntime() && (
         <div className="px-3 py-1 bg-amber-50 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200 text-[11px] border-b border-amber-200 dark:border-amber-800">
@@ -375,6 +406,11 @@ export const PowerQueryView: React.FC = () => {
                         rows={preview.rows}
                         onClose={() => setOpenMenu(null)}
                         onApply={(condition: Cond) => addStep({ op: 'filterRows', condition, name: 'Linhas Filtradas' })}
+                        onSort={sort =>
+                          sort
+                            ? addStep({ op: 'sort', by: [{ column: sort.column, descending: sort.descending }], name: 'Classificado' })
+                            : undefined
+                        }
                       />
                     )}
                     {openMenu?.column === col.name && openMenu.type === 'context' && (
@@ -504,7 +540,7 @@ export const PowerQueryView: React.FC = () => {
       )}
       {dialog === 'conditionalColumn' && (
         <ConditionalColumnDialog
-          columns={columnNames}
+          columns={columns}
           onClose={() => {
             setDialog(null);
             setEditingStepId(null);
