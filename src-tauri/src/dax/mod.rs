@@ -1143,3 +1143,89 @@ mod propagation_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod bench_tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::Instant;
+
+    /// 200k-row fact with 3 dimensions, SUM filtered by 2 dimension columns.
+    /// Not a true before/after (the untyped `DaxValue::Number`/`String`-keyed
+    /// filter representation this PR replaces no longer exists on this
+    /// branch to compare against), but gives a concrete number for the typed
+    /// `DaxValue` + `ValueKey` path. Run with:
+    /// `cargo test --lib bench_200k -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_200k_fact_sum_with_two_dimension_filters() {
+        const DIM_ROWS: i64 = 1000;
+        const FACT_ROWS: i64 = 200_000;
+
+        let dim_rows = |col: &str| -> Vec<serde_json::Map<String, JsonValue>> {
+            (0..DIM_ROWS)
+                .map(|i| {
+                    let mut m = serde_json::Map::new();
+                    m.insert("Id".into(), json!(i));
+                    m.insert(col.into(), json!(format!("{}-{}", col, i % 50)));
+                    m
+                })
+                .collect()
+        };
+
+        let fact_rows: Vec<serde_json::Map<String, JsonValue>> = (0..FACT_ROWS)
+            .map(|i| {
+                let mut m = serde_json::Map::new();
+                m.insert("Dim1Id".into(), json!(i % DIM_ROWS));
+                m.insert("Dim2Id".into(), json!((i * 7) % DIM_ROWS));
+                m.insert("Dim3Id".into(), json!((i * 13) % DIM_ROWS));
+                m.insert("Valor".into(), json!((i % 1000) as f64 * 1.5));
+                m
+            })
+            .collect();
+
+        let mut model = DaxModel::new();
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput { name: "Dim1".into(), columns: vec!["Id".into(), "Grupo1".into()], rows: dim_rows("Grupo1"), column_types: vec![] },
+                DaxTableInput { name: "Dim2".into(), columns: vec!["Id".into(), "Grupo2".into()], rows: dim_rows("Grupo2"), column_types: vec![] },
+                DaxTableInput { name: "Dim3".into(), columns: vec!["Id".into(), "Grupo3".into()], rows: dim_rows("Grupo3"), column_types: vec![] },
+                DaxTableInput {
+                    name: "Fato".into(),
+                    columns: vec!["Dim1Id".into(), "Dim2Id".into(), "Dim3Id".into(), "Valor".into()],
+                    rows: fact_rows,
+                    column_types: vec![],
+                },
+            ],
+            relationships: vec![
+                DaxRelationshipInput { from_table: "Fato".into(), from_column: "Dim1Id".into(), to_table: "Dim1".into(), to_column: "Id".into(), cross_filter_direction: "single".into(), is_active: true },
+                DaxRelationshipInput { from_table: "Fato".into(), from_column: "Dim2Id".into(), to_table: "Dim2".into(), to_column: "Id".into(), cross_filter_direction: "single".into(), is_active: true },
+                DaxRelationshipInput { from_table: "Fato".into(), from_column: "Dim3Id".into(), to_table: "Dim3".into(), to_column: "Id".into(), cross_filter_direction: "single".into(), is_active: true },
+            ],
+            measures: vec![],
+        });
+
+        let ctx = build_filter_context(
+            &[
+                NativeFilterInput { table_id: "Dim1".into(), column: "Grupo1".into(), values: vec![json!("Grupo1-7")] },
+                NativeFilterInput { table_id: "Dim2".into(), column: "Grupo2".into(), values: vec![json!("Grupo2-3")] },
+            ],
+            &model,
+        );
+
+        const ITERS: u32 = 20;
+        let t0 = Instant::now();
+        let mut last = DaxValue::Blank;
+        for _ in 0..ITERS {
+            last = model.evaluate_dax("SUM(Fato[Valor])", &ctx).unwrap();
+        }
+        let elapsed = t0.elapsed();
+        println!(
+            "bench_200k: {} rows fato, 3 dims, SUM + 2 filters: {:.3} ms/query (avg of {}) -> {:?}",
+            FACT_ROWS,
+            elapsed.as_secs_f64() * 1000.0 / ITERS as f64,
+            ITERS,
+            last
+        );
+    }
+}
