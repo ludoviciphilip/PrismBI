@@ -299,14 +299,14 @@ export const DaxQueryView: React.FC = () => {
       queryResult.definedObjects.tables.length > 0);
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-900 text-slate-100 overflow-hidden font-sans">
+    <div className="flex-1 flex flex-col h-full bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 overflow-hidden font-sans">
       {/* Toast */}
       {toastMsg && (
         <div
           className={`fixed top-4 right-4 z-50 px-4 py-2.5 rounded-lg text-xs font-semibold shadow-xl border flex items-center gap-2 transition-all ${
             toastMsg.type === 'success'
-              ? 'bg-emerald-950 border-emerald-500/40 text-emerald-300'
-              : 'bg-rose-950 border-rose-500/40 text-rose-300'
+              ? 'bg-emerald-50 dark:bg-emerald-950 border-emerald-300 dark:border-emerald-500/40 text-emerald-800 dark:text-emerald-300'
+              : 'bg-rose-50 dark:bg-rose-950 border-rose-300 dark:border-rose-500/40 text-rose-800 dark:text-rose-300'
           }`}
         >
           {toastMsg.type === 'success' ? <Check className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
@@ -315,13 +315,13 @@ export const DaxQueryView: React.FC = () => {
       )}
 
       {/* Top Toolbar */}
-      <div className="h-12 border-b border-slate-800 bg-slate-950 px-4 flex items-center justify-between shrink-0 select-none">
+      <div className="h-12 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-4 flex items-center justify-between shrink-0 select-none">
         <div className="flex items-center gap-3">
           {/* Run Query Button */}
           <button
             onClick={handleExecuteQuery}
             disabled={isRunning}
-            className="px-3.5 py-1.5 bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-lg flex items-center gap-2 shadow-md transition-all"
+            className="px-3.5 py-1.5 bg-amber-500 dark:bg-amber-400 hover:bg-amber-400 dark:hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-lg flex items-center gap-2 shadow-sm transition-all cursor-pointer"
             title="Executar Consulta (Ctrl + Enter)"
           >
             {isRunning ? (
@@ -330,16 +330,16 @@ export const DaxQueryView: React.FC = () => {
               <Play className="w-3.5 h-3.5 fill-current" />
             )}
             <span>Executar</span>
-            <kbd className="text-[10px] bg-slate-950/20 px-1 py-0.5 rounded font-mono">Ctrl+Enter</kbd>
+            <kbd className="text-[10px] bg-slate-950/15 px-1 py-0.5 rounded font-mono">Ctrl+Enter</kbd>
           </button>
 
           {isTauriRuntime() && (
             <button
               onClick={handleEvaluateScalarRust}
-              className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer"
+              className="px-3 py-1.5 bg-emerald-50 dark:bg-emerald-600/20 hover:bg-emerald-100 dark:hover:bg-emerald-600/30 border border-emerald-300 dark:border-emerald-500/40 text-emerald-800 dark:text-emerald-300 text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer"
               title="Avaliar expressão DAX diretamente no motor nativo em Rust"
             >
-              <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+              <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
               <span>DAX Nativo (Rust)</span>
             </button>
           )}
@@ -350,8 +350,8 @@ export const DaxQueryView: React.FC = () => {
             disabled={!hasDefinitions}
             className={`px-3 py-1.5 text-xs font-semibold rounded-lg flex items-center gap-1.5 border transition-all ${
               hasDefinitions
-                ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-400 hover:bg-emerald-600/30 shadow-xs'
-                : 'border-slate-800 text-slate-500 opacity-50 cursor-not-allowed'
+                ? 'bg-emerald-50 dark:bg-emerald-600/20 border-emerald-300 dark:border-emerald-500/40 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-600/30 shadow-xs cursor-pointer'
+                : 'border-slate-200 dark:border-slate-800 text-slate-400 dark:text-slate-500 opacity-60 cursor-not-allowed'
             }`}
             title="Salva medidas, colunas e UDFs da cláusula DEFINE no modelo de dados"
           >
@@ -363,10 +363,10 @@ export const DaxQueryView: React.FC = () => {
           <button
             onClick={handleExportCsv}
             disabled={!activeTableResult || activeTableResult.rows.length === 0}
-            className="px-3 py-1.5 border border-slate-800 hover:bg-slate-800 text-slate-300 disabled:opacity-40 text-xs font-medium rounded-lg flex items-center gap-1.5"
+            className="px-3 py-1.5 border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 disabled:opacity-40 text-xs font-medium rounded-lg flex items-center gap-1.5 cursor-pointer"
             title="Exportar resultado atual para CSV"
           >
-            <Download className="w-3.5 h-3.5 text-slate-400" />
+            <Download className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
             <span>Exportar CSV</span>
           </button>
         </div>
@@ -375,19 +375,19 @@ export const DaxQueryView: React.FC = () => {
         <div className="flex items-center gap-2">
           {/* Snippets Dropdown */}
           <div className="relative group">
-            <button className="px-3 py-1.5 border border-slate-800 hover:bg-slate-800 text-slate-300 text-xs font-medium rounded-lg flex items-center gap-1.5">
-              <FileSpreadsheet className="w-3.5 h-3.5 text-amber-400" />
+            <button className="px-3 py-1.5 border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-medium rounded-lg flex items-center gap-1.5 cursor-pointer">
+              <FileSpreadsheet className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
               <span>Snippets DAX</span>
             </button>
-            <div className="absolute right-0 top-full mt-1 w-64 bg-slate-800 border border-slate-700 rounded-lg shadow-2xl py-1 z-30 hidden group-hover:block">
+            <div className="absolute right-0 top-full mt-1 w-64 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-2xl py-1 z-30 hidden group-hover:block">
               {DAX_SNIPPETS.map(snip => (
                 <button
                   key={snip.id}
                   onClick={() => handleInsertSnippet(snip.template)}
-                  className="w-full text-left px-3 py-2 text-xs text-slate-200 hover:bg-slate-700/80 flex flex-col gap-0.5"
+                  className="w-full text-left px-3 py-2 text-xs text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/80 flex flex-col gap-0.5 cursor-pointer"
                 >
-                  <span className="font-semibold text-amber-300">{snip.title}</span>
-                  <span className="text-[10px] text-slate-400 line-clamp-1">{snip.description}</span>
+                  <span className="font-semibold text-amber-700 dark:text-amber-300">{snip.title}</span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1">{snip.description}</span>
                 </button>
               ))}
             </div>
@@ -396,12 +396,12 @@ export const DaxQueryView: React.FC = () => {
           {/* UDF Library */}
           <button
             onClick={() => setIsUdfModalOpen(true)}
-            className="px-3 py-1.5 border border-slate-800 hover:bg-slate-800 text-slate-300 text-xs font-medium rounded-lg flex items-center gap-1.5"
+            className="px-3 py-1.5 border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-medium rounded-lg flex items-center gap-1.5 cursor-pointer"
             title="Biblioteca de Funções do Usuário (UDF)"
           >
-            <Code className="w-3.5 h-3.5 text-indigo-400" />
+            <Code className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
             <span>Biblioteca UDF</span>
-            <span className="text-[10px] px-1.5 rounded-full bg-slate-800 text-indigo-300 border border-indigo-500/30">
+            <span className="text-[10px] px-1.5 rounded-full bg-indigo-50 dark:bg-slate-800 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30">
               {userDefinedFunctions.length}
             </span>
           </button>
@@ -409,27 +409,27 @@ export const DaxQueryView: React.FC = () => {
           {/* Dependency Graph */}
           <button
             onClick={() => setIsGraphModalOpen(true)}
-            className="px-3 py-1.5 border border-slate-800 hover:bg-slate-800 text-slate-300 text-xs font-medium rounded-lg flex items-center gap-1.5"
+            className="px-3 py-1.5 border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-medium rounded-lg flex items-center gap-1.5 cursor-pointer"
             title="Gráfico de Dependências do Modelo"
           >
-            <Network className="w-3.5 h-3.5 text-teal-400" />
+            <Network className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
             <span>Dependências</span>
           </button>
 
           {/* Import Script (Power BI / DAX Studio) */}
           <button
             onClick={() => setIsImportModalOpen(true)}
-            className="px-3 py-1.5 border border-slate-800 hover:bg-slate-800 text-slate-300 text-xs font-medium rounded-lg flex items-center gap-1.5"
+            className="px-3 py-1.5 border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-medium rounded-lg flex items-center gap-1.5 cursor-pointer"
             title="Importar Medidas do Power BI Desktop ou DAX Studio"
           >
-            <Upload className="w-3.5 h-3.5 text-amber-400" />
+            <Upload className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
             <span>Importar Script</span>
           </button>
 
           {/* AI Assistant */}
           <button
             onClick={() => setIsAiModalOpen(true)}
-            className="px-3.5 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 shadow-md"
+            className="px-3.5 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 shadow-md cursor-pointer"
             title="Assistente IA DAX (Gemini)"
           >
             <Sparkles className="w-3.5 h-3.5 text-amber-300" />
@@ -439,7 +439,7 @@ export const DaxQueryView: React.FC = () => {
       </div>
 
       {/* Query Tabs Bar */}
-      <div className="h-9 bg-slate-950 border-b border-slate-800/80 flex items-center px-2 gap-1 overflow-x-auto shrink-0 select-none">
+      <div className="h-9 bg-slate-100 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800/80 flex items-center px-2 gap-1 overflow-x-auto shrink-0 select-none">
         {daxQueries.map(tab => {
           const isActive = tab.id === activeTab?.id;
           return (
@@ -448,8 +448,8 @@ export const DaxQueryView: React.FC = () => {
               onClick={() => setActiveDaxQueryTabId(tab.id)}
               className={`h-7 px-3 rounded-t-md flex items-center gap-2 cursor-pointer text-xs font-medium transition-all ${
                 isActive
-                  ? 'bg-slate-900 text-amber-400 border-t-2 border-amber-400 shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
+                  ? 'bg-white dark:bg-slate-900 text-amber-700 dark:text-amber-400 border-t-2 border-amber-500 dark:border-amber-400 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-900/40'
               }`}
             >
               <span>{tab.title}</span>
@@ -459,7 +459,7 @@ export const DaxQueryView: React.FC = () => {
                     e.stopPropagation();
                     closeDaxQueryTab(tab.id);
                   }}
-                  className="w-4 h-4 rounded flex items-center justify-center hover:bg-slate-800 text-slate-500 hover:text-slate-300"
+                  className="w-4 h-4 rounded flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
                 >
                   <X className="w-3 h-3" />
                 </button>
@@ -470,7 +470,7 @@ export const DaxQueryView: React.FC = () => {
 
         <button
           onClick={() => addDaxQueryTab()}
-          className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 rounded text-xs ml-1"
+          className="w-7 h-7 flex items-center justify-center text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-xs ml-1 cursor-pointer"
           title="Nova Consulta DAX"
         >
           <Plus className="w-4 h-4" />
@@ -480,10 +480,10 @@ export const DaxQueryView: React.FC = () => {
       {/* Main Stage: Editor (Top) and Results (Bottom) */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Editor Area */}
-        <div className="h-1/2 flex flex-col border-b border-slate-800 bg-slate-900 relative">
+        <div className="h-1/2 flex flex-col border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 relative">
           <div className="flex-1 flex overflow-hidden">
             {/* Line Numbers */}
-            <div className="w-12 bg-slate-950 border-r border-slate-800/80 py-3 text-right pr-2 text-slate-600 font-mono text-xs select-none">
+            <div className="w-12 bg-slate-100 dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800/80 py-3 text-right pr-2 text-slate-400 dark:text-slate-600 font-mono text-xs select-none">
               {Array.from({ length: Math.max(1, lineCount) }).map((_, i) => (
                 <div key={i} className="leading-6">
                   {i + 1}
@@ -502,20 +502,20 @@ export const DaxQueryView: React.FC = () => {
                 setSignatureHelp(getSignatureHelpAtOffset(activeTab?.query || '', offset));
               }}
               placeholder="Digite sua consulta DAX (ex: EVALUATE SUMMARIZECOLUMNS('d_Calendario'[Ano], [Faturamento Total]))"
-              className="flex-1 p-3 bg-slate-900 text-slate-100 font-mono text-xs leading-6 outline-none resize-none selection:bg-indigo-600/40"
+              className="flex-1 p-3 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono text-xs leading-6 outline-none resize-none selection:bg-amber-200 dark:selection:bg-indigo-600/40"
               spellCheck={false}
             />
           </div>
 
           {/* Signature Help Banner */}
           {signatureHelp && signatureHelp.functionName && (
-            <div className="absolute bottom-2 left-16 right-4 bg-slate-800/95 backdrop-blur-md border border-slate-700 p-2.5 rounded-lg shadow-xl text-xs flex items-center justify-between z-20">
+            <div className="absolute bottom-2 left-16 right-4 bg-white/95 dark:bg-slate-800/95 backdrop-blur-md border border-slate-300 dark:border-slate-700 p-2.5 rounded-lg shadow-xl text-xs flex items-center justify-between z-20">
               <div className="flex items-center gap-2 overflow-hidden">
-                <span className="font-mono font-bold text-amber-300 shrink-0">
+                <span className="font-mono font-bold text-amber-700 dark:text-amber-300 shrink-0">
                   {signatureHelp.syntax || `${signatureHelp.functionName}(...)`}
                 </span>
                 {signatureHelp.description && (
-                  <span className="text-slate-400 truncate text-[11px] border-l border-slate-700 pl-2">
+                  <span className="text-slate-600 dark:text-slate-400 truncate text-[11px] border-l border-slate-200 dark:border-slate-700 pl-2">
                     {signatureHelp.description}
                   </span>
                 )}
@@ -525,7 +525,7 @@ export const DaxQueryView: React.FC = () => {
                   href={signatureHelp.daxGuideUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-amber-400 hover:text-amber-300 font-medium text-[11px] flex items-center gap-1 shrink-0 ml-3"
+                  className="text-amber-700 dark:text-amber-400 hover:text-amber-600 dark:hover:text-amber-300 font-medium text-[11px] flex items-center gap-1 shrink-0 ml-3"
                 >
                   Documentação dax.guide <ExternalLink className="w-3 h-3" />
                 </a>
@@ -535,51 +535,51 @@ export const DaxQueryView: React.FC = () => {
         </div>
 
         {/* Results Area (Bottom Half) */}
-        <div className="h-1/2 flex flex-col bg-slate-950 overflow-hidden">
+        <div className="h-1/2 flex flex-col bg-slate-50 dark:bg-slate-950 overflow-hidden">
           {/* Subtabs Header */}
-          <div className="h-9 border-b border-slate-800 bg-slate-900/50 px-4 flex items-center justify-between shrink-0 select-none">
+          <div className="h-9 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50 px-4 flex items-center justify-between shrink-0 select-none">
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setActiveBottomTab('results')}
-                className={`px-3 py-1 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-all ${
+                className={`px-3 py-1 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-all cursor-pointer ${
                   activeBottomTab === 'results'
-                    ? 'bg-slate-800 text-amber-400'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-amber-100 dark:bg-slate-800 text-amber-800 dark:text-amber-400'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
                 <span>Resultados</span>
                 {queryResult && (
-                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-700 text-slate-300">
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
                     {queryResult.results.length}
                   </span>
                 )}
               </button>
               <button
                 onClick={() => setActiveBottomTab('plan')}
-                className={`px-3 py-1 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-all ${
+                className={`px-3 py-1 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-all cursor-pointer ${
                   activeBottomTab === 'plan'
-                    ? 'bg-slate-800 text-amber-400'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-amber-100 dark:bg-slate-800 text-amber-800 dark:text-amber-400'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
                 <span>Plano de Execução</span>
                 {queryResult && (
-                  <span className="text-[10px] text-slate-400 font-mono">
+                  <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
                     ({queryResult.totalDurationMs} ms)
                   </span>
                 )}
               </button>
               <button
                 onClick={() => setActiveBottomTab('history')}
-                className={`px-3 py-1 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-all ${
+                className={`px-3 py-1 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-all cursor-pointer ${
                   activeBottomTab === 'history'
-                    ? 'bg-slate-800 text-amber-400'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-amber-100 dark:bg-slate-800 text-amber-800 dark:text-amber-400'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
                 <History className="w-3.5 h-3.5" />
                 <span>Histórico</span>
-                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-700 text-slate-300">
+                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
                   {history.length}
                 </span>
               </button>
@@ -596,10 +596,10 @@ export const DaxQueryView: React.FC = () => {
                       setActiveResultIndex(idx);
                       setCurrentPage(1);
                     }}
-                    className={`px-2 py-0.5 text-xs rounded font-medium ${
+                    className={`px-2 py-0.5 text-xs rounded font-medium cursor-pointer ${
                       activeResultIndex === idx
                         ? 'bg-indigo-600 text-white'
-                        : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                        : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                     }`}
                   >
                     Resultado {idx + 1}
@@ -614,44 +614,44 @@ export const DaxQueryView: React.FC = () => {
             {activeBottomTab === 'results' && (
               <>
                 {queryResult?.error ? (
-                  <div className="m-6 p-4 bg-rose-950/40 border border-rose-800/60 rounded-xl text-rose-300 text-xs flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                  <div className="m-6 p-4 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 rounded-xl text-rose-800 dark:text-rose-300 text-xs flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
                     <div>
-                      <h4 className="font-bold text-rose-200 mb-1">Erro na Execução da Consulta DAX</h4>
+                      <h4 className="font-bold text-rose-900 dark:text-rose-200 mb-1">Erro na Execução da Consulta DAX</h4>
                       <p className="font-mono leading-relaxed">{queryResult.error}</p>
                     </div>
                   </div>
                 ) : !activeTableResult || activeTableResult.rows.length === 0 ? (
                   <div className="flex-1 flex flex-col items-center justify-center text-slate-500 text-xs">
-                    <Database className="w-10 h-10 text-slate-700 mb-2" />
+                    <Database className="w-10 h-10 text-slate-300 dark:text-slate-700 mb-2" />
                     <span>Nenhum resultado gerado. Clique em "Executar" para rodar a consulta.</span>
                   </div>
                 ) : (
-                  <div className="flex-1 flex flex-col overflow-hidden">
+                  <div className="flex-1 flex flex-col overflow-hidden bg-white dark:bg-transparent">
                     {/* Paginated Grid */}
                     <div className="flex-1 overflow-auto">
                       <table className="w-full text-left text-xs border-collapse">
-                        <thead className="bg-slate-900 border-b border-slate-800 sticky top-0 z-10">
+                        <thead className="bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-10">
                           <tr>
-                            <th className="py-2 px-3 text-[11px] text-slate-500 font-mono w-12 border-r border-slate-800/60">
+                            <th className="py-2 px-3 text-[11px] text-slate-500 font-mono w-12 border-r border-slate-200 dark:border-slate-800/60">
                               #
                             </th>
                             {activeTableResult.columns.map((col: string) => (
                               <th
                                 key={col}
-                                className="py-2 px-3 text-slate-300 font-semibold font-mono text-xs border-r border-slate-800/60 truncate"
+                                className="py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold font-mono text-xs border-r border-slate-200 dark:border-slate-800/60 truncate"
                               >
                                 {col}
                               </th>
                             ))}
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-800/40">
+                        <tbody className="divide-y divide-slate-200 dark:divide-slate-800/40">
                           {paginatedRows.map((row: Record<string, any>, rIdx: number) => {
                             const globalIdx = (currentPage - 1) * pageSize + rIdx + 1;
                             return (
-                              <tr key={rIdx} className="hover:bg-slate-800/40 transition-colors">
-                                <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 border-r border-slate-800/60">
+                              <tr key={rIdx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                                <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 border-r border-slate-200 dark:border-slate-800/60">
                                   {globalIdx}
                                 </td>
                                 {activeTableResult.columns.map((col: string) => {
@@ -660,8 +660,8 @@ export const DaxQueryView: React.FC = () => {
                                   return (
                                     <td
                                       key={col}
-                                      className={`py-1.5 px-3 font-mono text-xs border-r border-slate-800/60 truncate ${
-                                        isNum ? 'text-right text-emerald-300' : 'text-slate-300'
+                                      className={`py-1.5 px-3 font-mono text-xs border-r border-slate-200 dark:border-slate-800/60 truncate ${
+                                        isNum ? 'text-right text-emerald-700 dark:text-emerald-300' : 'text-slate-800 dark:text-slate-300'
                                       }`}
                                     >
                                       {val === null || val === undefined
@@ -680,13 +680,13 @@ export const DaxQueryView: React.FC = () => {
                     </div>
 
                     {/* Pagination Bar */}
-                    <div className="h-10 border-t border-slate-800 bg-slate-900/60 px-4 flex items-center justify-between text-xs text-slate-400 select-none">
+                    <div className="h-10 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 px-4 flex items-center justify-between text-xs text-slate-600 dark:text-slate-400 select-none">
                       <div className="flex items-center gap-2">
                         <span>
                           Mostrando {(currentPage - 1) * pageSize + 1} a{' '}
                           {Math.min(currentPage * pageSize, totalRows)} de {totalRows} linhas
                         </span>
-                        <span className="text-slate-600">•</span>
+                        <span className="text-slate-400 dark:text-slate-600">•</span>
                         <span>Tempo: {queryResult?.totalDurationMs} ms</span>
                       </div>
 
@@ -699,7 +699,7 @@ export const DaxQueryView: React.FC = () => {
                               setPageSize(Number(e.target.value));
                               setCurrentPage(1);
                             }}
-                            className="bg-slate-800 border border-slate-700 text-slate-200 rounded px-2 py-0.5 text-xs outline-none"
+                            className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200 rounded px-2 py-0.5 text-xs outline-none"
                           >
                             <option value={10}>10</option>
                             <option value={25}>25</option>
@@ -712,7 +712,7 @@ export const DaxQueryView: React.FC = () => {
                           <button
                             onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                             disabled={currentPage <= 1}
-                            className="p-1 rounded hover:bg-slate-800 disabled:opacity-30"
+                            className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-30 cursor-pointer"
                           >
                             <ChevronLeft className="w-4 h-4" />
                           </button>
@@ -722,7 +722,7 @@ export const DaxQueryView: React.FC = () => {
                           <button
                             onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                             disabled={currentPage >= totalPages}
-                            className="p-1 rounded hover:bg-slate-800 disabled:opacity-30"
+                            className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-30 cursor-pointer"
                           >
                             <ChevronRight className="w-4 h-4" />
                           </button>
@@ -736,7 +736,7 @@ export const DaxQueryView: React.FC = () => {
 
             {activeBottomTab === 'plan' && (
               <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-3">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
                   Etapas do Plano de Execução DAX
                 </h4>
                 {!queryResult ? (
@@ -745,26 +745,26 @@ export const DaxQueryView: React.FC = () => {
                   queryResult.executionPlan.map((stage, idx) => (
                     <div
                       key={idx}
-                      className="p-3 bg-slate-900 border border-slate-800 rounded-lg flex items-center justify-between"
+                      className="p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg flex items-center justify-between"
                     >
                       <div className="flex items-center gap-3">
                         <div
                           className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
                             stage.status === 'success'
-                              ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/40'
-                              : 'bg-rose-950 text-rose-400 border border-rose-500/40'
+                              ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-500/40'
+                              : 'bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-400 border border-rose-300 dark:border-rose-500/40'
                           }`}
                         >
                           {idx + 1}
                         </div>
                         <div>
-                          <span className="font-semibold text-xs text-slate-200">{stage.name}</span>
+                          <span className="font-semibold text-xs text-slate-800 dark:text-slate-200">{stage.name}</span>
                           {stage.details && (
-                            <p className="text-[11px] text-slate-400 mt-0.5 font-mono">{stage.details}</p>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 font-mono">{stage.details}</p>
                           )}
                         </div>
                       </div>
-                      <span className="font-mono text-xs font-bold text-amber-400">{stage.durationMs} ms</span>
+                      <span className="font-mono text-xs font-bold text-amber-700 dark:text-amber-400">{stage.durationMs} ms</span>
                     </div>
                   ))
                 )}
@@ -773,7 +773,7 @@ export const DaxQueryView: React.FC = () => {
 
             {activeBottomTab === 'history' && (
               <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
                   Histórico de Consultas Executadas
                 </h4>
                 {history.length === 0 ? (
@@ -786,28 +786,28 @@ export const DaxQueryView: React.FC = () => {
                         if (activeTab) updateDaxQueryText(activeTab.id, item.query);
                         showToast('Consulta restaurada para o editor ativo.');
                       }}
-                      className="p-3 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-lg cursor-pointer transition-all flex items-center justify-between"
+                      className="p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 rounded-lg cursor-pointer transition-all flex items-center justify-between"
                     >
                       <div className="flex flex-col gap-1 overflow-hidden pr-4">
                         <div className="flex items-center gap-2">
                           <span
                             className={`w-2 h-2 rounded-full ${
-                              item.success ? 'bg-emerald-400' : 'bg-rose-400'
+                              item.success ? 'bg-emerald-500 dark:bg-emerald-400' : 'bg-rose-500 dark:bg-rose-400'
                             }`}
                           />
-                          <span className="text-xs font-mono text-slate-400">{item.timestamp}</span>
-                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 font-mono">
+                          <span className="text-xs font-mono text-slate-500 dark:text-slate-400">{item.timestamp}</span>
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-mono">
                             {item.durationMs} ms
                           </span>
                           <span className="text-[10px] text-slate-500">
                             {item.rowCount} linha(s)
                           </span>
                         </div>
-                        <p className="font-mono text-[11px] text-slate-300 truncate max-w-xl">
+                        <p className="font-mono text-[11px] text-slate-700 dark:text-slate-300 truncate max-w-xl">
                           {item.query.replace(/\n/g, ' ')}
                         </p>
                       </div>
-                      <span className="text-xs text-amber-400 shrink-0 font-medium">Restaurar →</span>
+                      <span className="text-xs text-amber-700 dark:text-amber-400 shrink-0 font-medium">Restaurar →</span>
                     </div>
                   ))
                 )}

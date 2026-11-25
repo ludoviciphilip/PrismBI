@@ -423,7 +423,8 @@ export const Ribbon: React.FC<{
             <select
               value={language}
               onChange={(e) => setLanguage(e.target.value as any)}
-              className="bg-transparent text-slate-200 text-[10px] font-medium focus:outline-none cursor-pointer pr-0.5"
+              style={{ colorScheme: 'dark' }}
+              className="!bg-slate-800 !text-slate-100 text-[10px] font-medium focus:outline-none cursor-pointer pr-5 rounded"
               aria-label={t.common.language}
             >
               <option value="pt-BR" className="bg-slate-900 text-white">🇧🇷 PT</option>
@@ -438,7 +439,8 @@ export const Ribbon: React.FC<{
             <select
               value={currency}
               onChange={(e) => setCurrency(e.target.value as any)}
-              className="bg-transparent text-slate-200 text-[10px] font-medium focus:outline-none cursor-pointer pr-0.5"
+              style={{ colorScheme: 'dark' }}
+              className="!bg-slate-800 !text-slate-100 text-[10px] font-medium focus:outline-none cursor-pointer pr-5 rounded"
               aria-label={t.common.currency}
             >
               <option value="BRL" className="bg-slate-900 text-white">R$ BRL</option>
@@ -459,7 +461,8 @@ export const Ribbon: React.FC<{
             <select
               value={themeMode}
               onChange={(e) => setThemeMode(e.target.value as any)}
-              className="bg-transparent text-slate-200 text-[10px] font-medium focus:outline-none cursor-pointer pr-0.5"
+              style={{ colorScheme: 'dark' }}
+              className="!bg-slate-800 !text-slate-100 text-[10px] font-medium focus:outline-none cursor-pointer pr-5 rounded"
               aria-label="Tema da Interface"
             >
               <option value="light" className="bg-slate-900 text-white">☀️ Claro</option>

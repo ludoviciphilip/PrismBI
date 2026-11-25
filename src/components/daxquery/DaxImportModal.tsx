@@ -192,7 +192,7 @@ MEASURE 'f_Vendas'[Meta Dinamica] = [Total Vendas] * 1.15`;
                   <select
                     value={delimiter}
                     onChange={e => setDelimiter(e.target.value as any)}
-                    className="bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-slate-200"
+                    className="bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded px-2 py-0.5 text-slate-800 dark:text-slate-200"
                   >
                     <option value=";">Ponto e vírgula (; / pt-BR)</option>
                     <option value=",">Vírgula (, / en-US)</option>

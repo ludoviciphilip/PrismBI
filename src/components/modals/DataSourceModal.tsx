@@ -1192,11 +1192,11 @@ export const DataSourceModal: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">SGBD / Banco de Dados</label>
+                  <label className="font-semibold text-slate-700 dark:text-slate-200 block mb-1">SGBD / Banco de Dados</label>
                   <select
                     value={dbType}
                     onChange={(e) => setDbType(e.target.value as any)}
-                    className="w-full border rounded p-1.5 bg-slate-50"
+                    className="w-full border border-slate-300 dark:border-slate-700 rounded p-1.5 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
                   >
                     <option value="sqlserver">Microsoft SQL Server</option>
                     <option value="postgres">PostgreSQL</option>
@@ -1206,11 +1206,11 @@ export const DataSourceModal: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Ambiente de Execução</label>
+                  <label className="font-semibold text-slate-700 dark:text-slate-200 block mb-1">Ambiente de Execução</label>
                   <select
                     value={dbEnv}
                     onChange={(e) => setDbEnv(e.target.value as any)}
-                    className="w-full border rounded p-1.5 bg-slate-50"
+                    className="w-full border border-slate-300 dark:border-slate-700 rounded p-1.5 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
                   >
                     <option value="dev">Desenvolvimento (DEV)</option>
                     <option value="test">Homologação (TEST)</option>
