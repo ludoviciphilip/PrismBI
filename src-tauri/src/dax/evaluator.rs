@@ -459,7 +459,7 @@ fn eval_call(
             if args.len() < 2 {
                 return Err("RANKX requer (tabela, expressão)".to_string());
             }
-            let (table_eval, row_indices, rank_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let (table_eval, row_indices, rank_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
             let table_data = table_eval.as_ref();
             // 3rd arg (value) is optional / can be an omitted placeholder (Expr::Blank);
             // when absent, the expression itself (2nd arg) supplies the value to rank.
@@ -549,21 +549,21 @@ fn eval_call(
             let Some(first) = args.first() else {
                 return Err("COUNTROWS requer expressão de tabela".to_string());
             };
-            let (_, indices, _) = eval_table_expr_owned(first, model, ctx, row_stack, vars)?;
+            let (_, indices, _) = eval_table_expr(first, model, ctx, row_stack, vars)?;
             Ok(DaxValue::Number(indices.len() as f64))
         }
         "ISEMPTY" => {
             let Some(first) = args.first() else {
                 return Ok(DaxValue::Boolean(true));
             };
-            let (_, indices, _) = eval_table_expr_owned(first, model, ctx, row_stack, vars)?;
+            let (_, indices, _) = eval_table_expr(first, model, ctx, row_stack, vars)?;
             Ok(DaxValue::Boolean(indices.is_empty()))
         }
         "CONTAINSROW" => {
             if args.len() < 2 {
                 return Err("CONTAINSROW requer (tabela, valor1, ...)".to_string());
             }
-            let (table_eval, row_indices, _) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let (table_eval, row_indices, _) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
             let table_data = table_eval.as_ref();
             let mut search_keys = Vec::with_capacity(args.len() - 1);
             for a in &args[1..] {
@@ -586,7 +586,7 @@ fn eval_call(
             if args.len() < 2 {
                 return Err(format!("{} requer (tabela, expressão)", fname));
             }
-            let (table_eval, row_indices, iter_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let (table_eval, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
             let table_data = table_eval.as_ref();
             let transition_scope = single_column_transition_scope(&args[0]);
             if fname == "COUNTAX" {
@@ -640,7 +640,7 @@ fn eval_call(
             if args.len() < 3 {
                 return Err(format!("{} requer (tabela, expressão, k)", fname));
             }
-            let (table_eval, row_indices, iter_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let (table_eval, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
             let table_data = table_eval.as_ref();
             let k = evaluate_ast(&args[2], model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.5);
             let mut vals = Vec::new();
@@ -662,7 +662,7 @@ fn eval_call(
             if args.len() < 2 {
                 return Err("CONCATENATEX requer (tabela, expressão, [delimitador])".to_string());
             }
-            let (table_eval, row_indices, iter_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let (table_eval, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
             let table_data = table_eval.as_ref();
             let delim = if args.len() >= 3 {
                 evaluate_ast(&args[2], model, ctx, row_stack, vars)?.as_display_string()
@@ -924,7 +924,7 @@ impl<'a> TableEval<'a> {
     }
 }
 
-fn eval_table_expr_owned<'a>(
+fn eval_table_expr<'a>(
     expr: &Expr,
     model: &'a DaxModel,
     ctx: &FilterContext,
@@ -977,8 +977,8 @@ fn eval_table_expr_owned<'a>(
             }
         }
         if matches!(upper.as_str(), "UNION" | "INTERSECT" | "EXCEPT") && args.len() >= 2 {
-            let (t1, i1, c1) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
-            let (t2, i2, _) = eval_table_expr_owned(&args[1], model, ctx, row_stack, vars)?;
+            let (t1, i1, c1) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+            let (t2, i2, _) = eval_table_expr(&args[1], model, ctx, row_stack, vars)?;
             let t1 = t1.as_ref();
             let t2 = t2.as_ref();
             let row_key = |t: &DaxTableData, idx: usize| -> String {
@@ -1007,8 +1007,10 @@ fn eval_table_expr_owned<'a>(
                 }
             };
             let n = rows.len();
+            // The result keeps the first table's columns, name and therefore lineage, so
+            // `T[c]` references and context transition keep working on it when nested.
             let synth = DaxTableData {
-                name: format!("{}_{}", upper, t1.name),
+                name: t1.name.clone(),
                 columns: t1.columns.clone(),
                 col_index: t1.col_index.clone(),
                 rows,
@@ -1016,8 +1018,8 @@ fn eval_table_expr_owned<'a>(
             return Ok((TableEval::Owned(synth), (0..n).collect(), c1));
         }
         if upper == "CROSSJOIN" && args.len() >= 2 {
-            let (t1, i1, c1) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
-            let (t2, i2, _) = eval_table_expr_owned(&args[1], model, ctx, row_stack, vars)?;
+            let (t1, i1, c1) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+            let (t2, i2, _) = eval_table_expr(&args[1], model, ctx, row_stack, vars)?;
             let t1 = t1.as_ref();
             let t2 = t2.as_ref();
             // Columns keep their lineage as `Table[Column]` (already-qualified ones as-is).
@@ -1091,8 +1093,7 @@ fn eval_table_expr_owned<'a>(
             return Ok((TableEval::Owned(tbl), indices, ctx.clone()));
         }
     }
-    let (tbl, indices, base_ctx) = eval_table_expr(expr, model, ctx, row_stack, vars)?;
-    Ok((TableEval::Borrowed(tbl), indices, base_ctx))
+    eval_base_table_expr(expr, model, ctx, row_stack, vars)
 }
 
 /// Builds an in-memory (synthetic) table, indexing column names case-insensitively.
@@ -1182,7 +1183,7 @@ fn eval_summarize<'a>(
     row_stack: &[RowContext<'_>],
     vars: &HashMap<String, DaxValue>,
 ) -> Result<(TableEval<'a>, Vec<usize>, FilterContext), String> {
-    let (base, base_indices, base_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+    let (base, base_indices, base_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
     let base_t = base.as_ref();
     let mut group_cols: Vec<(String, String)> = Vec::new();
     let mut pos = 1;
@@ -1259,7 +1260,7 @@ fn eval_add_select_columns<'a>(
     vars: &HashMap<String, DaxValue>,
 ) -> Result<(TableEval<'a>, Vec<usize>, FilterContext), String> {
     let fname = if keep_base { "ADDCOLUMNS" } else { "SELECTCOLUMNS" };
-    let (base, base_indices, base_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+    let (base, base_indices, base_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
     let base_t = base.as_ref();
     let extensions = parse_name_expr_pairs(fname, &args[1..])?;
 
@@ -1286,29 +1287,34 @@ fn eval_add_select_columns<'a>(
     Ok((TableEval::Owned(synth_table(name, columns, rows)), (0..n).collect(), base_ctx))
 }
 
-fn eval_table_expr<'a>(
+/// Physical tables and the row-filtering table functions (FILTER/TOPN/CALCULATETABLE/
+/// RELATEDTABLE). Physical tables are borrowed from the model; FILTER/TOPN keep whatever
+/// table their input evaluated to (borrowed or synthetic) and only narrow its row indices,
+/// so they compose with every other table expression.
+fn eval_base_table_expr<'a>(
     expr: &Expr,
     model: &'a DaxModel,
     ctx: &FilterContext,
     row_stack: &[RowContext<'_>],
     vars: &HashMap<String, DaxValue>,
-) -> Result<(&'a DaxTableData, Vec<usize>, FilterContext), String> {
+) -> Result<(TableEval<'a>, Vec<usize>, FilterContext), String> {
+    let model_table = |tname: &str| {
+        model
+            .get_table(tname)
+            .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))
+    };
     match expr {
         Expr::Ident(tname) => {
-            let tbl = model
-                .get_table(tname)
-                .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
+            let tbl = model_table(tname)?;
             let indices = model.get_visible_row_indices(tname, ctx);
-            Ok((tbl, indices, ctx.clone()))
+            Ok((TableEval::Borrowed(tbl), indices, ctx.clone()))
         }
         Expr::Call { name, args } if name.eq_ignore_ascii_case("RELATEDTABLE") => {
             let tname = extract_table_name(args.first())?;
-            let tbl = model
-                .get_table(&tname)
-                .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
+            let tbl = model_table(&tname)?;
             let Some(rc) = row_stack.last() else {
                 let indices = model.get_visible_row_indices(&tname, ctx);
-                return Ok((tbl, indices, ctx.clone()));
+                return Ok((TableEval::Borrowed(tbl), indices, ctx.clone()));
             };
             // Find the active relationship where the current row's table is the "one"
             // side (rel.to_table) and the target is the "many" side (rel.from_table).
@@ -1332,7 +1338,7 @@ fn eval_table_expr<'a>(
             } else {
                 Vec::new()
             };
-            Ok((tbl, indices, ctx.clone()))
+            Ok((TableEval::Borrowed(tbl), indices, ctx.clone()))
         }
         Expr::Call { name, args } if name.eq_ignore_ascii_case("CALCULATETABLE") => {
             if args.is_empty() {
@@ -1348,72 +1354,25 @@ fn eval_table_expr<'a>(
             }
             eval_table_expr(&args[0], model, &next_ctx, &[], vars)
         }
+        // ALL/VALUES/DISTINCT over a single column are materialized in `eval_table_expr`;
+        // here only the whole-table forms remain.
         Expr::Call { name, args } if name.eq_ignore_ascii_case("ALL") || name.eq_ignore_ascii_case("ALLSELECTED") => {
-            match args.first() {
-                Some(Expr::TableColRef { table, column }) => {
-                    let tbl = model
-                        .get_table(table)
-                        .ok_or_else(|| format!("Tabela '{}' não encontrada", table))?;
-                    let cidx = tbl
-                        .get_col_idx(column)
-                        .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", table, column))?;
-                    let mut cleared_ctx = ctx.clone();
-                    cleared_ctx.clear_column(&tbl.name, column);
-                    let mut seen = HashSet::new();
-                    let mut rep_indices = Vec::new();
-                    for (r_idx, row) in tbl.rows.iter().enumerate() {
-                        let k = row[cidx].canonical_key();
-                        if seen.insert(k) {
-                            rep_indices.push(r_idx);
-                        }
-                    }
-                    Ok((tbl, rep_indices, cleared_ctx))
-                }
-                _ => {
-                    let tname = extract_table_name(args.first())?;
-                    let tbl = model
-                        .get_table(&tname)
-                        .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
-                    let mut cleared_ctx = ctx.clone();
-                    cleared_ctx.clear_table(&tbl.name);
-                    for rel in &model.relationships {
-                        if rel.is_active && rel.from_table.eq_ignore_ascii_case(&tbl.name) {
-                            cleared_ctx.clear_table(&rel.to_table);
-                        }
-                    }
-                    Ok((tbl, (0..tbl.rows.len()).collect(), cleared_ctx))
+            let tname = extract_table_name(args.first())?;
+            let tbl = model_table(&tname)?;
+            let mut cleared_ctx = ctx.clone();
+            cleared_ctx.clear_table(&tbl.name);
+            for rel in &model.relationships {
+                if rel.is_active && rel.from_table.eq_ignore_ascii_case(&tbl.name) {
+                    cleared_ctx.clear_table(&rel.to_table);
                 }
             }
+            Ok((TableEval::Borrowed(tbl), (0..tbl.rows.len()).collect(), cleared_ctx))
         }
         Expr::Call { name, args } if name.eq_ignore_ascii_case("VALUES") || name.eq_ignore_ascii_case("DISTINCT") => {
-            match args.first() {
-                Some(Expr::TableColRef { table, column }) => {
-                    let tbl = model
-                        .get_table(table)
-                        .ok_or_else(|| format!("Tabela '{}' não encontrada", table))?;
-                    let cidx = tbl
-                        .get_col_idx(column)
-                        .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", table, column))?;
-                    let visible = model.get_visible_row_indices(table, ctx);
-                    let mut seen = HashSet::new();
-                    let mut rep_indices = Vec::new();
-                    for r_idx in visible {
-                        let k = tbl.rows[r_idx][cidx].canonical_key();
-                        if seen.insert(k) {
-                            rep_indices.push(r_idx);
-                        }
-                    }
-                    Ok((tbl, rep_indices, ctx.clone()))
-                }
-                _ => {
-                    let tname = extract_table_name(args.first())?;
-                    let tbl = model
-                        .get_table(&tname)
-                        .ok_or_else(|| format!("Tabela '{}' não encontrada", tname))?;
-                    let indices = model.get_visible_row_indices(&tname, ctx);
-                    Ok((tbl, indices, ctx.clone()))
-                }
-            }
+            let tname = extract_table_name(args.first())?;
+            let tbl = model_table(&tname)?;
+            let indices = model.get_visible_row_indices(&tname, ctx);
+            Ok((TableEval::Borrowed(tbl), indices, ctx.clone()))
         }
         Expr::Call { name, args } if name.eq_ignore_ascii_case("TOPN") => {
             if args.len() < 2 {
@@ -1428,40 +1387,34 @@ fn eval_table_expr<'a>(
                 return Ok((tbl, Vec::new(), base_ctx));
             }
             let ascending = args.get(3).is_some_and(|e| matches!(e, Expr::Ident(s) if s.eq_ignore_ascii_case("ASC")));
-            if let Some(ord_expr) = args.get(2) {
-                let mut scored: Vec<(usize, DaxValue)> = Vec::with_capacity(indices.len());
-                for r_idx in indices {
-                    let mut next_stack = row_stack.to_vec();
-                    next_stack.push(RowContext { table: tbl, row_idx: r_idx });
-                    let val = evaluate_ast(ord_expr, model, &base_ctx, &next_stack, vars)?;
-                    scored.push((r_idx, val));
-                }
-                scored.sort_by(|a, b| {
-                    let ord = compare_dax_values(&a.1, &b.1);
-                    let ord = match ord {
-                        o if o < 0 => std::cmp::Ordering::Less,
-                        o if o > 0 => std::cmp::Ordering::Greater,
-                        _ => std::cmp::Ordering::Equal,
-                    };
-                    if ascending { ord } else { ord.reverse() }
-                });
-                // TOPN includes ties at the N-th boundary value, so the result can have
-                // more than N rows (per the official TOPN semantics).
-                let kept: Vec<usize> = if scored.len() > top_n {
-                    let boundary = scored[top_n - 1].1.clone();
-                    scored
-                        .into_iter()
-                        .enumerate()
-                        .filter(|(i, (_, v))| *i < top_n || v.dax_equals(&boundary))
-                        .map(|(_, (idx, _))| idx)
-                        .collect()
-                } else {
-                    scored.into_iter().map(|(i, _)| i).collect()
-                };
-                Ok((tbl, kept, base_ctx))
-            } else {
-                Ok((tbl, indices.into_iter().take(top_n).collect(), base_ctx))
+            let Some(ord_expr) = args.get(2) else {
+                return Ok((tbl, indices.into_iter().take(top_n).collect(), base_ctx));
+            };
+            let mut scored: Vec<(usize, DaxValue)> = Vec::with_capacity(indices.len());
+            for r_idx in indices {
+                let mut next_stack = row_stack.to_vec();
+                next_stack.push(RowContext { table: tbl.as_ref(), row_idx: r_idx });
+                let val = evaluate_ast(ord_expr, model, &base_ctx, &next_stack, vars)?;
+                scored.push((r_idx, val));
             }
+            scored.sort_by(|a, b| {
+                let ord = compare_dax_values(&a.1, &b.1).cmp(&0);
+                if ascending { ord } else { ord.reverse() }
+            });
+            // TOPN includes ties at the N-th boundary value, so the result can have
+            // more than N rows (per the official TOPN semantics).
+            let kept: Vec<usize> = if scored.len() > top_n {
+                let boundary = scored[top_n - 1].1.clone();
+                scored
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(i, (_, v))| *i < top_n || v.dax_equals(&boundary))
+                    .map(|(_, (idx, _))| idx)
+                    .collect()
+            } else {
+                scored.into_iter().map(|(i, _)| i).collect()
+            };
+            Ok((tbl, kept, base_ctx))
         }
         Expr::Call { name, args } if name.eq_ignore_ascii_case("FILTER") => {
             if args.len() < 2 {
@@ -1471,7 +1424,7 @@ fn eval_table_expr<'a>(
             let mut kept = Vec::new();
             for r_idx in indices {
                 let mut next_stack = row_stack.to_vec();
-                next_stack.push(RowContext { table: tbl, row_idx: r_idx });
+                next_stack.push(RowContext { table: tbl.as_ref(), row_idx: r_idx });
                 let cond = evaluate_ast(&args[1], model, &base_ctx, &next_stack, vars)?;
                 if cond.as_bool() {
                     kept.push(r_idx);
@@ -1739,7 +1692,7 @@ fn apply_calculate_modifier(
                 "TREATAS" => {
                     if args.len() >= 2 {
                         let (src_tbl, src_indices, _) =
-                            eval_table_expr_owned(&args[0], model, outer_ctx, row_stack, vars)?;
+                            eval_table_expr(&args[0], model, outer_ctx, row_stack, vars)?;
                         let src_data = src_tbl.as_ref();
                         for (col_pos, col_expr) in args[1..].iter().enumerate() {
                             if let Expr::TableColRef { table, column } = col_expr {
@@ -1759,13 +1712,25 @@ fn apply_calculate_modifier(
                 }
                 "FILTER" => {
                     if args.len() >= 2 {
-                        let (tbl, kept_indices, _) = eval_table_expr(expr, model, outer_ctx, row_stack, vars)?;
-                        if let Some(first_col) = tbl.columns.first() {
-                            let allowed: HashSet<String> = kept_indices
-                                .iter()
-                                .map(|&i| tbl.rows[i][0].canonical_key())
-                                .collect();
-                            next_ctx.set_column_filter(&tbl.name, first_col, allowed);
+                        let (tbl_eval, kept_indices, _) = eval_table_expr(expr, model, outer_ctx, row_stack, vars)?;
+                        let tbl = tbl_eval.as_ref();
+                        // A physical table is filtered through its first (key) column; a
+                        // synthetic table (e.g. FILTER(VALUES(T[c]), ...), FILTER(SUMMARIZE(..)))
+                        // filters every column that has model lineage.
+                        let filter_cols: Vec<(usize, String, String)> = match &tbl_eval {
+                            TableEval::Borrowed(_) => tbl
+                                .columns
+                                .first()
+                                .map(|c| vec![(0, tbl.name.clone(), c.clone())])
+                                .unwrap_or_default(),
+                            TableEval::Owned(_) => (0..tbl.columns.len())
+                                .filter_map(|i| column_lineage(model, tbl, i).map(|(t, c)| (i, t, c)))
+                                .collect(),
+                        };
+                        for (cidx, t, c) in filter_cols {
+                            let allowed: HashSet<String> =
+                                kept_indices.iter().map(|&i| tbl.rows[i][cidx].canonical_key()).collect();
+                            next_ctx.set_column_filter(&t, &c, allowed);
                         }
                     }
                     return Ok(());
@@ -3257,6 +3222,43 @@ mod tests {
         // Malformed extension pairs are errors, not panics.
         assert!(model.evaluate_dax("COUNTROWS(ADDCOLUMNS(p, \"X\"))", &FilterContext::default()).is_err());
         assert!(model.evaluate_dax("COUNTROWS(SUMMARIZE(f, p[Nope]))", &FilterContext::default()).is_err());
+    }
+
+    #[test]
+    fn test_filter_topn_compose_with_synthetic_tables() {
+        let model = table_fns_model();
+        // FILTER(VALUES(col)) yields the one-column synthetic table set operations compare against.
+        assert_eq!(
+            eval_num(&model, "COUNTROWS(EXCEPT(VALUES(p[Cat]), FILTER(VALUES(p[Cat]), p[Cat] = \"A\")))"),
+            1.0
+        );
+        assert_eq!(
+            eval_num(&model, "COUNTROWS(INTERSECT(VALUES(p[Cat]), FILTER(ALL(p[Cat]), p[Cat] <> \"A\")))"),
+            1.0
+        );
+        // FILTER / TOPN over ADDCOLUMNS / SUMMARIZE / UNION.
+        assert_eq!(
+            eval_num(&model, "COUNTROWS(FILTER(ADDCOLUMNS(VALUES(p[Cat]), \"T\", [Total]), [T] > 35))"),
+            1.0
+        );
+        assert_eq!(
+            eval_num(&model, "MAXX(TOPN(1, SUMMARIZE(f, p[Cat], \"V\", [Total]), [V], ASC), [V])"),
+            35.0
+        );
+        assert_eq!(
+            eval_num(&model, "COUNTROWS(FILTER(UNION(VALUES(p[Cat]), VALUES(p[Cat])), p[Cat] = \"B\"))"),
+            2.0
+        );
+        assert_eq!(eval_num(&model, "COUNTROWS(TOPN(2, FILTER(p, p[Preco] > 1), p[Preco]))"), 2.0);
+        // Synthetic FILTER as a CALCULATE modifier filters through the column lineage
+        // (category B -> product 3 -> 40), physical FILTER through the key column.
+        assert_eq!(eval_num(&model, "CALCULATE([Total], FILTER(VALUES(p[Cat]), p[Cat] = \"B\"))"), 40.0);
+        assert_eq!(eval_num(&model, "CALCULATE([Total], FILTER(p, p[Preco] >= 2))"), 55.0);
+        // CALCULATETABLE over a synthetic table.
+        assert_eq!(
+            eval_num(&model, "COUNTROWS(CALCULATETABLE(SUMMARIZE(f, p[Cat]), p[Cat] = \"A\"))"),
+            1.0
+        );
     }
 
     #[test]
