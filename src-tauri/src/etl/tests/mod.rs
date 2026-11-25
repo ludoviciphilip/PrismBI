@@ -6,6 +6,7 @@
 
 mod contract;
 mod fixtures;
+mod repro_refresh;
 mod rhino;
 mod roundtrip;
 mod security;
