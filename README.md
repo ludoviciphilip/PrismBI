@@ -8,7 +8,7 @@
 
 🇺🇸 **English** • 🇧🇷 [Ler em Português](./README.pt-BR.md)
 
-[![Version](https://img.shields.io/badge/version-0.8.1-f59e0b?style=flat-square)](./package.json)
+[![Version](https://img.shields.io/badge/version-0.8.2-f59e0b?style=flat-square)](./package.json)
 [![CI](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml)
 [![Release](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
@@ -139,6 +139,8 @@ GDK_BACKEND=x11 pnpm tauri dev
 # or:
 WEBKIT_DISABLE_DMABUF_RENDERER=1 pnpm tauri dev
 ```
+
+**AppImage and system WebKitGTK:** the AppImage automatically uses the system `webkit2gtk-4.1` when it is compatible (much smoother canvas than the older bundled one). Force the bundled engine with `PRISMBI_USE_BUNDLED_WEBKIT=1 ./PrismBI.AppImage`. On Arch, prefer the AUR package `prismbi-bin`, which always uses the system WebKitGTK.
 
 ---
 

@@ -51,6 +51,19 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: 1
         run: pnpm tauri build --bundles appimage,deb,rpm
 
+      # O WebKitGTK embutido (Ubuntu 22.04) é antigo e deixa o canvas lento em
+      # distros atuais: o hook faz o AppImage usar o webkit2gtk-4.1 do sistema
+      # quando compatível (fallback automático para o embutido).
+      - name: Post-process AppImage (system WebKitGTK hook)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool" https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          for f in src-tauri/target/release/bundle/appimage/*.AppImage; do
+            APPIMAGE_EXTRACT_AND_RUN=1 scripts/appimage-postprocess.sh "$f" "$RUNNER_TEMP/appimagetool"
+            # Sanidade: o hook precisa estar dentro do AppImage final.
+            (cd "$RUNNER_TEMP" && rm -rf squashfs-root && APPIMAGE_EXTRACT_AND_RUN=1 "$GITHUB_WORKSPACE/$f" --appimage-extract AppRun >/dev/null && grep -q 00-prismbi-system-webkit.sh squashfs-root/AppRun)
+          done
+
       - name: Collect release artifacts & generate SHA256SUMS.txt
         run: |
           mkdir -p release-assets
