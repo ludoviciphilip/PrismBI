@@ -5,6 +5,8 @@ pub mod functions;
 pub mod lexer;
 pub mod parser;
 pub mod query_planner;
+#[cfg(test)]
+mod tests_duckdb_sync;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
