@@ -141,4 +141,29 @@ export interface Translations {
     emptyPageSubtitle: string;
     canvasSize: string;
   };
+  connectors: {
+    tabLabel: string;
+    nativeBadge: string;
+    securityNotice: string;
+    connect: string;
+    connecting: string;
+    disconnect: string;
+    connected: string;
+    browseTab: string;
+    sqlTab: string;
+    schemas: string;
+    tables: string;
+    targetTableName: string;
+    runPreview: string;
+    loadIntoModel: string;
+    host: string;
+    port: string;
+    database: string;
+    user: string;
+    password: string;
+    filePath: string;
+    parquetUrl: string;
+    selectTableOrWriteSql: string;
+    importSuccess: string;
+  };
 }
