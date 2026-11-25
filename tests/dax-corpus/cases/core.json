@@ -1,0 +1,62 @@
+{
+  "model": "vendas",
+  "category": "core",
+  "description": "Agregações, contexto de filtro, CALCULATE, relacionamentos, iteradores e uma amostra de inteligência de tempo. Valores esperados conferidos por um oráculo independente em Python sobre models/vendas.json.",
+  "cases": [
+    { "id": "core.sum.all", "expr": "SUM(f_Vendas[Valor])", "expected": 1135 },
+    { "id": "core.countrows.all", "expr": "COUNTROWS(f_Vendas)", "expected": 12 },
+    { "id": "core.average.all", "expr": "AVERAGE(f_Vendas[Valor])", "expected": 94.58333333333333 },
+    { "id": "core.min.all", "expr": "MIN(f_Vendas[Valor])", "expected": 20 },
+    { "id": "core.max.all", "expr": "MAX(f_Vendas[Valor])", "expected": 300 },
+    { "id": "core.measure.ref", "expr": "[Ticket Medio]", "expected": 94.58333333333333 },
+    { "id": "core.count.ignores_blank", "expr": "COUNT(f_Vendas[Desconto])", "expected": 5, "notes": "0 conta; BLANK não." },
+    { "id": "core.countblank", "expr": "COUNTBLANK(f_Vendas[Desconto])", "expected": 7 },
+    { "id": "core.sum.with_blanks", "expr": "SUM(f_Vendas[Desconto])", "expected": 37 },
+    { "id": "core.average.ignores_blank", "expr": "AVERAGE(f_Vendas[Desconto])", "expected": 7.4 },
+    { "id": "core.distinctcount", "expr": "DISTINCTCOUNT(f_Vendas[ProdutoID])", "expected": 4 },
+
+    { "id": "core.filter.dim_category", "expr": "[Total Vendas]", "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Papelaria"] }], "expected": 215 },
+    { "id": "core.filter.dim_city", "expr": "[Total Vendas]", "filters": [{ "table": "d_Cliente", "column": "Cidade", "values": ["Curitiba"] }], "expected": 921 },
+    { "id": "core.filter.calendar_year", "expr": "[Total Vendas]", "filters": [{ "table": "d_Calendario", "column": "Ano", "values": [2024] }], "expected": 561 },
+    { "id": "core.filter.multi_values", "expr": "[Total Vendas]", "filters": [{ "table": "d_Produto", "column": "Produto", "values": ["Caneta", "Mouse"] }], "expected": 415 },
+    { "id": "core.filter.distinctcount_city", "expr": "DISTINCTCOUNT(f_Vendas[ProdutoID])", "filters": [{ "table": "d_Cliente", "column": "Cidade", "values": ["Londrina"] }], "expected": 3 },
+    { "id": "core.filter.no_rows_is_blank", "expr": "CALCULATE([Total Vendas], d_Cliente[Cidade] = \"Maringa\")", "expected": null },
+    { "id": "core.isblank.no_rows", "expr": "ISBLANK(CALCULATE([Total Vendas], d_Cliente[Cidade] = \"Maringa\"))", "expected": true },
+
+    { "id": "core.calculate.simple_predicate", "expr": "CALCULATE([Total Vendas], d_Produto[Categoria] = \"Informatica\")", "expected": 920 },
+    { "id": "core.calculate.replaces_filter", "expr": "CALCULATE([Total Vendas], d_Produto[Categoria] = \"Informatica\")", "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Papelaria"] }], "expected": 920, "notes": "Filtro do CALCULATE substitui o filtro externo na mesma coluna." },
+    { "id": "core.calculate.all_table", "expr": "CALCULATE([Total Vendas], ALL(d_Produto))", "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Papelaria"] }], "expected": 1135 },
+    { "id": "core.calculate.removefilters_column", "expr": "CALCULATE([Total Vendas], REMOVEFILTERS(d_Produto[Categoria]))", "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Papelaria"] }], "expected": 1135 },
+    { "id": "core.calculate.share_of_total", "expr": "DIVIDE([Total Vendas], CALCULATE([Total Vendas], ALL(d_Produto)))", "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Papelaria"] }], "expected": 0.1894273127753304 },
+    { "id": "core.calculate.fact_column_predicate", "expr": "CALCULATE([Total Vendas], f_Vendas[Qtd] > 2)", "expected": 191 },
+    { "id": "core.calculate.filter_all_dim", "expr": "CALCULATE([Total Vendas], FILTER(ALL(d_Produto), d_Produto[Preco] >= 80))", "expected": 920 },
+    { "id": "core.calculate.distinct_clients_category", "expr": "CALCULATE(DISTINCTCOUNT(f_Vendas[ClienteID]), d_Produto[Categoria] = \"Papelaria\")", "expected": 2 },
+
+    { "id": "core.iter.sumx_related", "expr": "SUMX(f_Vendas, f_Vendas[Qtd] * RELATED(d_Produto[Preco]))", "expected": 1135 },
+    { "id": "core.iter.countrows_filter", "expr": "COUNTROWS(FILTER(f_Vendas, f_Vendas[Valor] > 100))", "expected": 4 },
+    { "id": "core.iter.sumx_context_transition", "expr": "SUMX(VALUES(d_Cliente[Cliente]), [Total Vendas])", "expected": 1135 },
+    { "id": "core.iter.maxx_context_transition", "expr": "MAXX(VALUES(d_Cliente[Cliente]), [Total Vendas])", "expected": 540 },
+    { "id": "core.iter.averagex_context_transition", "expr": "AVERAGEX(VALUES(d_Cliente[Cliente]), [Total Vendas])", "expected": 378.3333333333333 },
+    { "id": "core.iter.maxx_category", "expr": "MAXX(VALUES(d_Produto[Categoria]), [Total Vendas])", "expected": 920 },
+    { "id": "core.rankx.client", "expr": "RANKX(ALL(d_Cliente[Cliente]), [Total Vendas])", "filters": [{ "table": "d_Cliente", "column": "Cliente", "values": ["Ana"] }], "expected": 2 },
+    { "id": "core.concatenatex.sorted", "expr": "CONCATENATEX(VALUES(d_Cliente[Cliente]), d_Cliente[Cliente], \", \", d_Cliente[Cliente], ASC)", "expected": "Ana, Bruno, Carla" },
+
+    { "id": "core.selectedvalue.single", "expr": "SELECTEDVALUE(d_Produto[Categoria])", "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Papelaria"] }], "expected": "Papelaria" },
+    { "id": "core.selectedvalue.multiple_is_blank", "expr": "SELECTEDVALUE(d_Produto[Categoria])", "expected": null },
+    { "id": "core.selectedvalue.alternate", "expr": "SELECTEDVALUE(d_Produto[Categoria], \"Varias\")", "expected": "Varias" },
+    { "id": "core.hasonevalue", "expr": "HASONEVALUE(d_Produto[Categoria])", "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Papelaria"] }], "expected": true },
+    { "id": "core.lookupvalue", "expr": "LOOKUPVALUE(d_Produto[Produto], d_Produto[ProdutoID], 3)", "expected": "Mouse" },
+
+    { "id": "core.var_return", "expr": "VAR x = [Total Vendas] RETURN x * 2", "expected": 2270 },
+    { "id": "core.switch_true", "expr": "SWITCH(TRUE(), [Total Vendas] > 1000, \"Alto\", \"Baixo\")", "expected": "Alto" },
+    { "id": "core.if_without_else_is_blank", "expr": "IF([Num Vendas] > 20, 1)", "expected": null },
+
+    { "id": "core.ti.totalytd", "expr": "TOTALYTD([Total Vendas], d_Calendario[Data])", "filters": [{ "table": "d_Calendario", "column": "AnoMes", "values": ["2024-03"] }], "expected": 341 },
+    { "id": "core.ti.datesytd", "expr": "CALCULATE([Total Vendas], DATESYTD(d_Calendario[Data]))", "filters": [{ "table": "d_Calendario", "column": "AnoMes", "values": ["2025-02"] }], "expected": 400 },
+    { "id": "core.ti.sameperiodlastyear_year", "expr": "CALCULATE([Total Vendas], SAMEPERIODLASTYEAR(d_Calendario[Data]))", "filters": [{ "table": "d_Calendario", "column": "Ano", "values": [2025] }], "expected": 561 },
+    { "id": "core.ti.sameperiodlastyear_month", "expr": "CALCULATE([Total Vendas], SAMEPERIODLASTYEAR(d_Calendario[Data]))", "filters": [{ "table": "d_Calendario", "column": "AnoMes", "values": ["2025-01"] }], "expected": 105 },
+    { "id": "core.ti.previousmonth", "expr": "CALCULATE([Total Vendas], PREVIOUSMONTH(d_Calendario[Data]))", "filters": [{ "table": "d_Calendario", "column": "AnoMes", "values": ["2025-01"] }], "expected": 60 },
+    { "id": "core.ti.dateadd_month", "expr": "CALCULATE([Total Vendas], DATEADD(d_Calendario[Data], -1, MONTH))", "filters": [{ "table": "d_Calendario", "column": "AnoMes", "values": ["2024-03"] }], "expected": 36 },
+    { "id": "core.ti.parallelperiod_year", "expr": "CALCULATE([Total Vendas], PARALLELPERIOD(d_Calendario[Data], -1, YEAR))", "filters": [{ "table": "d_Calendario", "column": "AnoMes", "values": ["2025-03"] }], "expected": 561 }
+  ]
+}

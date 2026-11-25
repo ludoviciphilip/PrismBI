@@ -37,9 +37,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-      - name: Run Rust unit tests
+      - name: Run Rust tests (unit + DAX conformance corpus)
         working-directory: src-tauri
-        run: cargo test --lib
+        run: cargo test --lib --test dax_corpus
       - name: Verify Tauri binary compilation
         working-directory: src-tauri
         run: cargo check --bins

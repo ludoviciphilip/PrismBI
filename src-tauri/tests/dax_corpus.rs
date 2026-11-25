@@ -1,0 +1,294 @@
+//! Corpus de conformidade DAX compartilhado com o motor TS
+//! (`src/engine/__tests__/dax_corpus.test.ts`). Formato em `tests/dax-corpus/README.md`.
+//!
+//! Catraca: casos listados em `tests/dax-corpus/baseline.json` (chave "rust")
+//! não podem voltar a falhar. Para registrar casos novos que passaram:
+//! `UPDATE_DAX_BASELINE=1 cargo test --test dax_corpus`.
+
+use prismbi_lib::dax::functions::{civil_to_days, days_to_civil};
+use prismbi_lib::dax::{
+    build_filter_context, DaxMeasureInput, DaxModel, DaxModelSyncPayload, DaxRelationshipInput,
+    DaxTableInput, DaxValue, NativeFilterInput,
+};
+use serde::Deserialize;
+use serde_json::{json, Map, Value};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const ENGINE: &str = "rust";
+
+#[derive(Deserialize)]
+struct CorpusColumn {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct CalendarSpec {
+    start: String,
+    end: String,
+}
+
+#[derive(Deserialize)]
+struct CorpusTable {
+    name: String,
+    columns: Vec<CorpusColumn>,
+    #[serde(default)]
+    rows: Vec<Vec<Value>>,
+    calendar: Option<CalendarSpec>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CorpusRelationship {
+    from: String,
+    to: String,
+    cross_filter: String,
+    active: bool,
+}
+
+#[derive(Deserialize)]
+struct CorpusMeasure {
+    table: String,
+    name: String,
+    formula: String,
+}
+
+#[derive(Deserialize)]
+struct CorpusModel {
+    tables: Vec<CorpusTable>,
+    relationships: Vec<CorpusRelationship>,
+    measures: Vec<CorpusMeasure>,
+}
+
+#[derive(Deserialize)]
+struct CorpusFilter {
+    table: String,
+    column: String,
+    values: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+struct CorpusCase {
+    id: String,
+    expr: String,
+    #[serde(default)]
+    filters: Vec<CorpusFilter>,
+    expected: Value,
+    tolerance: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct CorpusFile {
+    model: String,
+    category: String,
+    cases: Vec<CorpusCase>,
+}
+
+fn corpus_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/dax-corpus")
+}
+
+fn split_ref(r: &str) -> (String, String) {
+    let r = r.trim();
+    let open = r.find('[').expect("referência sem '['");
+    (r[..open].to_string(), r[open + 1..r.len() - 1].to_string())
+}
+
+fn parse_iso(s: &str) -> (i32, u32, u32) {
+    let p: Vec<&str> = s.split('-').collect();
+    (p[0].parse().unwrap(), p[1].parse().unwrap(), p[2].parse().unwrap())
+}
+
+/// Mesmo gerador do lado TS: Data (ISO), Ano, MesNum, Trimestre, AnoMes.
+fn calendar_rows(spec: &CalendarSpec) -> Vec<Map<String, Value>> {
+    let (sy, sm, sd) = parse_iso(&spec.start);
+    let (ey, em, ed) = parse_iso(&spec.end);
+    (civil_to_days(sy, sm, sd)..=civil_to_days(ey, em, ed))
+        .map(|day| {
+            let (y, m, d) = days_to_civil(day);
+            let mut row = Map::new();
+            row.insert("Data".into(), json!(format!("{:04}-{:02}-{:02}", y, m, d)));
+            row.insert("Ano".into(), json!(y));
+            row.insert("MesNum".into(), json!(m));
+            row.insert("Trimestre".into(), json!((m - 1) / 3 + 1));
+            row.insert("AnoMes".into(), json!(format!("{:04}-{:02}", y, m)));
+            row
+        })
+        .collect()
+}
+
+fn build_model(m: &CorpusModel) -> DaxModel {
+    let tables = m
+        .tables
+        .iter()
+        .map(|t| {
+            let columns: Vec<String> = t.columns.iter().map(|c| c.name.clone()).collect();
+            let rows = match &t.calendar {
+                Some(spec) => calendar_rows(spec),
+                None => t
+                    .rows
+                    .iter()
+                    .map(|r| {
+                        columns
+                            .iter()
+                            .enumerate()
+                            .map(|(i, c)| (c.clone(), r.get(i).cloned().unwrap_or(Value::Null)))
+                            .collect()
+                    })
+                    .collect(),
+            };
+            DaxTableInput { name: t.name.clone(), columns, rows }
+        })
+        .collect();
+    let relationships = m
+        .relationships
+        .iter()
+        .map(|r| {
+            let (ft, fc) = split_ref(&r.from);
+            let (tt, tc) = split_ref(&r.to);
+            DaxRelationshipInput {
+                from_table: ft,
+                from_column: fc,
+                to_table: tt,
+                to_column: tc,
+                cross_filter_direction: r.cross_filter.clone(),
+                is_active: r.active,
+            }
+        })
+        .collect();
+    let measures = m
+        .measures
+        .iter()
+        .map(|x| DaxMeasureInput {
+            name: x.name.clone(),
+            table_name: x.table.clone(),
+            formula: x.formula.clone(),
+        })
+        .collect();
+    let mut model = DaxModel::new();
+    model.sync_from_payload(DaxModelSyncPayload { tables, relationships, measures });
+    model
+}
+
+fn value_matches(expected: &Value, actual: &DaxValue, tol: f64) -> bool {
+    match expected {
+        Value::Null => actual.is_blank(),
+        Value::Bool(b) => matches!(actual, DaxValue::Boolean(a) if a == b),
+        Value::Number(n) => {
+            let want = n.as_f64().unwrap();
+            matches!(actual, DaxValue::Number(a) if a.is_finite() && (a - want).abs() <= tol * want.abs().max(1.0))
+        }
+        Value::String(s) => matches!(actual, DaxValue::Text(a) if a == s),
+        Value::Object(o) => {
+            if let Some(Value::String(d)) = o.get("date") {
+                matches!(actual, DaxValue::Text(a) if a.get(..10) == Some(d.as_str()))
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+#[test]
+fn dax_corpus_rust_engine() {
+    let dir = corpus_dir();
+    let mut models: HashMap<String, DaxModel> = HashMap::new();
+    for entry in fs::read_dir(dir.join("models")).unwrap() {
+        let p = entry.unwrap().path();
+        if p.extension().and_then(|e| e.to_str()) == Some("json") {
+            let m: CorpusModel = serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+            models.insert(p.file_stem().unwrap().to_string_lossy().into(), build_model(&m));
+        }
+    }
+
+    let mut case_files: Vec<PathBuf> = fs::read_dir(dir.join("cases"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+        .collect();
+    case_files.sort();
+
+    let mut results = Vec::new();
+    let mut passing = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    for path in case_files {
+        let file: CorpusFile = serde_json::from_str(&fs::read_to_string(&path).unwrap())
+            .unwrap_or_else(|e| panic!("{}: {}", path.display(), e));
+        let model = models
+            .get(&file.model)
+            .unwrap_or_else(|| panic!("modelo {} inexistente", file.model));
+        for c in file.cases {
+            assert!(seen.insert(c.id.clone()), "id duplicado: {}", c.id);
+            let filters: Vec<NativeFilterInput> = c
+                .filters
+                .iter()
+                .map(|f| NativeFilterInput {
+                    table_id: f.table.clone(),
+                    column: f.column.clone(),
+                    values: f.values.clone(),
+                })
+                .collect();
+            let ctx = build_filter_context(&filters);
+            let expect_error = c.expected.get("error").is_some();
+            // panics no motor contam como falha do caso, não do harness
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                model.evaluate_dax(&c.expr, &ctx)
+            }));
+            let (pass, actual, error) = match outcome {
+                Ok(Ok(v)) => (
+                    !expect_error && value_matches(&c.expected, &v, c.tolerance.unwrap_or(1e-9)),
+                    v.to_json(),
+                    None,
+                ),
+                Ok(Err(e)) => (expect_error, Value::Null, Some(e)),
+                Err(_) => (false, Value::Null, Some("panic".to_string())),
+            };
+            if pass {
+                passing.insert(c.id.clone());
+            }
+            results.push(json!({
+                "id": c.id, "category": file.category, "pass": pass,
+                "actual": actual, "error": error,
+            }));
+        }
+    }
+
+    let report = json!({
+        "engine": ENGINE, "total": results.len(), "passing": passing.len(), "results": results,
+    });
+    fs::write(
+        dir.join(format!(".report-{}.json", ENGINE)),
+        serde_json::to_string_pretty(&report).unwrap(),
+    )
+    .unwrap();
+
+    let baseline_path = dir.join("baseline.json");
+    let mut baseline: BTreeMap<String, Vec<String>> = fs::read_to_string(&baseline_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let known: BTreeSet<String> = baseline.get(ENGINE).cloned().unwrap_or_default().into_iter().collect();
+
+    if std::env::var("UPDATE_DAX_BASELINE").as_deref() == Ok("1") {
+        baseline.insert(ENGINE.into(), passing.iter().cloned().collect());
+        fs::write(&baseline_path, serde_json::to_string_pretty(&baseline).unwrap() + "\n").unwrap();
+    }
+
+    let regressions: Vec<String> = report["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| known.contains(r["id"].as_str().unwrap()) && !r["pass"].as_bool().unwrap())
+        .map(|r| format!("{}: obtido {} {}", r["id"], r["actual"], r["error"]))
+        .collect();
+    let newly = passing.iter().filter(|id| !known.contains(*id)).count();
+    eprintln!(
+        "[dax-corpus:rust] {}/{} passando; {} novo(s) fora da baseline",
+        passing.len(),
+        report["total"],
+        newly
+    );
+    assert!(regressions.is_empty(), "regressões no motor Rust:\n{}", regressions.join("\n"));
+}
