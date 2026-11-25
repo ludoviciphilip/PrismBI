@@ -271,6 +271,8 @@ interface BiState {
   getOrInitQuery: (tableId: string) => EtlQuery;
   /** Como getOrInitQuery, mas converte o M de tabelas .pbip em etapas (etl_from_m) e persiste a consulta. */
   ensureQuery: (tableId: string) => Promise<EtlQuery>;
+  /** "Atualizar" de uma tabela com consulta ETL: relê a fonte bruta e reaplica as etapas. */
+  refreshEtlTable: (tableId: string) => Promise<void>;
   setQuery: (tableId: string, query: EtlQuery) => void;
   addQueryStep: (tableId: string, step: EtlStep) => void;
   updateQueryStep: (tableId: string, stepId: string, patch: Partial<EtlStep>) => void;
@@ -395,6 +397,21 @@ interface BiState {
 }
 
 const defaultPageId = 'page_executivo';
+
+/** Nenhuma chamada ao backend pode deixar "Atualizando..." preso para sempre. */
+const REFRESH_STEP_TIMEOUT_MS = 120_000;
+function withTimeout<T>(p: Promise<T>, label: string, ms = REFRESH_STEP_TIMEOUT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}: sem resposta em ${Math.round(ms / 1000)}s`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
+}
+
+/** A tabela tem uma consulta ETL que precisa ser reexecutada na atualização. */
+function hasEtlQuery(q: EtlQuery | undefined): q is EtlQuery {
+  return !!q && (q.steps.length > 0 || q.source.kind !== 'inline');
+}
 
 
 const initialVisuals: Visual[] = [
@@ -1132,20 +1149,31 @@ export const useBiStore = create<BiState>((set, get) => {
       const nowTime = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
       try {
         const sc = target.sourceConfig;
+        // Tabela com consulta do Power Query: as etapas editadas mandam. O
+        // interpretador M antigo e o recarregamento do .pbip as descartariam.
+        if (hasEtlQuery(get().appliedSteps[target.id])) {
+          await get().refreshEtlTable(target.id);
+          await withTimeout(pushModelToRustAsync(get().tables, get().relationships, get().measures), 'Sincronizar modelo');
+          set(s => ({
+            dataVersion: s.dataVersion + 1,
+            refreshStatus: { type: 'success', message: `Tabela "${target.name}" atualizada pela consulta do Power Query.`, timestamp: nowTime },
+          }));
+          return { ok: true, message: `Tabela "${target.name}" atualizada.` };
+        }
         if (sc?.type === 'db' && sc.db && isTauriRuntime()) {
           const dbConfig = sc.db;
-          const payload = await dbRefreshImport(
+          const payload = await withTimeout(dbRefreshImport(
             dbConfig.config as any,
             dbConfig.credentialKey,
             dbConfig.source,
             target.name
-          );
+          ), 'Banco de dados');
           const cols = nativePayloadToColumns(payload, target.id);
           get().replaceTableData(target.id, cols, payload.rows, {
             ...sc,
             lastRefreshedAt: new Date().toISOString(),
           });
-          await pushModelToRustAsync(get().tables, get().relationships, get().measures);
+          await withTimeout(pushModelToRustAsync(get().tables, get().relationships, get().measures), 'Sincronizar modelo');
           set(s => ({
             dataVersion: s.dataVersion + 1,
             refreshStatus: {
@@ -1171,7 +1199,7 @@ export const useBiStore = create<BiState>((set, get) => {
             ...sc,
             lastRefreshedAt: new Date().toISOString(),
           });
-          await pushModelToRustAsync(get().tables, get().relationships, get().measures);
+          await withTimeout(pushModelToRustAsync(get().tables, get().relationships, get().measures), 'Sincronizar modelo');
           set(s => ({
             dataVersion: s.dataVersion + 1,
             refreshStatus: {
@@ -1184,14 +1212,14 @@ export const useBiStore = create<BiState>((set, get) => {
         }
 
         if (isTauriRuntime() && sc?.filePath && sc.type !== 'sample') {
-          const payload = await refreshTableNative({
+          const payload = await withTimeout(refreshTableNative({
             tableName: target.name,
             sourceType: sc.type,
             filePath: sc.filePath,
             sheetName: sc.sheetName,
             mScript: sc.mScript,
             pbipRoot: sc.pbipRoot || get().sourcePbipPath || undefined,
-          });
+          }), 'Arquivo fonte');
           const cols = nativePayloadToColumns(payload, target.id);
           get().replaceTableData(target.id, cols, payload.rows, {
             ...sc,
@@ -1199,7 +1227,7 @@ export const useBiStore = create<BiState>((set, get) => {
             sheetName: payload.sheetName || sc.sheetName,
             lastRefreshedAt: new Date().toISOString(),
           });
-          await pushModelToRustAsync(get().tables, get().relationships, get().measures);
+          await withTimeout(pushModelToRustAsync(get().tables, get().relationships, get().measures), 'Sincronizar modelo');
           set(s => ({
             dataVersion: s.dataVersion + 1,
             refreshStatus: {
@@ -1212,7 +1240,7 @@ export const useBiStore = create<BiState>((set, get) => {
         }
 
         if (isTauriRuntime() && get().sourcePbipPath) {
-          const pbipRes = await refreshPbipTables(get().sourcePbipPath!);
+          const pbipRes = await withTimeout(refreshPbipTables(get().sourcePbipPath!), 'Projeto .pbip');
           const matched = pbipRes.loadedTables.find(
             lt =>
               lt.tableName.toLowerCase() === target.name.toLowerCase() ||
@@ -1227,7 +1255,7 @@ export const useBiStore = create<BiState>((set, get) => {
               mScript: sc?.mScript,
               pbipRoot: sc?.pbipRoot || get().sourcePbipPath || undefined,
             });
-            await pushModelToRustAsync(get().tables, get().relationships, get().measures);
+            await withTimeout(pushModelToRustAsync(get().tables, get().relationships, get().measures), 'Sincronizar modelo');
             set(s => ({
               dataVersion: s.dataVersion + 1,
               refreshStatus: {
@@ -1274,19 +1302,33 @@ export const useBiStore = create<BiState>((set, get) => {
         const currentTables = get().tables;
         const pbipPath = get().sourcePbipPath;
 
+        // 1. Tabelas com consulta do Power Query: fonte bruta + etapas (ordem do
+        //    modelo; consultas que mesclam/acrescentam leem as já aplicadas).
+        const etlTableIds = new Set<string>();
+        for (const tbl of currentTables) {
+          if (!hasEtlQuery(get().appliedSteps[tbl.id])) continue;
+          etlTableIds.add(tbl.id);
+          try {
+            await get().refreshEtlTable(tbl.id);
+            refreshedTables.push(tbl.name);
+          } catch (err: any) {
+            warnings.push(`${tbl.name}: ${err?.message || String(err)}`);
+          }
+        }
+
         for (const tbl of currentTables) {
           const sc = tbl.sourceConfig;
-          if (!sc) continue;
+          if (!sc || etlTableIds.has(tbl.id)) continue;
 
           if (sc.type === 'db' && sc.db && isTauriRuntime()) {
             try {
               const dbConfig = sc.db;
-              const payload = await dbRefreshImport(
+              const payload = await withTimeout(dbRefreshImport(
                 dbConfig.config as any,
                 dbConfig.credentialKey,
                 dbConfig.source,
                 tbl.name
-              );
+              ), 'Banco de dados');
               const cols = nativePayloadToColumns(payload, tbl.id);
               get().replaceTableData(tbl.id, cols, payload.rows, {
                 ...sc,
@@ -1314,14 +1356,14 @@ export const useBiStore = create<BiState>((set, get) => {
             }
           } else if (isTauriRuntime() && sc.filePath && sc.type !== 'sample') {
             try {
-              const payload = await refreshTableNative({
+              const payload = await withTimeout(refreshTableNative({
                 tableName: tbl.name,
                 sourceType: sc.type,
                 filePath: sc.filePath,
                 sheetName: sc.sheetName,
                 mScript: sc.mScript,
                 pbipRoot: sc.pbipRoot || pbipPath || undefined,
-              });
+              }), 'Arquivo fonte');
               const cols = nativePayloadToColumns(payload, tbl.id);
               get().replaceTableData(tbl.id, cols, payload.rows, {
                 ...sc,
@@ -1338,7 +1380,7 @@ export const useBiStore = create<BiState>((set, get) => {
         // Refresh remaining PBIP tables if project came from a .pbip file
         if (isTauriRuntime() && pbipPath) {
           try {
-            const pbipRes = await refreshPbipTables(pbipPath);
+            const pbipRes = await withTimeout(refreshPbipTables(pbipPath), 'Projeto .pbip');
             for (const warn of pbipRes.warnings) {
               warnings.push(warn);
             }
@@ -1382,7 +1424,7 @@ export const useBiStore = create<BiState>((set, get) => {
         const latestMeasures = get().measures;
         globalDataEngine.setSchema(latestTables, latestRels, latestMeasures);
         latestTables.forEach(t => globalDuckDb.registerTable(t));
-        await pushModelToRustAsync(latestTables, latestRels, latestMeasures);
+        await withTimeout(pushModelToRustAsync(latestTables, latestRels, latestMeasures), 'Sincronizar modelo');
         set(s => ({ dataVersion: s.dataVersion + 1 }));
 
         if (refreshedTables.length > 0 && warnings.length === 0) {
@@ -2453,13 +2495,23 @@ export const useBiStore = create<BiState>((set, get) => {
       });
     },
 
+    refreshEtlTable: async (tableId) => {
+      const table = get().tables.find(t => t.id === tableId);
+      const query = get().appliedSteps[tableId];
+      if (!table || !query) return;
+      const pbipRoot = table.sourceConfig?.pbipRoot || get().sourcePbipPath || undefined;
+      await withTimeout(etlLoadRaw({ query: query.name, source: query.source, pbipRoot }), `Fonte de "${table.name}"`);
+      await withTimeout(get().closeAndApplyQuery(tableId), `Consulta de "${table.name}"`);
+    },
+
     refreshTableData: async (tableId) => {
       const table = get().tables.find(t => t.id === tableId);
       if (!table) return;
       const query = get().appliedSteps[tableId];
-      await etlLoadRaw({ query: query?.name || table.originalName || table.name, source: query?.source || tableToEtlSource(table) });
       if (query) {
-        await get().closeAndApplyQuery(tableId);
+        await get().refreshEtlTable(tableId);
+      } else {
+        await etlLoadRaw({ query: table.originalName || table.name, source: tableToEtlSource(table) });
       }
     },
 
