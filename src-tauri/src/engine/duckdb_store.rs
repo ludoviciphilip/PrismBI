@@ -70,6 +70,13 @@ impl DuckDbStore {
         })
     }
 
+    /// Acesso de baixo nível à conexão DuckDB compartilhada, usado pelo
+    /// módulo `connectors` para ATTACH/DETACH de fontes externas (Postgres,
+    /// SQLite, MySQL, arquivos `.duckdb`, Parquet remoto via httpfs/s3).
+    pub fn connection(&self) -> &Mutex<Connection> {
+        &self.conn
+    }
+
     pub fn get_engine_info(&self) -> Result<EngineInfo, String> {
         let conn = self.conn.lock().map_err(|_| "Lock DuckDB corrompido".to_string())?;
         let version: String = conn
@@ -695,6 +702,17 @@ fn load_worksheet_into_duckdb(
     Ok(Some(payload))
 }
 
+/// Wrapper público de `build_table_payload`, usado pelo módulo
+/// `connectors` para montar o payload de tabelas importadas via ATTACH
+/// (Postgres/SQLite/MySQL/DuckDB/Parquet) do mesmo jeito que CSV/XLSX.
+pub fn build_table_payload_pub(
+    conn: &Connection,
+    safe_name: &str,
+    original_name: &str,
+) -> Result<ImportedTablePayload, String> {
+    build_table_payload(conn, safe_name, original_name)
+}
+
 fn build_table_payload(
     conn: &Connection,
     safe_name: &str,
@@ -771,7 +789,7 @@ fn map_duckdb_type_to_bi(duckdb_type: &str) -> &'static str {
     }
 }
 
-fn execute_select_query(conn: &Connection, sql: &str) -> Result<SqlQueryResult, String> {
+pub fn execute_select_query(conn: &Connection, sql: &str) -> Result<SqlQueryResult, String> {
     let mut stmt = conn
         .prepare(sql)
         .map_err(|e| format!("Erro DuckDB ao preparar SQL: {}", e))?;

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'v*-dev']
   pull_request:
-    branches: [main]
+    branches: [main, 'v*-dev']
 
 jobs:
   frontend:
@@ -27,6 +27,25 @@ jobs:
   rust:
     name: Backend Rust (Cargo Test & Check)
     runs-on: ubuntu-22.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: "p'w d"
+          POSTGRES_DB: loja
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: r00t
+          MARIADB_DATABASE: loja
+          MARIADB_USER: app
+          MARIADB_PASSWORD: "s3c'ret"
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized" --health-interval 5s --health-timeout 5s --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -40,6 +59,25 @@ jobs:
       - name: Run Rust tests (unit + DAX conformance corpus)
         working-directory: src-tauri
         run: cargo test --lib --test dax_corpus
+      - name: Connector integration tests (live PostgreSQL + MariaDB services)
+        working-directory: src-tauri
+        env:
+          PRISMBI_TEST_PG_HOST: 127.0.0.1
+          PRISMBI_TEST_PG_PORT: 5432
+          PRISMBI_TEST_PG_USER: postgres
+          PRISMBI_TEST_PG_PASSWORD: "p'w d"
+          PRISMBI_TEST_PG_DB: loja
+          PRISMBI_TEST_MYSQL_HOST: 127.0.0.1
+          PRISMBI_TEST_MYSQL_PORT: 3306
+          PRISMBI_TEST_MYSQL_USER: app
+          PRISMBI_TEST_MYSQL_PASSWORD: "s3c'ret"
+          PRISMBI_TEST_MYSQL_DB: loja
+        run: |
+          sudo apt-get install -y postgresql-client mariadb-client
+          PGPASSWORD="$PRISMBI_TEST_PG_PASSWORD" psql -h 127.0.0.1 -U postgres -d loja -c "CREATE SCHEMA vendas; CREATE TABLE vendas.pedidos (id int, cliente text, valor numeric(10,2)); INSERT INTO vendas.pedidos VALUES (1,'Ana',10.50),(2,'Bruno',20),(3,'Ana',5.25);"
+          mariadb -h 127.0.0.1 -P 3306 -uapp "-p$PRISMBI_TEST_MYSQL_PASSWORD" loja -e "CREATE TABLE pedidos (id int, cliente varchar(20), valor decimal(10,2)); INSERT INTO pedidos VALUES (1,'Ana',10.50),(2,'Bruno',20),(3,'Ana',5.25);"
+          cargo test --test connectors_duckdb_sqlite -- --include-ignored
+
       - name: Verify Tauri binary compilation
         working-directory: src-tauri
         run: cargo check --bins

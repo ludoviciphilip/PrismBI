@@ -28,13 +28,34 @@ export interface ColumnProfile {
 }
 
 export interface TableSourceConfig {
-  type: 'xlsx' | 'csv' | 'parquet' | 'json' | 'pbip' | 'rest' | 'sample';
+  type: 'xlsx' | 'csv' | 'parquet' | 'json' | 'pbip' | 'rest' | 'sample' | 'db';
   filePath?: string;
   sheetName?: string;
   mScript?: string;
   pbipRoot?: string;
   url?: string;
   lastRefreshedAt?: string;
+  /** Presente apenas quando type === 'db' (conectores nativos v0.8.0). */
+  db?: DbSourceConfig;
+}
+
+export type DbConnectorKind = 'sqlite' | 'duckdb_file' | 'postgres' | 'mysql' | 'parquet_glob';
+
+/**
+ * Configuração de um conector de banco de dados nativo (via DuckDB
+ * ATTACH). NUNCA contém senha — a senha fica apenas no keyring do Linux
+ * (Secret Service), referenciada por `credentialKey`. Ao reimportar via
+ * "Atualizar Dados", o Rust reconecta buscando a senha pelo
+ * `credentialKey` (ver `db_refresh_import` em `connectors::manager`).
+ */
+export interface DbSourceConfig {
+  kind: DbConnectorKind;
+  /** Chave estável no keyring (gerada uma vez na primeira conexão); ausente para SQLite/.duckdb/Parquet (sem senha). */
+  credentialKey?: string;
+  /** Parâmetros de conexão sem senha, no mesmo shape de `ConnectorConfig` do Rust (tag "kind"). */
+  config: Record<string, any>;
+  /** Origem dos dados importados: tabela do catálogo ou consulta SQL livre. */
+  source: { mode: 'table'; schema: string; table: string } | { mode: 'sql'; sql: string };
 }
 
 export interface Table {
