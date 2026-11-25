@@ -8,7 +8,7 @@
 
 🇺🇸 **English** • 🇧🇷 [Ler em Português](./README.pt-BR.md)
 
-[![Version](https://img.shields.io/badge/version-0.8.0-f59e0b?style=flat-square)](./package.json)
+[![Version](https://img.shields.io/badge/version-0.8.1-f59e0b?style=flat-square)](./package.json)
 [![CI](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml)
 [![Release](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)

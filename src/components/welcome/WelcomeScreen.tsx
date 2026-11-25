@@ -18,6 +18,7 @@ import { useBiStore } from '../../store/useBiStore';
 import { loadProjectFromStorage, ProjectState } from '../../engine/storage';
 import { APP_VERSION } from '../../version';
 import { PowerBiImportModal } from '../modals/PowerBiImportModal';
+import daxConformance from '../../data/daxConformance.json';
 
 export const WelcomeScreen: React.FC = () => {
   const {
@@ -352,7 +353,10 @@ export const WelcomeScreen: React.FC = () => {
 
           {/* Shortcut hints */}
           <div className="text-center text-[11px] text-slate-400 dark:text-slate-500 flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
-            <span><Sparkles className="w-3 h-3 inline text-amber-500 mr-1" />98% conformidade DAX (474/484)</span>
+            <span title="Casos do corpus de conformidade com resultado verificado (docs/DAX_CONFORMANCE.md)">
+              <Sparkles className="w-3 h-3 inline text-amber-500 mr-1" />
+              DAX verificado: {daxConformance.passing}/{daxConformance.total} casos
+            </span>
             <span>•</span>
             <span>Scroll do mouse pressionado: mover canvas livremente</span>
             <span>•</span>

@@ -1,6 +1,6 @@
 # Maintainer: Luis Felipe de Almeida Vieira
 pkgname=prismbi-bin
-pkgver=0.8.0
+pkgver=0.8.1
 pkgrel=1
 pkgdesc="Business Intelligence nativo para Linux com compatibilidade .pbip/.pbix, Rust e DuckDB"
 arch=('x86_64')
