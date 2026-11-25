@@ -86,21 +86,19 @@ pub(super) fn eval_date_boundary(
         return Err(format!("{} requer referência Tabela[Data]", fname));
     };
     let bound_keys = resolve_date_boundary_keys(model, ctx, table, column, &fname);
-    if let Some(first) = bound_keys.into_iter().min() {
-        // Canonical key may be `t:YYYY-MM-DD`; strip prefix if present
-        let clean = first.strip_prefix("t:").unwrap_or(&first).to_string();
-        Ok(DaxValue::Text(clean))
+    if let Some(ValueKey::Date(secs)) = bound_keys.into_iter().min() {
+        Ok(DaxValue::DateTime(secs as f64 / 86_400.0))
     } else {
         Ok(DaxValue::Blank)
     }
 }
 
-pub(super) fn collect_table_dates(tbl: &DaxTableData, cidx: usize) -> HashMap<(i32, u32, u32), Vec<String>> {
-    let mut map: HashMap<(i32, u32, u32), Vec<String>> = HashMap::new();
+pub(super) fn collect_table_dates(tbl: &DaxTableData, cidx: usize) -> HashMap<(i32, u32, u32), Vec<ValueKey>> {
+    let mut map: HashMap<(i32, u32, u32), Vec<ValueKey>> = HashMap::new();
     for row in &tbl.rows {
         let s = row[cidx].as_display_string();
         if let Some(ymd) = parse_iso_ymd(&s) {
-            map.entry(ymd).or_default().push(row[cidx].canonical_key());
+            map.entry(ymd).or_default().push(row[cidx].value_key());
         }
     }
     map
@@ -129,7 +127,7 @@ pub(super) fn apply_date_shift(
     }
 
     let mut shifted_keys = HashSet::new();
-    let push_ymd_keys = |ymd: (i32, u32, u32), out: &mut HashSet<String>| {
+    let push_ymd_keys = |ymd: (i32, u32, u32), out: &mut HashSet<ValueKey>| {
         if let Some(keys) = all_dates_map.get(&ymd) {
             for k in keys {
                 out.insert(k.clone());
@@ -229,7 +227,7 @@ pub(super) fn apply_complete_period_shift(
                     _ => ry == ty && rm == tm,
                 };
                 if in_target {
-                    allowed.insert(row[cidx].canonical_key());
+                    allowed.insert(row[cidx].value_key());
                 }
             }
         }
@@ -303,7 +301,7 @@ pub(super) fn apply_period_to_date(
                 }
             };
             if in_period {
-                allowed.insert(row[cidx].canonical_key());
+                allowed.insert(row[cidx].value_key());
             }
         }
     }
@@ -317,7 +315,7 @@ pub(super) fn resolve_date_boundary_keys(
     table_name: &str,
     col_name: &str,
     func_name: &str,
-) -> HashSet<String> {
+) -> HashSet<ValueKey> {
     let mut allowed = HashSet::new();
     let Some(tbl) = model.get_table(table_name) else { return allowed };
     let Some(cidx) = tbl.get_col_idx(col_name) else { return allowed };
@@ -376,7 +374,7 @@ pub(super) fn resolve_date_boundary_keys(
         for row in &tbl.rows {
             let s = row[cidx].as_display_string();
             if parse_iso_ymd(&s) == Some(t) {
-                allowed.insert(row[cidx].canonical_key());
+                allowed.insert(row[cidx].value_key());
             }
         }
     }
@@ -414,7 +412,7 @@ pub(super) fn apply_period_boundary(
                     let prev_day = add_days(y, m, d, -1);
                     for row in &tbl.rows {
                         if parse_iso_ymd(&row[cidx].as_display_string()) == Some(prev_day) {
-                            keys.insert(row[cidx].canonical_key());
+                            keys.insert(row[cidx].value_key());
                         }
                     }
                 }
@@ -453,7 +451,7 @@ pub(super) fn apply_dates_between(
             let ge_start = start_days.is_none_or(|sd| cur >= sd);
             let le_end = end_days.is_none_or(|ed| cur <= ed);
             if ge_start && le_end {
-                allowed.insert(row[cidx].canonical_key());
+                allowed.insert(row[cidx].value_key());
             }
         }
     }
@@ -497,7 +495,7 @@ pub(super) fn apply_dates_in_period(
         if let Some((y, m, d)) = parse_iso_ymd(&s) {
             let cur = civil_to_days(y, m, d);
             if cur >= start_d && cur <= end_d {
-                allowed.insert(row[cidx].canonical_key());
+                allowed.insert(row[cidx].value_key());
             }
         }
     }

@@ -70,6 +70,7 @@ pub(super) fn eval_table_expr<'a>(
                     name: tbl.name.clone(),
                     columns: vec![column.clone()],
                     col_index,
+                    col_types: vec![ColumnType::Text],
                     rows,
                 };
                 return Ok((TableEval::Owned(synth), (0..n).collect(), base_ctx));
@@ -112,6 +113,7 @@ pub(super) fn eval_table_expr<'a>(
                 name: t1.name.clone(),
                 columns: t1.columns.clone(),
                 col_index: t1.col_index.clone(),
+                col_types: t1.col_types.clone(),
                 rows,
             };
             return Ok((TableEval::Owned(synth), (0..n).collect(), c1));
@@ -176,7 +178,7 @@ pub(super) fn eval_table_expr<'a>(
                     if (step > 0.0 && cur > end + 1e-9) || (step < 0.0 && cur < end - 1e-9) {
                         break;
                     }
-                    rows.push(vec![DaxValue::Number(cur)]);
+                    rows.push(vec![DaxValue::number_smart(cur)]);
                     cur += step;
                 }
             }
@@ -186,6 +188,7 @@ pub(super) fn eval_table_expr<'a>(
                 name: "GENERATESERIES".to_string(),
                 columns: vec!["Value".to_string()],
                 col_index,
+                col_types: vec![ColumnType::Decimal],
                 rows,
             };
             let indices: Vec<usize> = (0..tbl.rows.len()).collect();
@@ -198,7 +201,8 @@ pub(super) fn eval_table_expr<'a>(
 /// Builds an in-memory (synthetic) table, indexing column names case-insensitively.
 pub(super) fn synth_table(name: String, columns: Vec<String>, rows: Vec<Vec<DaxValue>>) -> DaxTableData {
     let col_index = columns.iter().enumerate().map(|(i, c)| (c.to_lowercase(), i)).collect();
-    DaxTableData { name, columns, col_index, rows }
+    let col_types = vec![ColumnType::Text; columns.len()];
+    DaxTableData { name, columns, col_index, col_types, rows }
 }
 
 /// Column naming convention for synthetic tables whose columns come from *different* model
@@ -250,7 +254,7 @@ pub(super) fn apply_lineage_transition(model: &DaxModel, ctx: &FilterContext, rc
     for idx in 0..rc.table.columns.len() {
         if let Some((t, c)) = column_lineage(model, rc.table, idx) {
             let mut set = HashSet::new();
-            set.insert(rc.table.rows[rc.row_idx][idx].canonical_key());
+            set.insert(rc.table.rows[rc.row_idx][idx].value_key());
             next.set_column_filter(&t, &c, set);
         }
     }
