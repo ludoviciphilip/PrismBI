@@ -56,6 +56,15 @@ export default function App() {
       .catch(() => {});
   }, [setAvailableUpdate]);
 
+  // v0.8.0: migra a chave Gemini de localStorage para o keyring do Linux
+  // na primeira execução sob Tauri (no-op se já migrada ou fora do Tauri).
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    import('./services/aiConfig')
+      .then(({ migrateGeminiKeyToKeyring }) => migrateGeminiKeyToKeyring())
+      .catch(() => {});
+  }, []);
+
   // Allow exiting presentation mode with Escape
   useEffect(() => {
     if (!isPresentationMode) return;
