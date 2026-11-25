@@ -6,6 +6,14 @@ import { DaxEngine } from '../daxEngine';
 import { parseNumber } from '../shared/valueParser';
 import { isBlank, DAX_BLANK } from '../expr/types';
 import { Evaluator } from '../expr/evaluator';
+import {
+  applyVisualSort,
+  buildSortByLookup,
+  fieldMatches,
+  sortCategoryLabels,
+  sortRows,
+  VisualSortSpec,
+} from '../visualSort';
 
 export interface VisualQueryResult {
   categories: string[];
@@ -132,7 +140,15 @@ export class QueryPlanner {
         }
       });
 
-      const categories = Array.from(distinctSet).sort((a, b) => a.localeCompare(b));
+      const slicerColMeta = slicerTable.columns.find(c => c.name.toLowerCase() === targetCol.toLowerCase());
+      const slicerSortKeys = slicerColMeta?.sortByColumn
+        ? buildSortByLookup(slicerTable.rows, targetCol, slicerColMeta.sortByColumn)
+        : undefined;
+      const categories = sortCategoryLabels(
+        Array.from(distinctSet),
+        visual.dataConfig.sortOrder === 'desc' ? 'desc' : 'asc',
+        slicerSortKeys
+      );
       const totalTime = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startTime;
 
       return {
@@ -145,18 +161,7 @@ export class QueryPlanner {
 
     // 3. Multi-Field / Standard Charts (Column, Bar, Line, Area, Pie, Donut, Treemap, Funnel, Matrix, Table)
     // Multi-campo drill level resolution
-    let effectiveXField = visual.dataConfig.xAxisField || table.columns[0]?.name || 'Categoria';
-    if (
-      visual.dataConfig.drillFields &&
-      visual.dataConfig.drillFields.length > 0 &&
-      visual.dataConfig.currentDrillLevel !== undefined &&
-      visual.dataConfig.currentDrillLevel > 0
-    ) {
-      const drillIdx = visual.dataConfig.currentDrillLevel - 1;
-      if (drillIdx < visual.dataConfig.drillFields.length) {
-        effectiveXField = visual.dataConfig.drillFields[drillIdx];
-      }
-    }
+    const effectiveXField = this.resolveEffectiveXField(visual, table);
 
     // Resolve column & table for X axis
     const { categoryTable, cleanColName } = this.resolveColumnLocation(table, effectiveXField);
@@ -240,86 +245,13 @@ export class QueryPlanner {
       });
     }
 
-    // Top N by Value and Sorting
-    let finalCategories = [...categories];
-    let finalSeries = series.map(s => ({ ...s, data: [...s.data] }));
-
-    // Real sorting by sortField & sortOrder
-    const sortOrder = visual.dataConfig.sortOrder === 'desc' ? -1 : 1;
-    const sortField = visual.dataConfig.sortField;
-
-    if (sortField) {
-      // Check if sortField matches a series or category
-      const seriesIndex = finalSeries.findIndex(s => s.name.toLowerCase() === sortField.toLowerCase());
-      const indices = finalCategories.map((_, i) => i);
-
-      if (seriesIndex !== -1) {
-        indices.sort((a, b) => {
-          const valA = finalSeries[seriesIndex].data[a] ?? 0;
-          const valB = finalSeries[seriesIndex].data[b] ?? 0;
-          return (valA - valB) * sortOrder;
-        });
-      } else {
-        indices.sort((a, b) => finalCategories[a].localeCompare(finalCategories[b]) * sortOrder);
-      }
-
-      finalCategories = indices.map(i => finalCategories[i]);
-      finalSeries = finalSeries.map(s => ({
-        name: s.name,
-        data: indices.map(i => s.data[i]),
-      }));
-    } else {
-      const xColMeta = categoryTable.columns.find(
-        c => c.name.toLowerCase() === cleanColName.toLowerCase()
-      );
-      if (xColMeta?.sortByColumn) {
-        const sortCol = xColMeta.sortByColumn;
-        const sortWeightMap = new Map<string, number | string>();
-        categoryTable.rows.forEach(r => {
-          const catKey = String(r[cleanColName] ?? '');
-          if (catKey && !sortWeightMap.has(catKey) && r[sortCol] !== undefined && r[sortCol] !== null) {
-            sortWeightMap.set(catKey, r[sortCol]);
-          }
-        });
-        const indices = finalCategories.map((_, i) => i);
-        indices.sort((a, b) => {
-          const wa = sortWeightMap.get(finalCategories[a]);
-          const wb = sortWeightMap.get(finalCategories[b]);
-          if (typeof wa === 'number' && typeof wb === 'number') return wa - wb;
-          if (wa !== undefined && wb !== undefined) {
-            const na = Number(wa);
-            const nb = Number(wb);
-            if (!isNaN(na) && !isNaN(nb)) return na - nb;
-            return String(wa).localeCompare(String(wb));
-          }
-          return a - b;
-        });
-        finalCategories = indices.map(i => finalCategories[i]);
-        finalSeries = finalSeries.map(s => ({
-          name: s.name,
-          data: indices.map(i => s.data[i]),
-        }));
-      }
-    }
-
-    // Limit = Top N by Value (if no explicit sort, sort descending by primary series value)
-    if (visual.dataConfig.limit && visual.dataConfig.limit > 0 && finalCategories.length > visual.dataConfig.limit) {
-      if (!sortField && finalSeries.length > 0) {
-        const indices = finalCategories.map((_, i) => i);
-        indices.sort((a, b) => (finalSeries[0].data[b] - finalSeries[0].data[a]));
-        finalCategories = indices.map(i => finalCategories[i]);
-        finalSeries = finalSeries.map(s => ({
-          name: s.name,
-          data: indices.map(i => s.data[i]),
-        }));
-      }
-
-      finalCategories = finalCategories.slice(0, visual.dataConfig.limit);
-      finalSeries = finalSeries.map(s => ({
-        name: s.name,
-        data: s.data.slice(0, visual.dataConfig.limit),
-      }));
-    }
+    // Sorting (shared with the native Rust path) — TopN/limit is applied AFTER sorting.
+    const sorted = applyVisualSort(
+      { categories, series },
+      this.buildSortSpecFor(visual, table, effectiveXField, categoryTable, cleanColName, yFields)
+    );
+    const finalCategories = sorted.categories;
+    const finalSeries = sorted.series;
 
     // Apply Visual Calculations (V0.6)
     const visualRows = this.applyVisualCalculations(
@@ -347,13 +279,85 @@ export class QueryPlanner {
 
     const hasVisualCalcs = (visual.dataConfig?.visualCalculations?.length ?? 0) > 0 || (visual.visualCalculations?.length ?? 0) > 0;
 
+    let detailRows = (hasVisualCalcs && visualRows.length > 0) ? visualRows : filteredRows;
+    if (visual.type === 'table' && visual.dataConfig.sortField) {
+      const sortCol = table.columns.find(c => fieldMatches(c.name, visual.dataConfig.sortField));
+      detailRows = sortRows(detailRows, visual.dataConfig.sortField, visual.dataConfig.sortOrder === 'desc' ? 'desc' : 'asc', {
+        sortByColumn: sortCol?.sortByColumn,
+      });
+    }
+
     return {
       categories: finalCategories,
       series: finalSeries,
-      rawRows: (hasVisualCalcs && visualRows.length > 0) ? visualRows : filteredRows,
+      rawRows: detailRows,
       grandTotal,
       queryTimeMs: Number(totalTime.toFixed(1)),
     };
+  }
+
+  private resolveEffectiveXField(visual: Visual, table: Table): string {
+    let effectiveXField = visual.dataConfig.xAxisField || table.columns[0]?.name || 'Categoria';
+    if (
+      visual.dataConfig.drillFields &&
+      visual.dataConfig.drillFields.length > 0 &&
+      visual.dataConfig.currentDrillLevel !== undefined &&
+      visual.dataConfig.currentDrillLevel > 0
+    ) {
+      const drillIdx = visual.dataConfig.currentDrillLevel - 1;
+      if (drillIdx < visual.dataConfig.drillFields.length) {
+        effectiveXField = visual.dataConfig.drillFields[drillIdx];
+      }
+    }
+    return effectiveXField;
+  }
+
+  private buildSortSpecFor(
+    visual: Visual,
+    table: Table,
+    effectiveXField: string,
+    categoryTable: Table,
+    cleanColName: string,
+    yFields: string[]
+  ): VisualSortSpec {
+    const xColMeta = categoryTable.columns.find(c => c.name.toLowerCase() === cleanColName.toLowerCase());
+    const categorySortKeys = xColMeta?.sortByColumn
+      ? buildSortByLookup(categoryTable.rows, cleanColName, xColMeta.sortByColumn)
+      : undefined;
+    const valueFields = [...yFields];
+    for (const y of yFields) {
+      const m = this.model.getMeasure ? this.model.getMeasure(y) : undefined;
+      if (m) valueFields.push(m.name);
+    }
+    return {
+      sortField: visual.dataConfig.sortField,
+      sortOrder: visual.dataConfig.sortOrder,
+      limit: visual.dataConfig.limit,
+      categoryFields: [
+        visual.dataConfig.xAxisField || '',
+        effectiveXField,
+        cleanColName,
+        `${categoryTable.name}.${cleanColName}`,
+        `${table.name}.${cleanColName}`,
+      ].filter(Boolean),
+      valueFields,
+      categorySortKeys,
+    };
+  }
+
+  /**
+   * Sort spec for a category/series visual, so results coming from another
+   * engine (the Rust native query) can be sorted with the exact same rules.
+   */
+  public buildSortSpec(visual: Visual): VisualSortSpec | null {
+    const table = this.model.getTable(visual.dataConfig.tableId);
+    if (!table) return null;
+    const effectiveXField = this.resolveEffectiveXField(visual, table);
+    const { categoryTable, cleanColName } = this.resolveColumnLocation(table, effectiveXField);
+    const yFields = visual.dataConfig.yAxisFields && visual.dataConfig.yAxisFields.length > 0
+      ? visual.dataConfig.yAxisFields
+      : [table.columns.find(c => c.dataType === 'number' || c.dataType === 'currency')?.name || 'ValorTotal'];
+    return this.buildSortSpecFor(visual, table, effectiveXField, categoryTable, cleanColName, yFields);
   }
 
   /**
