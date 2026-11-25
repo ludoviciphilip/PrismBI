@@ -760,14 +760,18 @@ fn eval_call(
             Ok(DaxValue::Boolean(is_direct))
         }
         "ISCROSSFILTERED" => {
-            let Some(Expr::TableColRef { table, column }) = args.first() else {
+            let table_name = match args.first() {
+                Some(Expr::TableColRef { table, .. }) => Some(table.clone()),
+                Some(Expr::Ident(t)) => Some(t.clone()),
+                _ => None,
+            };
+            let Some(table) = table_name else {
                 return Ok(DaxValue::Boolean(false));
             };
-            if let Some(tbl) = model.get_table(table) {
-                let vis_count = model.get_visible_row_indices(table, ctx).len();
-                let direct = ctx.filters.get(&tbl.name.to_lowercase()).is_some_and(|c| !c.is_empty());
+            if let Some(tbl) = model.get_table(&table) {
+                let vis_count = model.get_visible_row_indices(&table, ctx).len();
+                let direct = ctx.filters.get(&tbl.name.to_lowercase()).is_some_and(|c| c.values().any(|s| !s.is_empty()));
                 let is_filtered = direct || vis_count < tbl.rows.len();
-                let _ = column;
                 Ok(DaxValue::Boolean(is_filtered))
             } else {
                 Ok(DaxValue::Boolean(false))
@@ -1118,20 +1122,35 @@ fn eval_table_expr<'a>(
             }
             let ascending = args.get(3).is_some_and(|e| matches!(e, Expr::Ident(s) if s.eq_ignore_ascii_case("ASC")));
             if let Some(ord_expr) = args.get(2) {
-                let mut scored: Vec<(usize, f64)> = Vec::with_capacity(indices.len());
+                let mut scored: Vec<(usize, DaxValue)> = Vec::with_capacity(indices.len());
                 for r_idx in indices {
                     let mut next_stack = row_stack.to_vec();
                     next_stack.push(RowContext { table: tbl, row_idx: r_idx });
-                    let val = evaluate_ast(ord_expr, model, &base_ctx, &next_stack, vars)?
-                        .as_f64()
-                        .unwrap_or(f64::NEG_INFINITY);
+                    let val = evaluate_ast(ord_expr, model, &base_ctx, &next_stack, vars)?;
                     scored.push((r_idx, val));
                 }
                 scored.sort_by(|a, b| {
-                    let ord = a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal);
+                    let ord = compare_dax_values(&a.1, &b.1);
+                    let ord = match ord {
+                        o if o < 0 => std::cmp::Ordering::Less,
+                        o if o > 0 => std::cmp::Ordering::Greater,
+                        _ => std::cmp::Ordering::Equal,
+                    };
                     if ascending { ord } else { ord.reverse() }
                 });
-                let kept = scored.into_iter().take(top_n).map(|(i, _)| i).collect();
+                // TOPN includes ties at the N-th boundary value, so the result can have
+                // more than N rows (per the official TOPN semantics).
+                let kept: Vec<usize> = if scored.len() > top_n {
+                    let boundary = scored[top_n - 1].1.clone();
+                    scored
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(i, (_, v))| *i < top_n || v.dax_equals(&boundary))
+                        .map(|(_, (idx, _))| idx)
+                        .collect()
+                } else {
+                    scored.into_iter().map(|(i, _)| i).collect()
+                };
                 Ok((tbl, kept, base_ctx))
             } else {
                 Ok((tbl, indices.into_iter().take(top_n).collect(), base_ctx))
@@ -1242,6 +1261,31 @@ fn apply_calculate_modifier(
                 }
                 "KEEPFILTERS" => {
                     if let Some(inner) = args.first() {
+                        if let Some((tbl_name, col_name)) = find_primary_table_col(inner) {
+                            if let Some(tbl) = model.get_table(&tbl_name) {
+                                if let Some(cidx) = tbl.get_col_idx(&col_name) {
+                                    let mut allowed = HashSet::new();
+                                    for r_idx in 0..tbl.rows.len() {
+                                        let rc = RowContext { table: tbl, row_idx: r_idx };
+                                        let v = evaluate_ast(inner, model, outer_ctx, std::slice::from_ref(&rc), vars)?;
+                                        if v.as_bool() {
+                                            allowed.insert(tbl.rows[r_idx][cidx].canonical_key());
+                                        }
+                                    }
+                                    // KEEPFILTERS intersects with any existing filter on the same
+                                    // column instead of replacing it (unlike a bare CALCULATE filter).
+                                    if let Some(existing) = outer_ctx
+                                        .filters
+                                        .get(&tbl.name.to_lowercase())
+                                        .and_then(|m| m.get(&col_name.to_lowercase()))
+                                    {
+                                        allowed = allowed.intersection(existing).cloned().collect();
+                                    }
+                                    next_ctx.set_column_filter(&tbl.name, &col_name, allowed);
+                                    return Ok(());
+                                }
+                            }
+                        }
                         return apply_calculate_modifier(inner, model, outer_ctx, next_ctx, row_stack, vars);
                     }
                     return Ok(());
@@ -1928,7 +1972,10 @@ fn eval_lookupvalue(
             let candidate = row[res_cidx].clone();
             if let Some(ref prev) = found {
                 if !prev.dax_equals(&candidate) {
-                    return Ok(alternate);
+                    if has_alternate {
+                        return Ok(alternate);
+                    }
+                    return Err("LOOKUPVALUE: múltiplas linhas correspondentes com valores diferentes".to_string());
                 }
             } else {
                 found = Some(candidate);
