@@ -593,4 +593,116 @@ export const FILTER_FUNCTIONS: Record<string, FunctionDefinition> = {
     minArgs: 2,
     maxArgs: 2,
   },
+
+  CONTAINSROW: {
+    name: 'CONTAINSROW',
+    category: 'Filtro',
+    syntax: 'CONTAINSROW(tableExpr, scalarExpr1, [scalarExpr2], ...)',
+    description: 'Retorna TRUE se uma linha de valores informados existir na expressão de tabela especificada.',
+    example: 'CONTAINSROW(VALUES(d_Clientes[Segmento]), "Corporativo")',
+    minArgs: 2,
+    maxArgs: -1,
+    evaluate: ([tableArg, ...searchVals]) => {
+      if (isDaxTable(tableArg)) {
+        const rows = tableArg.rows || [];
+        const cols = tableArg.columns || [];
+        return rows.some(row =>
+          searchVals.every((sv, idx) => {
+            const colName = cols[idx];
+            if (!colName) return false;
+            return daxEqual(row[colName], sv);
+          })
+        );
+      }
+      if (Array.isArray(tableArg)) {
+        return searchVals.length === 1 && tableArg.some(v => daxEqual(v, searchVals[0]));
+      }
+      return false;
+    },
+  },
+
+  TREATAS: {
+    name: 'TREATAS',
+    category: 'Filtro',
+    syntax: 'TREATAS(tableExpression, <column1>, [<column2>], ...)',
+    description: 'Aplica o resultado de uma expressão de tabela como filtros em colunas de uma tabela não relacionada.',
+    example: 'CALCULATE([Total], TREATAS(VALUES(DimAux[Mes]), d_Calendario[Mes]))',
+    minArgs: 2,
+    maxArgs: -1,
+    evaluate: ([tableArg, ...colArgs], context) => {
+      const model: ModelAccess | undefined = context?.model;
+      const rows = isDaxTable(tableArg) ? tableArg.rows : [];
+      const srcCols = isDaxTable(tableArg) ? tableArg.columns : [];
+      const firstCol = colArgs[0];
+      let targetTable = '';
+      let targetCol = '';
+      if (typeof firstCol === 'string') {
+        const m = firstCol.match(/^(?:'?([^'\[]+)'?\[)?([^\]]+)\]?$/);
+        if (m) {
+          targetTable = m[1] || '';
+          targetCol = m[2];
+        }
+      } else if (firstCol && typeof firstCol === 'object') {
+        targetTable = firstCol.table || '';
+        targetCol = firstCol.column || '';
+      }
+      const tblObj = model?.getTable(targetTable);
+      const allowed = new Set<any>();
+      if (srcCols[0]) {
+        rows.forEach(r => allowed.add(r[srcCols[0]]));
+      }
+      return {
+        __isModifier: true,
+        type: 'FILTER_EXPR',
+        tableId: tblObj ? tblObj.id : targetTable,
+        tableName: tblObj ? tblObj.name : targetTable,
+        columns: targetCol ? [targetCol] : [],
+        expression: allowed,
+      };
+    },
+  },
+
+  ALLSELECTEDAPPLY: {
+    name: 'ALLSELECTEDAPPLY',
+    category: 'Filtro',
+    syntax: 'ALLSELECTEDAPPLY([table_or_column])',
+    description: 'Aplica modificadores explícitos de escopo ALLSELECTED no contexto de filtro.',
+    example: 'CALCULATE([Total], ALLSELECTEDAPPLY())',
+    minArgs: 0,
+    maxArgs: -1,
+    evaluate: () => ({ __isModifier: true, type: 'KEEPFILTERS' }),
+  },
+
+  ALLSELECTEDREMOVE: {
+    name: 'ALLSELECTEDREMOVE',
+    category: 'Filtro',
+    syntax: 'ALLSELECTEDREMOVE([table_or_column])',
+    description: 'Remove filtros de sombra ALLSELECTED do contexto de cálculo atual.',
+    example: 'CALCULATE([Total], ALLSELECTEDREMOVE())',
+    minArgs: 0,
+    maxArgs: -1,
+    evaluate: () => ({ __isModifier: true, type: 'REMOVEFILTERS' }),
+  },
+
+  ALWAYSAPPLY: {
+    name: 'ALWAYSAPPLY',
+    category: 'Filtro',
+    syntax: 'ALWAYSAPPLY(<filterExpr>)',
+    description: 'Garante a aplicação obrigatória de uma expressão de filtro dentro de CALCULATE.',
+    example: 'CALCULATE([Total], ALWAYSAPPLY(f_Vendas[Status] = "Pago"))',
+    minArgs: 1,
+    maxArgs: 1,
+    evaluate: ([arg]) => arg ?? { __isModifier: true, type: 'KEEPFILTERS' },
+  },
+
+  NONFILTER: {
+    name: 'NONFILTER',
+    category: 'Filtro',
+    syntax: 'NONFILTER(<column>)',
+    description: 'Marca uma coluna de expressão para não participar como filtro direto de agrupamento.',
+    example: 'NONFILTER(d_Produto[Categoria])',
+    minArgs: 1,
+    maxArgs: 1,
+    evaluate: ([arg]) => arg ?? DAX_BLANK,
+  },
 };

@@ -1,0 +1,64 @@
+name: Release Linux Packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build Linux (AppImage, .deb, .rpm)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Tauri & packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf rpm libfuse2
+
+      - name: Install frontend dependencies & run tests
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec tsc --noEmit
+          pnpm test
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
+      - name: Build Tauri bundles (AppImage, deb, rpm)
+        run: pnpm tauri build --bundles appimage,deb,rpm
+
+      - name: Collect release artifacts & generate SHA256SUMS.txt
+        run: |
+          mkdir -p release-assets
+          find src-tauri/target/release/bundle -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) -exec cp {} release-assets/ \;
+          (cd release-assets && sha256sum * > SHA256SUMS.txt)
+          ls -lh release-assets
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true

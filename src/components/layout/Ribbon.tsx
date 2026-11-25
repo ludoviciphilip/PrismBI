@@ -35,6 +35,8 @@ import {
   FileCode2,
   Undo2,
   Redo2,
+  Home,
+  Download,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
@@ -117,6 +119,11 @@ export const Ribbon: React.FC<{
     lastSavedAt,
     projectName,
     setProjectName,
+    setShowWelcomeScreen,
+    addRecentProject,
+    setUpdateModalOpen,
+    availableUpdate,
+    tables,
   } = useBiStore(useShallow(s => ({
     setActiveView: s.setActiveView,
     addVisual: s.addVisual,
@@ -164,7 +171,53 @@ export const Ribbon: React.FC<{
     lastSavedAt: s.lastSavedAt,
     projectName: s.projectName,
     setProjectName: s.setProjectName,
+    setShowWelcomeScreen: s.setShowWelcomeScreen,
+    addRecentProject: s.addRecentProject,
+    setUpdateModalOpen: s.setUpdateModalOpen,
+    availableUpdate: s.availableUpdate,
+    tables: s.tables,
   })));
+
+  const handleAddVisualToReport = (type: Parameters<typeof addVisual>[0]) => {
+    addVisual(type);
+    setActiveView('report');
+  };
+
+  const handleAutoCalendar = () => {
+    let minYear = new Date().getFullYear() - 1;
+    let maxYear = new Date().getFullYear() + 1;
+    let foundMin = Infinity;
+    let foundMax = -Infinity;
+    for (const tbl of tables) {
+      const dateCols = tbl.columns.filter(c => c.dataType === 'date').map(c => c.name);
+      if (dateCols.length === 0) continue;
+      for (const row of tbl.rows) {
+        for (const col of dateCols) {
+          const val = String(row[col] ?? '');
+          const m = val.match(/^(\d{4})-\d{2}-\d{2}/);
+          if (m) {
+            const y = Number(m[1]);
+            if (y >= 1990 && y <= 2100) {
+              if (y < foundMin) foundMin = y;
+              if (y > foundMax) foundMax = y;
+            }
+          }
+        }
+      }
+    }
+    if (Number.isFinite(foundMin) && Number.isFinite(foundMax)) {
+      minYear = foundMin;
+      maxYear = Math.max(foundMin, foundMax);
+    }
+    const startDate = `${minYear}-01-01`;
+    const endDate = `${maxYear}-12-31`;
+    generateCalendar(startDate, endDate);
+    setRefreshStatus({
+      type: 'success',
+      message: `Tabela d_Calendario (${startDate} a ${endDate}) atualizada com sucesso.`,
+      timestamp: new Date().toLocaleTimeString('pt-BR'),
+    });
+  };
 
   const activeRibbonPage = pages.find(p => p.id === activePageId) || pages[0];
   const { width: ribbonCanvasWidth, height: ribbonCanvasHeight } = getEffectiveCanvasSize(activeRibbonPage);
@@ -280,6 +333,12 @@ export const Ribbon: React.FC<{
         const parsed = JSON.parse(content);
         if (parsed && (parsed.tables || parsed.pages)) {
           loadStateFromProject(parsed);
+          addRecentProject({
+            id: `insight_${file.name}`,
+            name: parsed.projectName || file.name.replace(/\.(insight|json)$/i, ''),
+            type: 'insight',
+            openedAt: new Date().toISOString(),
+          });
         } else {
           alert('O arquivo selecionado não contém uma estrutura de projeto .insight válida.');
         }
@@ -323,6 +382,14 @@ export const Ribbon: React.FC<{
             className="bg-transparent text-slate-200 font-medium hover:bg-slate-800 px-1.5 py-0.5 rounded focus:bg-slate-800 focus:outline-none focus:ring-1 focus:ring-amber-400 max-w-[200px] truncate"
           />
           <button
+            onClick={() => setShowWelcomeScreen(true)}
+            className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-medium transition-colors text-[10px] flex items-center gap-1 cursor-pointer"
+            title="Voltar para a Tela Inicial"
+          >
+            <Home className="w-3 h-3 text-amber-400" />
+            <span>Início</span>
+          </button>
+          <button
             onClick={() => setShowNewProjectModal(true)}
             className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-medium transition-colors text-[10px]"
             title={t.topBar.newProjectTooltip}
@@ -337,6 +404,16 @@ export const Ribbon: React.FC<{
             <FolderOpen className="w-3 h-3 text-amber-400" />
             <span>{t.topBar.openInsight}</span>
           </button>
+          {availableUpdate?.updateAvailable && (
+            <button
+              onClick={() => setUpdateModalOpen(true)}
+              className="px-2 py-0.5 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition-colors text-[10px] flex items-center gap-1 cursor-pointer"
+              title="Nova versão disponível para download e atualização"
+            >
+              <Download className="w-3 h-3" />
+              <span>Atualização v{availableUpdate.latestVersion}</span>
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-2.5 text-[11px] text-slate-300">
@@ -532,7 +609,7 @@ export const Ribbon: React.FC<{
             {/* Novo Visual e Medidas */}
             <div className="flex items-center gap-1 px-2 border-r border-slate-200 dark:border-slate-800">
               <button
-                onClick={() => addVisual('column')}
+                onClick={() => handleAddVisualToReport('column')}
                 className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <PlusCircle className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
@@ -650,60 +727,88 @@ export const Ribbon: React.FC<{
           <>
             <div className="flex items-center gap-1.5 px-2 border-r border-slate-200 dark:border-slate-800">
               <button
-                onClick={() => addVisual('column')}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                onClick={() => handleAddVisualToReport('column')}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <span className="text-base font-bold text-amber-600">📊</span>
                 <span className="text-[10px] font-medium">Colunas</span>
               </button>
               <button
-                onClick={() => addVisual('line')}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                onClick={() => handleAddVisualToReport('line')}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <span className="text-base font-bold text-blue-600">📈</span>
                 <span className="text-[10px] font-medium">Linhas</span>
               </button>
               <button
-                onClick={() => addVisual('donut')}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                onClick={() => handleAddVisualToReport('donut')}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <span className="text-base font-bold text-emerald-600">🍩</span>
                 <span className="text-[10px] font-medium">Rosca</span>
               </button>
               <button
-                onClick={() => addVisual('waterfall')}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                onClick={() => handleAddVisualToReport('waterfall')}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <span className="text-base font-bold text-purple-600">📉</span>
                 <span className="text-[10px] font-medium">Cascata</span>
               </button>
               <button
-                onClick={() => addVisual('card')}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                onClick={() => handleAddVisualToReport('funnel')}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <span className="text-base font-bold text-pink-600">🔻</span>
+                <span className="text-[10px] font-medium">Funil</span>
+              </button>
+              <button
+                onClick={() => handleAddVisualToReport('card')}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <span className="text-base font-bold text-amber-700">🔲</span>
                 <span className="text-[10px] font-medium">Cartão KPI</span>
               </button>
               <button
-                onClick={() => addVisual('matrix')}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                onClick={() => handleAddVisualToReport('multi-card')}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <span className="text-base font-bold text-teal-600">🗂️</span>
+                <span className="text-[10px] font-medium">Cartão Múltiplo</span>
+              </button>
+              <button
+                onClick={() => handleAddVisualToReport('matrix')}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <span className="text-base font-bold text-cyan-600">⊞</span>
                 <span className="text-[10px] font-medium">Matriz</span>
               </button>
               <button
-                onClick={() => addVisual('table')}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                onClick={() => handleAddVisualToReport('table')}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <span className="text-base font-bold text-slate-700 dark:text-slate-300">📋</span>
                 <span className="text-[10px] font-medium">Tabela</span>
               </button>
               <button
-                onClick={() => addVisual('slicer')}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                onClick={() => handleAddVisualToReport('slicer')}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <span className="text-base font-bold text-blue-700">🎛️</span>
                 <span className="text-[10px] font-medium">Segmentação</span>
+              </button>
+              <button
+                onClick={() => handleAddVisualToReport('textbox')}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <span className="text-base font-bold text-indigo-500">📝</span>
+                <span className="text-[10px] font-medium">Texto</span>
+              </button>
+              <button
+                onClick={() => handleAddVisualToReport('action-button')}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <span className="text-base font-bold text-amber-500">🔘</span>
+                <span className="text-[10px] font-medium">Botão</span>
               </button>
             </div>
           </>
@@ -715,35 +820,36 @@ export const Ribbon: React.FC<{
             <div className="flex items-center gap-2 px-2 border-r border-slate-200 dark:border-slate-800">
               <button
                 onClick={() => setCustomMeasureModalOpen(true)}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <Sigma className="w-5 h-5 text-purple-600 dark:text-purple-400" />
                 <span className="text-[10px] font-semibold mt-0.5">{t.ribbonActions.newMeasure}</span>
               </button>
               <button
                 onClick={() => setQuickMeasureModalOpen(true)}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <Zap className="w-5 h-5 text-amber-600 dark:text-amber-400" />
                 <span className="text-[10px] font-semibold mt-0.5">{t.ribbonActions.quickMeasure}</span>
               </button>
               <button
-                onClick={() => generateCalendar('2025-01-01', '2026-12-31')}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                onClick={handleAutoCalendar}
+                title="Gerar ou atualizar d_Calendario cobrindo automaticamente o período das tabelas carregadas"
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <Calendar className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
                 <span className="text-[10px] font-semibold mt-0.5">Calendário</span>
               </button>
               <button
                 onClick={() => setActiveView('model')}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <Layers className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                 <span className="text-[10px] font-semibold mt-0.5">{t.nav.model}</span>
               </button>
               <button
                 onClick={() => setActiveView('governance')}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <ShieldCheck className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                 <span className="text-[10px] font-semibold mt-0.5">{t.nav.governance}</span>
@@ -756,27 +862,27 @@ export const Ribbon: React.FC<{
         {activeRibbonTab === 'exibir' && (
           <>
             {/* Painéis */}
-            <div className="flex items-center gap-1.5 px-2 border-r border-slate-200">
+            <div className="flex items-center gap-1.5 px-2 border-r border-slate-200 dark:border-slate-800">
               <button
                 onClick={() => setShowFiltersPane(!showFiltersPane)}
-                className={`flex flex-col items-center p-1 rounded text-slate-700 ${
-                  showFiltersPane ? 'bg-amber-100 font-bold' : 'hover:bg-slate-100'
+                className={`flex flex-col items-center p-1.5 rounded text-slate-700 dark:text-slate-200 cursor-pointer ${
+                  showFiltersPane ? 'bg-amber-100 dark:bg-amber-950/60 dark:text-amber-300 font-bold' : 'hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
                 <span className="text-[10px]">{t.panes.filters.title}</span>
               </button>
               <button
                 onClick={() => setShowVisualsPane(!showVisualsPane)}
-                className={`flex flex-col items-center p-1 rounded text-slate-700 ${
-                  showVisualsPane ? 'bg-amber-100 font-bold' : 'hover:bg-slate-100'
+                className={`flex flex-col items-center p-1.5 rounded text-slate-700 dark:text-slate-200 cursor-pointer ${
+                  showVisualsPane ? 'bg-amber-100 dark:bg-amber-950/60 dark:text-amber-300 font-bold' : 'hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
                 <span className="text-[10px]">{t.panes.visualizations.title}</span>
               </button>
               <button
                 onClick={() => setShowFieldsPane(!showFieldsPane)}
-                className={`flex flex-col items-center p-1 rounded text-slate-700 ${
-                  showFieldsPane ? 'bg-amber-100 font-bold' : 'hover:bg-slate-100'
+                className={`flex flex-col items-center p-1.5 rounded text-slate-700 dark:text-slate-200 cursor-pointer ${
+                  showFieldsPane ? 'bg-amber-100 dark:bg-amber-950/60 dark:text-amber-300 font-bold' : 'hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
                 <span className="text-[10px]">{t.panes.fields.title}</span>
@@ -784,23 +890,27 @@ export const Ribbon: React.FC<{
             </div>
 
             {/* Layout Celular / Desktop */}
-            <div className="flex items-center gap-1 px-2 border-r border-slate-200">
+            <div className="flex items-center gap-1 px-2 border-r border-slate-200 dark:border-slate-800">
               <button
                 onClick={() => setLayoutMode(layoutMode === 'desktop' ? 'mobile' : 'desktop')}
-                className={`flex flex-col items-center p-1 rounded text-slate-700 ${
-                  layoutMode === 'mobile' ? 'bg-amber-100 font-bold' : 'hover:bg-slate-100'
+                className={`flex flex-col items-center p-1 rounded text-slate-700 dark:text-slate-200 cursor-pointer ${
+                  layoutMode === 'mobile' ? 'bg-amber-100 dark:bg-amber-950/60 dark:text-amber-300 font-bold' : 'hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
-                {layoutMode === 'desktop' ? <Smartphone className="w-5 h-5 text-slate-600" /> : <Monitor className="w-5 h-5 text-amber-600" />}
+                {layoutMode === 'desktop' ? <Smartphone className="w-5 h-5 text-slate-600 dark:text-slate-300" /> : <Monitor className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
                 <span className="text-[10px] font-semibold mt-0.5">
                   {layoutMode === 'desktop' ? t.ribbonActions.mobileLayout : t.ribbonActions.desktopLayout}
                 </span>
               </button>
               <button
-                onClick={() => setIsPresentationMode(!isPresentationMode)}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 text-slate-700"
+                onClick={() => {
+                  setActiveView('report');
+                  setIsPresentationMode(!isPresentationMode);
+                }}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
+                title="Tela cheia de apresentação (pressione Esc para sair)"
               >
-                <Maximize className="w-5 h-5 text-slate-600" />
+                <Maximize className="w-5 h-5 text-slate-600 dark:text-slate-300" />
                 <span className="text-[10px] font-semibold mt-0.5">{t.ribbonActions.presentationMode}</span>
               </button>
             </div>
@@ -809,7 +919,7 @@ export const Ribbon: React.FC<{
             <div className="flex items-center gap-1.5 px-2 border-r border-slate-200 dark:border-slate-800">
               <button
                 onClick={() => setThemeModalOpen(true)}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300"
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer"
                 title={t.ribbonActions.themeManager}
               >
                 <Palette className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
@@ -823,7 +933,7 @@ export const Ribbon: React.FC<{
                 <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-300 dark:border-slate-700">
                   <button
                     onClick={() => setThemeMode('light')}
-                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold transition-all ${
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold transition-all cursor-pointer ${
                       themeMode === 'light'
                         ? 'bg-white text-slate-900 shadow-xs'
                         : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
@@ -835,7 +945,7 @@ export const Ribbon: React.FC<{
                   </button>
                   <button
                     onClick={() => setThemeMode('dark')}
-                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold transition-all ${
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold transition-all cursor-pointer ${
                       themeMode === 'dark'
                         ? 'bg-slate-900 text-white shadow-xs'
                         : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
@@ -847,7 +957,7 @@ export const Ribbon: React.FC<{
                   </button>
                   <button
                     onClick={() => setThemeMode('system')}
-                    className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold transition-all ${
+                    className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold transition-all cursor-pointer ${
                       themeMode === 'system'
                         ? 'bg-amber-400 text-slate-950 font-bold shadow-xs'
                         : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
@@ -862,32 +972,32 @@ export const Ribbon: React.FC<{
             </div>
 
             {/* Tamanho da Grade / Tela */}
-            <div className="flex items-center gap-2 px-2 border-r border-slate-200">
+            <div className="flex items-center gap-2 px-2 border-r border-slate-200 dark:border-slate-800">
               <button
                 onClick={() => setCanvasSizeModalOpen(true)}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 text-slate-700 transition-colors cursor-pointer"
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
                 title="Ajustar tamanho e proporção da tela/grade do relatório"
               >
-                <Grid className="w-5 h-5 text-amber-600" />
+                <Grid className="w-5 h-5 text-amber-600 dark:text-amber-400" />
                 <span className="text-[10px] font-semibold mt-0.5">
                   {t.ribbonActions.pageSize || 'Tamanho da Grade'}
                 </span>
-                <span className="text-[9px] font-mono text-slate-500">
+                <span className="text-[9px] font-mono text-slate-500 dark:text-slate-400">
                   {ribbonCanvasWidth} × {ribbonCanvasHeight} px
                 </span>
               </button>
             </div>
 
             {/* Grade do Relatório */}
-            <div className="flex items-center gap-2 px-2 border-r border-slate-200">
+            <div className="flex items-center gap-2 px-2 border-r border-slate-200 dark:border-slate-800">
               <div className="flex flex-col justify-center">
                 <div className="flex items-center gap-1.5 mb-1">
-                  <Grid className="w-4 h-4 text-slate-600" />
-                  <span className="text-[10px] font-bold text-slate-700">Grade:</span>
+                  <Grid className="w-4 h-4 text-slate-600 dark:text-slate-300" />
+                  <span className="text-[10px] font-bold text-slate-700 dark:text-slate-200">Grade:</span>
                   <select
                     value={gridSize}
                     onChange={(e) => setGridSize(Number(e.target.value))}
-                    className="border border-slate-300 rounded px-1.5 py-0.5 text-[10px] bg-slate-50 font-medium text-slate-800 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    className="border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5 text-[10px] bg-slate-50 dark:bg-slate-800 font-medium text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
                   >
                     {[8, 10, 16, 20, 24, 32].map(size => (
                       <option key={size} value={size}>
@@ -896,8 +1006,8 @@ export const Ribbon: React.FC<{
                     ))}
                   </select>
                 </div>
-                <div className="flex items-center gap-2 text-[10px] text-slate-600">
-                  <label className="flex items-center gap-1 cursor-pointer hover:text-slate-900 select-none">
+                <div className="flex items-center gap-2 text-[10px] text-slate-600 dark:text-slate-300">
+                  <label className="flex items-center gap-1 cursor-pointer hover:text-slate-900 dark:hover:text-white select-none">
                     <input
                       type="checkbox"
                       checked={showGrid}
@@ -906,7 +1016,7 @@ export const Ribbon: React.FC<{
                     />
                     <span>Linhas</span>
                   </label>
-                  <label className="flex items-center gap-1 cursor-pointer hover:text-slate-900 select-none">
+                  <label className="flex items-center gap-1 cursor-pointer hover:text-slate-900 dark:hover:text-white select-none">
                     <input
                       type="checkbox"
                       checked={snapToGrid}
@@ -950,19 +1060,40 @@ export const Ribbon: React.FC<{
         {/* TAB 5: AJUDA */}
         {activeRibbonTab === 'ajuda' && (
           <>
-            <div className="flex items-center gap-2 px-2 border-r border-slate-200">
+            <div className="flex items-center gap-2 px-2 border-r border-slate-200 dark:border-slate-800">
+              <button
+                onClick={() => setUpdateModalOpen(true)}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-emerald-700 dark:text-emerald-400 cursor-pointer"
+              >
+                <Download className="w-5 h-5" />
+                <span className="text-[10px] font-semibold mt-0.5">Atualizações</span>
+              </button>
+              <button
+                onClick={() => setActiveView('daxcompliance')}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-amber-700 dark:text-amber-400 cursor-pointer"
+              >
+                <Zap className="w-5 h-5" />
+                <span className="text-[10px] font-semibold mt-0.5">Conformidade DAX</span>
+              </button>
+              <button
+                onClick={() => setShowWelcomeScreen(true)}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <Home className="w-5 h-5 text-amber-500" />
+                <span className="text-[10px] font-semibold mt-0.5">Tela Inicial</span>
+              </button>
               <button
                 onClick={() => setLimitationsModalOpen(true)}
-                className="flex flex-col items-center p-1 rounded hover:bg-amber-50 text-amber-800"
+                className="flex flex-col items-center p-1 rounded hover:bg-amber-50 dark:hover:bg-slate-800 text-amber-800 dark:text-amber-300 cursor-pointer"
               >
-                <Info className="w-5 h-5 text-amber-600" />
+                <Info className="w-5 h-5 text-amber-600 dark:text-amber-400" />
                 <span className="text-[10px] font-semibold mt-0.5">{t.nav.limitations}</span>
               </button>
               <button
                 onClick={() => setActiveView('governance')}
-                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 text-slate-700"
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
-                <ShieldCheck className="w-5 h-5 text-blue-600" />
+                <ShieldCheck className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                 <span className="text-[10px] font-semibold mt-0.5">{t.nav.governance}</span>
               </button>
             </div>
@@ -973,24 +1104,24 @@ export const Ribbon: React.FC<{
       {/* Modal de Confirmação Novo Projeto */}
       {showNewProjectModal && (
         <div className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4">
             <div className="flex items-center gap-3">
-              <div className="p-2.5 rounded-xl bg-amber-100 text-amber-700">
+              <div className="p-2.5 rounded-xl bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400">
                 <FilePlus className="w-6 h-6" />
               </div>
               <div>
-                <h3 className="font-bold text-slate-900 text-base">{t.topBar.confirmNewProjectTitle}</h3>
-                <p className="text-xs text-slate-500 mt-0.5">
+                <h3 className="font-bold text-slate-900 dark:text-white text-base">{t.topBar.confirmNewProjectTitle}</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                   {t.topBar.confirmNewProjectMessage}
                 </p>
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
               <button
                 type="button"
                 onClick={() => setShowNewProjectModal(false)}
-                className="px-4 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 font-medium text-xs transition-colors"
+                className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium text-xs transition-colors cursor-pointer"
               >
                 {t.common.cancel}
               </button>
@@ -1000,7 +1131,7 @@ export const Ribbon: React.FC<{
                   newProject();
                   setShowNewProjectModal(false);
                 }}
-                className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-xs transition-colors"
+                className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-xs transition-colors cursor-pointer"
               >
                 {t.common.confirm}
               </button>

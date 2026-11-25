@@ -317,15 +317,32 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
 
     let res = match fname {
         // ==========================================
-        // Information (scalar)
+        // Information & Conversion (scalar)
         // ==========================================
-        "ISNUMBER" => DaxValue::Boolean(matches!(args.first(), Some(DaxValue::Number(_)))),
-        "ISTEXT" => DaxValue::Boolean(matches!(args.first(), Some(DaxValue::Text(_)))),
-        "ISLOGICAL" => DaxValue::Boolean(matches!(args.first(), Some(DaxValue::Boolean(_)))),
+        "ISNUMBER" | "ISNUMERIC" | "ISDOUBLE" | "ISCURRENCY" => {
+            DaxValue::Boolean(matches!(args.first(), Some(DaxValue::Number(_))))
+        }
+        "ISINT64" => DaxValue::Boolean(match args.first() {
+            Some(DaxValue::Number(n)) => n.is_finite() && (n.fract()).abs() < 1e-12,
+            _ => false,
+        }),
+        "ISTEXT" | "ISSTRING" => DaxValue::Boolean(matches!(args.first(), Some(DaxValue::Text(_)))),
+        "ISLOGICAL" | "ISBOOLEAN" => {
+            DaxValue::Boolean(matches!(args.first(), Some(DaxValue::Boolean(_))))
+        }
+        "ISDATETIME" => DaxValue::Boolean(match args.first() {
+            Some(DaxValue::Text(s)) => parse_flexible_ymd(s).is_some(),
+            _ => false,
+        }),
         "ISNONTEXT" => DaxValue::Boolean(!matches!(args.first(), Some(DaxValue::Text(_)))),
         "ISERROR" => DaxValue::Boolean(false),
         "ISEVEN" => DaxValue::Boolean((arg_f64(0, 0.0).trunc() as i64).rem_euclid(2) == 0),
         "ISODD" => DaxValue::Boolean((arg_f64(0, 0.0).trunc() as i64).rem_euclid(2) != 0),
+        "COALESCE" => args
+            .iter()
+            .find(|v| !v.is_blank())
+            .cloned()
+            .unwrap_or(DaxValue::Blank),
 
         // ==========================================
         // Math & Trigonometry
@@ -497,14 +514,101 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
         "BITAND" => DaxValue::Number(((arg_f64(0, 0.0) as i64) & (arg_f64(1, 0.0) as i64)) as f64),
         "BITOR" => DaxValue::Number(((arg_f64(0, 0.0) as i64) | (arg_f64(1, 0.0) as i64)) as f64),
         "BITXOR" => DaxValue::Number(((arg_f64(0, 0.0) as i64) ^ (arg_f64(1, 0.0) as i64)) as f64),
+        "BITLSHIFT" => {
+            let n = arg_f64(0, 0.0) as i64;
+            let shift = (arg_f64(1, 0.0) as i32).clamp(-63, 63);
+            let shifted = if shift >= 0 {
+                n.wrapping_shl(shift as u32)
+            } else {
+                n.wrapping_shr((-shift) as u32)
+            };
+            DaxValue::Number(shifted as f64)
+        }
+        "BITRSHIFT" => {
+            let n = arg_f64(0, 0.0) as i64;
+            let shift = (arg_f64(1, 0.0) as i32).clamp(-63, 63);
+            let shifted = if shift >= 0 {
+                n.wrapping_shr(shift as u32)
+            } else {
+                n.wrapping_shl((-shift) as u32)
+            };
+            DaxValue::Number(shifted as f64)
+        }
+        "SINH" => DaxValue::Number(arg_f64(0, 0.0).sinh()),
+        "COSH" => DaxValue::Number(arg_f64(0, 0.0).cosh()),
+        "TANH" => DaxValue::Number(arg_f64(0, 0.0).tanh()),
+        "ASINH" => DaxValue::Number(arg_f64(0, 0.0).asinh()),
+        "ACOSH" => {
+            let n = arg_f64(0, 1.0);
+            if n >= 1.0 { DaxValue::Number(n.acosh()) } else { DaxValue::Blank }
+        }
+        "ATANH" => {
+            let n = arg_f64(0, 0.0);
+            if n > -1.0 && n < 1.0 { DaxValue::Number(n.atanh()) } else { DaxValue::Blank }
+        }
+        "COMBIN" => {
+            let n = arg_f64(0, 0.0).trunc() as i64;
+            let k = arg_f64(1, 0.0).trunc() as i64;
+            if n < 0 || k < 0 || k > n {
+                DaxValue::Blank
+            } else {
+                let k = k.min(n - k);
+                let mut res = 1.0f64;
+                for i in 0..k {
+                    res = res * ((n - i) as f64) / ((i + 1) as f64);
+                }
+                DaxValue::Number(res.round())
+            }
+        }
+        "COMBINA" => {
+            let n = arg_f64(0, 0.0).trunc() as i64;
+            let k = arg_f64(1, 0.0).trunc() as i64;
+            if n <= 0 || k < 0 {
+                if n == 0 && k == 0 { DaxValue::Number(1.0) } else { DaxValue::Blank }
+            } else {
+                let top = n + k - 1;
+                let kk = k.min(top - k);
+                let mut res = 1.0f64;
+                for i in 0..kk {
+                    res = res * ((top - i) as f64) / ((i + 1) as f64);
+                }
+                DaxValue::Number(res.round())
+            }
+        }
+        "PERMUT" => {
+            let n = arg_f64(0, 0.0).trunc() as i64;
+            let k = arg_f64(1, 0.0).trunc() as i64;
+            if n < 0 || k < 0 || k > n {
+                DaxValue::Blank
+            } else {
+                let mut res = 1.0f64;
+                for i in 0..k {
+                    res *= (n - i) as f64;
+                }
+                DaxValue::Number(res)
+            }
+        }
         "CONVERT" => {
             let v = args.first().cloned().unwrap_or(DaxValue::Blank);
-            let target_t = arg_str(1).to_uppercase();
-            match target_t.as_str() {
-                "INTEGER" | "DOUBLE" | "CURRENCY" => DaxValue::Number(v.as_f64().unwrap_or(0.0)),
-                "STRING" => DaxValue::Text(v.as_display_string()),
-                "BOOLEAN" => DaxValue::Boolean(v.as_bool()),
-                _ => v,
+            if v.is_blank() {
+                DaxValue::Blank
+            } else {
+                let target_t = arg_str(1).trim().to_uppercase();
+                match target_t.as_str() {
+                    "INTEGER" | "INT64" => DaxValue::Number(v.as_f64().unwrap_or(0.0).trunc()),
+                    "DOUBLE" | "DECIMAL" => DaxValue::Number(v.as_f64().unwrap_or(0.0)),
+                    "CURRENCY" => DaxValue::Number((v.as_f64().unwrap_or(0.0) * 10_000.0).round() / 10_000.0),
+                    "STRING" | "TEXT" => DaxValue::Text(v.as_display_string()),
+                    "BOOLEAN" => DaxValue::Boolean(v.as_bool()),
+                    "DATETIME" | "DATE" => {
+                        if let Some((y, m, d)) = parse_flexible_ymd(&v.as_display_string()) {
+                            DaxValue::Text(format!("{:04}-{:02}-{:02}", y, m, d))
+                        } else {
+                            DaxValue::Text(v.as_display_string())
+                        }
+                    }
+                    _ => v,
+                }
             }
         }
 
@@ -853,6 +957,204 @@ pub fn try_eval_scalar_fn(fname: &str, args: &[DaxValue]) -> Result<Option<DaxVa
                 }
             }
         }
+        "NPV" => {
+            let rate = arg_f64(0, 0.0);
+            let mut sum = 0.0f64;
+            for (idx, v) in args.iter().skip(1).enumerate() {
+                if let Some(cf) = v.as_f64() {
+                    sum += cf / (1.0 + rate).powi((idx + 1) as i32);
+                }
+            }
+            DaxValue::Number(sum)
+        }
+        "IPMT" | "PPMT" => {
+            let rate = arg_f64(0, 0.0);
+            let per = arg_f64(1, 1.0);
+            let nper = arg_f64(2, 1.0);
+            let pv = arg_f64(3, 0.0);
+            let fv = arg_f64(4, 0.0);
+            let ptype = if arg_f64(5, 0.0) != 0.0 { 1.0 } else { 0.0 };
+            if nper.abs() < 1e-12 || per < 1.0 || per > nper {
+                DaxValue::Blank
+            } else if rate.abs() < 1e-12 {
+                let pmt = -(pv + fv) / nper;
+                DaxValue::Number(if fname == "IPMT" { 0.0 } else { pmt })
+            } else {
+                let pvif = (1.0 + rate).powf(nper);
+                let pmt = -(pv * pvif + fv) * rate / ((1.0 + rate * ptype) * (pvif - 1.0));
+                let ipmt = if ptype != 0.0 && (per - 1.0).abs() < 1e-12 {
+                    0.0
+                } else {
+                    let effective_per = if ptype != 0.0 { per - 2.0 } else { per - 1.0 };
+                    let p_pow = (1.0 + rate).powf(effective_per.max(0.0));
+                    let bal = pv * p_pow + pmt * (1.0 + rate * ptype) * (p_pow - 1.0) / rate;
+                    if ptype != 0.0 && effective_per < 0.0 {
+                        0.0
+                    } else {
+                        -bal * rate
+                    }
+                };
+                if fname == "IPMT" {
+                    DaxValue::Number(ipmt)
+                } else {
+                    DaxValue::Number(pmt - ipmt)
+                }
+            }
+        }
+        "SLN" => {
+            let cost = arg_f64(0, 0.0);
+            let salvage = arg_f64(1, 0.0);
+            let life = arg_f64(2, 1.0);
+            if life.abs() < 1e-12 {
+                DaxValue::Blank
+            } else {
+                DaxValue::Number((cost - salvage) / life)
+            }
+        }
+        "SYD" => {
+            let cost = arg_f64(0, 0.0);
+            let salvage = arg_f64(1, 0.0);
+            let life = arg_f64(2, 1.0);
+            let per = arg_f64(3, 1.0);
+            let sum_years = life * (life + 1.0) / 2.0;
+            if sum_years.abs() < 1e-12 {
+                DaxValue::Blank
+            } else {
+                DaxValue::Number((cost - salvage) * (life - per + 1.0) / sum_years)
+            }
+        }
+        "DB" => {
+            let cost = arg_f64(0, 0.0);
+            let salvage = arg_f64(1, 0.0);
+            let life = arg_f64(2, 1.0);
+            let period = arg_f64(3, 1.0).max(1.0) as i32;
+            let month = arg_f64(4, 12.0).clamp(1.0, 12.0);
+            if cost <= 0.0 || life <= 0.0 {
+                DaxValue::Number(0.0)
+            } else {
+                let raw_rate = 1.0 - (salvage / cost).max(0.0).powf(1.0 / life);
+                let rate = (raw_rate * 1000.0).round() / 1000.0;
+                let mut total_dep = 0.0f64;
+                let mut cur_dep = 0.0f64;
+                for p in 1..=period {
+                    if p == 1 {
+                        cur_dep = cost * rate * month / 12.0;
+                    } else if (p as f64) > life {
+                        cur_dep = ((cost - total_dep) * rate * (12.0 - month)) / 12.0;
+                    } else {
+                        cur_dep = (cost - total_dep) * rate;
+                    }
+                    total_dep += cur_dep;
+                }
+                DaxValue::Number(cur_dep)
+            }
+        }
+        "DDB" => {
+            let cost = arg_f64(0, 0.0);
+            let salvage = arg_f64(1, 0.0);
+            let life = arg_f64(2, 1.0);
+            let period = arg_f64(3, 1.0).max(1.0) as i32;
+            let factor = arg_f64(4, 2.0);
+            if life <= 0.0 {
+                DaxValue::Blank
+            } else {
+                let rate = (factor / life).min(1.0);
+                let mut value = cost;
+                let mut dep = 0.0f64;
+                for _ in 1..=period {
+                    dep = (value * rate).min((value - salvage).max(0.0));
+                    value -= dep;
+                }
+                DaxValue::Number(dep.max(0.0))
+            }
+        }
+        "EFFECT" => {
+            let nom = arg_f64(0, 0.0);
+            let npery = arg_f64(1, 1.0).trunc().max(1.0);
+            DaxValue::Number((1.0 + nom / npery).powf(npery) - 1.0)
+        }
+        "NOMINAL" => {
+            let eff = arg_f64(0, 0.0);
+            let npery = arg_f64(1, 1.0).trunc().max(1.0);
+            DaxValue::Number(npery * ((1.0 + eff).powf(1.0 / npery) - 1.0))
+        }
+        "RATE" => {
+            let nper = arg_f64(0, 1.0);
+            let pmt = arg_f64(1, 0.0);
+            let pv = arg_f64(2, 0.0);
+            let fv = arg_f64(3, 0.0);
+            let ptype = if arg_f64(4, 0.0) != 0.0 { 1.0 } else { 0.0 };
+            let mut r = arg_f64(5, 0.1);
+            if nper <= 0.0 {
+                DaxValue::Blank
+            } else {
+                for _ in 0..50 {
+                    if (1.0 + r) <= 0.0 {
+                        r = 0.01;
+                    }
+                    let y = if r.abs() < 1e-10 {
+                        pv + pmt * nper + fv
+                    } else {
+                        let f = (1.0 + r).powf(nper);
+                        pv * f + pmt * (1.0 + r * ptype) * (f - 1.0) / r + fv
+                    };
+                    if y.abs() < 1e-9 {
+                        break;
+                    }
+                    let eps = 1e-6;
+                    let r2 = r + eps;
+                    let f2 = (1.0 + r2).powf(nper);
+                    let y2 = pv * f2 + pmt * (1.0 + r2 * ptype) * (f2 - 1.0) / r2 + fv;
+                    let dy = (y2 - y) / eps;
+                    if dy.abs() < 1e-12 {
+                        break;
+                    }
+                    r -= y / dy;
+                }
+                if r.is_finite() { DaxValue::Number(r) } else { DaxValue::Blank }
+            }
+        }
+
+        // ==========================================
+        // Parent-Child Functions
+        // ==========================================
+        "PATHLENGTH" => {
+            let path = arg_str(0);
+            if path.trim().is_empty() {
+                DaxValue::Number(0.0)
+            } else {
+                DaxValue::Number(path.split('|').filter(|s| !s.trim().is_empty()).count() as f64)
+            }
+        }
+        "PATHCONTAINS" => {
+            let path = arg_str(0);
+            let item = arg_str(1);
+            let found = path
+                .split('|')
+                .any(|seg| seg.trim().eq_ignore_ascii_case(item.trim()));
+            DaxValue::Boolean(found)
+        }
+        "PATHITEM" | "PATHITEMREVERSE" => {
+            let path = arg_str(0);
+            let pos = arg_f64(1, 1.0).trunc() as usize;
+            let ret_type = arg_f64(2, 0.0).trunc() as i32;
+            let segs: Vec<&str> = path.split('|').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+            let chosen = if pos == 0 || pos > segs.len() {
+                None
+            } else if fname == "PATHITEMREVERSE" {
+                segs.get(segs.len() - pos).copied()
+            } else {
+                segs.get(pos - 1).copied()
+            };
+            match chosen {
+                Some(s) if ret_type == 1 => match s.parse::<f64>() {
+                    Ok(n) => DaxValue::Number(n),
+                    Err(_) => DaxValue::Blank,
+                },
+                Some(s) => DaxValue::Text(s.to_string()),
+                None => DaxValue::Blank,
+            }
+        }
 
         _ => return Ok(None),
     };
@@ -908,5 +1210,41 @@ mod tests {
             .as_f64()
             .unwrap();
         assert!((pmt - (-888.4878867)).abs() < 1e-4);
+
+        // v0.7.0 expanded scalar coverage tests
+        assert_eq!(
+            try_eval_scalar_fn("ISBOOLEAN", &[DaxValue::Boolean(true)]).unwrap(),
+            Some(DaxValue::Boolean(true))
+        );
+        assert_eq!(
+            try_eval_scalar_fn("ISINT64", &[DaxValue::Number(42.0)]).unwrap(),
+            Some(DaxValue::Boolean(true))
+        );
+        assert_eq!(
+            try_eval_scalar_fn("COALESCE", &[DaxValue::Blank, DaxValue::Text("ok".into())]).unwrap(),
+            Some(DaxValue::Text("ok".into()))
+        );
+        assert_eq!(
+            try_eval_scalar_fn("COMBIN", &[DaxValue::Number(5.0), DaxValue::Number(2.0)]).unwrap(),
+            Some(DaxValue::Number(10.0))
+        );
+        assert_eq!(
+            try_eval_scalar_fn("BITLSHIFT", &[DaxValue::Number(3.0), DaxValue::Number(2.0)]).unwrap(),
+            Some(DaxValue::Number(12.0))
+        );
+        assert_eq!(
+            try_eval_scalar_fn("PATHCONTAINS", &[DaxValue::Text("A|B|C".into()), DaxValue::Text("B".into())]).unwrap(),
+            Some(DaxValue::Boolean(true))
+        );
+        assert_eq!(
+            try_eval_scalar_fn("PATHITEM", &[DaxValue::Text("10|20|30".into()), DaxValue::Number(2.0), DaxValue::Number(1.0)]).unwrap(),
+            Some(DaxValue::Number(20.0))
+        );
+        assert_eq!(
+            try_eval_scalar_fn("SLN", &[DaxValue::Number(10000.0), DaxValue::Number(1000.0), DaxValue::Number(9.0)]).unwrap(),
+            Some(DaxValue::Number(1000.0))
+        );
+        let eff = try_eval_scalar_fn("EFFECT", &[DaxValue::Number(0.12), DaxValue::Number(12.0)]).unwrap().unwrap().as_f64().unwrap();
+        assert!((eff - 0.126825).abs() < 1e-4);
     }
 }

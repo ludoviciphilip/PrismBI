@@ -1,0 +1,37 @@
+# Maintainer: Luis Felipe de Almeida Vieira
+pkgname=prismbi-bin
+pkgver=0.7.0
+pkgrel=1
+pkgdesc="Business Intelligence nativo para Linux com compatibilidade .pbip/.pbix, Rust e DuckDB"
+arch=('x86_64')
+url="https://github.com/ludoviciphilip/PrismBI"
+license=('custom:Mutualist-v1.3')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'librsvg' 'fuse2')
+provides=('prismbi')
+conflicts=('prismbi')
+options=('!strip')
+_appimage="PrismBI_${pkgver}_amd64.AppImage"
+source=("${_appimage}::${url}/releases/download/v${pkgver}/${_appimage}"
+        "LICENSE.md::https://raw.githubusercontent.com/ludoviciphilip/PrismBI/v${pkgver}/LICENSE.md")
+sha256sums=('SKIP'
+            'SKIP')
+
+package() {
+  install -Dm755 "${srcdir}/${_appimage}" "${pkgdir}/opt/${pkgname}/${_appimage}"
+  install -dm755 "${pkgdir}/usr/bin"
+  ln -s "/opt/${pkgname}/${_appimage}" "${pkgdir}/usr/bin/prismbi"
+
+  install -dm755 "${pkgdir}/usr/share/applications"
+  cat > "${pkgdir}/usr/share/applications/prismbi.desktop" <<EOF
+[Desktop Entry]
+Name=PrismBI
+Comment=Business Intelligence nativo para Linux (.pbip / .pbix)
+Exec=/usr/bin/prismbi %U
+Icon=prismbi
+Terminal=false
+Type=Application
+Categories=Office;Utility;Science;
+EOF
+
+  install -Dm644 "${srcdir}/LICENSE.md" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE.md"
+}

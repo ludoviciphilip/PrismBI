@@ -74,7 +74,7 @@ export const DaxComplianceView: React.FC = () => {
           [item.name]: {
             success: false,
             durationMs: 0,
-            error: 'Função não suportada no motor DAX 0.10.0.',
+            error: `Função não suportada no motor DAX ${APP_VERSION}.`,
           },
         }));
         return;
@@ -149,7 +149,7 @@ export const DaxComplianceView: React.FC = () => {
 
   const exportReportJson = () => {
     const report = {
-      title: 'InsightHub DAX Engine - Relatório de Conformidade DAX.guide',
+      title: 'PrismBI DAX Engine - Relatório de Conformidade DAX.guide',
       version: APP_VERSION,
       timestamp: new Date().toISOString(),
       summary: DAX_CONFORMANCE_SUMMARY,
@@ -174,13 +174,16 @@ export const DaxComplianceView: React.FC = () => {
       {/* Header Bar */}
       <div className="px-6 py-4 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="p-1.5 rounded-lg bg-amber-400/10 text-amber-400">
               <Zap className="w-5 h-5" />
             </span>
             <h1 className="text-xl font-bold text-white tracking-wide">
               Conformidade DAX & Matriz dax.guide ({APP_VERSION})
             </h1>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+              Motor Rust Nativo: 165+ funções
+            </span>
           </div>
           <p className="text-xs text-slate-400 mt-1">
             Índice oficial completo coletado em <span className="text-amber-300 font-mono">{s.indexFetchedAt || DAX_GUIDE_INDEX_FETCHED_AT}</span>. {s.implementedCount} implementadas de {s.totalInDaxGuide} no dax.guide ({s.coveragePercent}% de cobertura global).{' '}

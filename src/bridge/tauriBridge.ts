@@ -396,3 +396,41 @@ export async function pickPowerBiFile(): Promise<string | null> {
   });
   return typeof selected === 'string' ? selected : null;
 }
+
+export interface UpdateCheckResult {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  releaseUrl: string;
+  releaseNotes: string;
+  publishedAt: string;
+  assetName: string;
+  downloadUrl: string;
+  assetSize: number;
+  expectedSha256?: string | null;
+  isAppimage: boolean;
+  appimagePath?: string | null;
+}
+
+export interface UpdateInstallResult {
+  installed: boolean;
+  needsRestart: boolean;
+  savedPath?: string | null;
+  message: string;
+}
+
+export async function checkForUpdatesNative(currentVersion: string): Promise<UpdateCheckResult> {
+  return await invoke<UpdateCheckResult>('check_for_updates', { currentVersion });
+}
+
+export async function downloadAndInstallUpdateNative(
+  downloadUrl: string,
+  assetName: string,
+  expectedSha256?: string | null
+): Promise<UpdateInstallResult> {
+  return await invoke<UpdateInstallResult>('download_and_install_update', {
+    downloadUrl,
+    assetName,
+    expectedSha256: expectedSha256 ?? null,
+  });
+}

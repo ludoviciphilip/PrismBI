@@ -26,19 +26,37 @@ import { CURRENT_ENGINE_VERSION } from '../../engine/migrations';
 interface PowerBiImportModalProps {
   isOpen: boolean;
   onClose: () => void;
+  initialPath?: string | null;
+  onLoaded?: () => void;
 }
 
-export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({ isOpen, onClose }) => {
-  const { loadStateFromProject, setActiveView, projectName } = useBiStore(useShallow(s => ({
-    loadStateFromProject: s.loadStateFromProject,
-    setActiveView: s.setActiveView,
-    projectName: s.projectName,
-  })));
+export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({
+  isOpen,
+  onClose,
+  initialPath,
+  onLoaded,
+}) => {
+  const { loadStateFromProject, setActiveView, projectName, addRecentProject, setShowWelcomeScreen } = useBiStore(
+    useShallow(s => ({
+      loadStateFromProject: s.loadStateFromProject,
+      setActiveView: s.setActiveView,
+      projectName: s.projectName,
+      addRecentProject: s.addRecentProject,
+      setShowWelcomeScreen: s.setShowWelcomeScreen,
+    }))
+  );
   const [summary, setSummary] = useState<PbiProjectSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manualPath, setManualPath] = useState('');
   const [activeTab, setActiveTab] = useState<'overview' | 'measures' | 'pages' | 'm'>('overview');
+
+  React.useEffect(() => {
+    if (isOpen && initialPath && initialPath.trim()) {
+      setManualPath(initialPath);
+      void inspectPath(initialPath);
+    }
+  }, [isOpen, initialPath]);
 
   if (!isOpen) return null;
 
@@ -287,7 +305,16 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({ isOpen, 
       updatedAt: new Date().toISOString(),
     });
 
+    addRecentProject({
+      id: `${summary.sourceType}_${summary.rootPath || summary.projectName}`,
+      name: summary.projectName || projectName || 'Projeto Power BI',
+      type: summary.sourceType === 'pbix' ? 'pbix' : 'pbip',
+      path: manualPath.trim() || summary.rootPath || undefined,
+      openedAt: new Date().toISOString(),
+    });
+    setShowWelcomeScreen(false);
     setActiveView('report');
+    onLoaded?.();
     onClose();
   };
 

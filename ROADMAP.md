@@ -43,13 +43,22 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 
 ---
 
-## `v0.6.0` — Edição Profissional, Round-Trip `.pbip` & Biblioteca DAX Completa (Atual)
+## `v0.6.0` — Edição Profissional, Round-Trip `.pbip` & Biblioteca DAX Completa (Concluído)
 - [x] **Motor DAX Nativo Expandido (+110 funções alinhadas à especificação pública DAX):** funções matemáticas/trigonométricas, texto (`FORMAT`, `MID`, `TRIM`, `FIND`, `SEARCH`, `SUBSTITUTE`, `CONTAINSSTRING`), data/hora (`DATE`, `EDATE`, `EOMONTH`, `DATEDIFF`, `NETWORKDAYS`, `WEEKDAY`, `WEEKNUM`, `QUARTER`), estatísticas/iteradores (`MEDIAN`, `PERCENTILE.*`, `STDEV.*`, `VAR.*`, `PRODUCT`, `GEOMEAN`, `CONCATENATEX`, `COUNTBLANK`), tabela/relacionamento (`VALUES`, `DISTINCT`, `TOPN`, `ALLSELECTED`, `LOOKUPVALUE`, `USERELATIONSHIP`, `CROSSFILTER`), informação (`ISFILTERED`, `ISCROSSFILTERED`, `HASONEFILTER`, `ISINSCOPE`), financeiras (`PMT`, `PV`, `FV`, `NPER`) e Time Intelligence completo (`TOTALQTD`, `DATESQTD`, `PARALLELPERIOD`, `DATESBETWEEN`, `DATESINPERIOD`, `STARTOF*`/`ENDOF*`, `FIRSTDATE`/`LASTDATE`, `OPENINGBALANCE*`/`CLOSINGBALANCE*`).
 - [x] **Edição Profissional no Canvas:** histórico **Undo / Redo** (`Ctrl+Z` / `Ctrl+Y` / Ribbon), **seleção múltipla** (`Shift`/`Ctrl` + clique, arraste em grupo, nudge com setas, `Delete` e barra flutuante de alinhamento/distribuição) e **Smart Snap Guides** a 60fps.
 - [x] **Round-Trip `.pbip` & Extração `.pbix` Aprimorada:** exportação preservando scripts Power Query (M), colunas de cartões múltiplos, `advancedSlicerVisual` (`tiles`), `textbox`, `actionButton`, títulos, `filterConfig` em páginas/visuais e temas (`PrismTheme.json`), além de extração multi-query do `DataMashup` em `.pbix`.
 
 ---
 
-## `v0.7.0 → v1.0.0` — Empacotamento Linux & Comunidade
-- Pipeline **GitHub Actions** gerando releases automáticas para Linux: **AppImage**, **`.deb`**, **`.rpm`**, **Flatpak** e **AUR (`prismbi-bin`)**.
-- Documentação completa com capturas de tela, matriz de compatibilidade DAX/visuais e guia de contribuição.
+## `v0.7.0` — Empacotamento Linux, Auto-Updater, Tela Inicial & 98% DAX (Atual)
+- [x] **GitHub Actions CI/CD:** pipeline de validação automática (`ci.yml`) e geração de releases Linux **AppImage**, **`.deb`**, **`.rpm`** com checksums **SHA-256** (`release.yml`), além de manifestos para **AUR (`prismbi-bin`)** e **Flatpak**.
+- [x] **Atualizador Automático Integrado no App (`updater.rs` + `UpdateModal`):** verificação automática via GitHub Releases, download seguro com validação SHA-256, atualização atômica in-place para **AppImage** e download direto para `.deb`/`.rpm`.
+- [x] **Tela Inicial (`WelcomeScreen`) & Navegação:** inicialização com hub de projetos recentes, retomada da última sessão salva e abertura direta de `.pbip`, `.pbix` ou `.insight` (sem forçar template), além de pan livre no canvas e modelo com botão do meio (scroll pressionado) e atalho `Esc` no Modo Apresentação.
+- [x] **Conformidade DAX 98% (474/484) & Motor Rust Expandido:** migração para Rust de `TREATAS`, `CONTAINSROW`, `GENERATESERIES`, `FIRSTNONBLANK`/`LASTNONBLANK`, `COALESCE`, `CONVERT`, família `IS*`, bit-shifts, combinatória/trigonometria, financeiro avançado (`NPV`, `IPMT`, `PPMT`, `SLN`, `SYD`, `DB`, `DDB`, `EFFECT`, `NOMINAL`, `RATE`) e `PATH*`, além de expansão das DMVs `INFO.*` no catálogo.
+- [x] **Documentação & Comunidade:** [matriz de compatibilidade](./docs/COMPATIBILITY.md) e [guia de contribuição](./CONTRIBUTING.md).
+
+---
+
+## `v0.8.0 → v1.0.0` — Conectores Enterprise & Paridade 100%
+- Conectores nativos DuckDB para PostgreSQL, SQLite e DuckLake / Iceberg sem gateway externo.
+- Editor Power Query visual com preview passo a passo e exportação direta em `.pbix`.

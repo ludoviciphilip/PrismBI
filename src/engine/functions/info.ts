@@ -311,9 +311,93 @@ export function getInfoMetadataTable(viewName: string, context: any): DaxTableVa
     case 'ANNOTATIONS': {
       return toDaxTable([
         { Object: 'Model', AnnotationName: 'PBI_ProTooling', Value: '["DevMode"]' },
-        { Object: 'Engine', AnnotationName: 'InsightHubDAX', Value: 'v0.8.0' },
+        { Object: 'Engine', AnnotationName: 'PrismBIDAX', Value: 'v0.7.0' },
       ]);
     }
+
+    case 'CULTURES':
+      return toDaxTable([{ Name: context?.user?.userCulture || 'pt-BR', LinguisticMetadata: 'BuiltIn' }]);
+    case 'CATALOGS':
+      return toDaxTable([{ Name: 'PrismBI_Catalog', Type: 'Tabular', CompatibilityLevel: 1600 }]);
+    case 'FORMATSTRINGDEFINITIONS':
+      return toDaxTable(
+        measures
+          .filter(m => m.formatString || m.format)
+          .map(m => ({ Measure: m.name, FormatString: m.formatString || m.format }))
+      );
+    case 'EXTENDEDPROPERTIES':
+      return toDaxTable(
+        tables.map(t => ({ ObjectName: t.name, Type: 'Table', PropertyName: 'SourceType', Value: t.sourceConfig?.type || 'memory' }))
+      );
+    case 'DETAILROWSDEFINITIONS':
+    case 'OBJECTTRANSLATIONS':
+    case 'VARIATIONS':
+    case 'CHANGEDPROPERTIES':
+    case 'DATACOVERAGEDEFINITIONS':
+    case 'EXCLUDEDARTIFACTS':
+    case 'ALTERNATEOFDEFINITIONS':
+    case 'LINGUISTICMETADATA':
+    case 'QUERYGROUPS':
+      return toDaxTable([]);
+    case 'GROUPBYCOLUMNS':
+      return toDaxTable(
+        tables.flatMap(t =>
+          (t.columns || [])
+            .filter(c => c.sortByColumn)
+            .map(c => ({ TableName: t.name, ColumnName: c.name, SortByColumn: c.sortByColumn }))
+        )
+      );
+    case 'PERSPECTIVES':
+      return toDaxTable([{ Name: 'Default', Description: 'Perspectiva completa do modelo' }]);
+    case 'PERSPECTIVETABLES':
+      return toDaxTable(tables.map(t => ({ Perspective: 'Default', TableName: t.name })));
+    case 'PERSPECTIVECOLUMNS':
+      return toDaxTable(tables.flatMap(t => (t.columns || []).map(c => ({ Perspective: 'Default', TableName: t.name, ColumnName: c.name }))));
+    case 'PERSPECTIVEMEASURES':
+      return toDaxTable(measures.map(m => ({ Perspective: 'Default', MeasureName: m.name, TableName: m.tableName })));
+    case 'PERSPECTIVEHIERARCHIES':
+      return toDaxTable([{ Perspective: 'Default', HierarchyName: 'Hierarquia de Datas' }]);
+    case 'REFRESHPOLICIES':
+      return toDaxTable(tables.map(t => ({ TableName: t.name, Mode: 'Import', SourceType: t.sourceConfig?.type || 'sample' })));
+    case 'RELATEDCOLUMNDETAILS':
+      return toDaxTable(
+        relationships.map(r => ({ FromTable: r.fromTable, FromColumn: r.fromColumn, ToTable: r.toTable, ToColumn: r.toColumn }))
+      );
+    case 'CALENDARS':
+      return toDaxTable(tables.filter(t => t.isCalendar).map(t => ({ Name: t.name, DateColumn: t.calendarDateColumn || 'Data' })));
+    case 'CALENDARCOLUMNGROUPS':
+    case 'CALENDARCOLUMNREFERENCES':
+      return toDaxTable(
+        tables
+          .filter(t => t.isCalendar)
+          .flatMap(t => (t.columns || []).map(c => ({ TableName: t.name, ColumnName: c.name })))
+      );
+    case 'ATTRIBUTEHIERARCHIES':
+    case 'HIERARCHYSTORAGES':
+      return toDaxTable(
+        tables.flatMap(t => (t.columns || []).map(c => ({ TableName: t.name, ColumnName: c.name, State: 'Ready' })))
+      );
+    case 'CSDLMETADATA':
+      return toDaxTable([{ Version: '2.0', Entities: tables.length, Associations: relationships.length }]);
+    case 'STORAGETABLES':
+    case 'TABLESTORAGES':
+      return toDaxTable(
+        tables.map(t => ({ TableName: t.name, RowCount: t.rows?.length || 0, Engine: 'DuckDB+Rust' }))
+      );
+    case 'COLUMNSTORAGES':
+    case 'STORAGETABLECOLUMNS':
+    case 'DICTIONARYSTORAGES':
+    case 'SEGMENTSTORAGES':
+    case 'PARTITIONSTORAGES':
+      return toDaxTable(
+        tables.flatMap(t =>
+          (t.columns || []).map(c => ({ TableName: t.name, ColumnName: c.name, Compression: 'Columnar', RowCount: t.rows?.length || 0 }))
+        )
+      );
+    case 'RELATIONSHIPSTORAGES':
+      return toDaxTable(
+        relationships.map(r => ({ From: `${r.fromTable}.${r.fromColumn}`, To: `${r.toTable}.${r.toColumn}`, Active: r.isActive !== false }))
+      );
 
     default:
       throw new DaxError(
@@ -351,9 +435,146 @@ const SUPPORTED_INFO_VIEWS = [
   'CALCDEPENDENCY',
   'PROPERTIES',
   'ANNOTATIONS',
+  'CULTURES',
+  'CATALOGS',
+  'FORMATSTRINGDEFINITIONS',
+  'EXTENDEDPROPERTIES',
+  'DETAILROWSDEFINITIONS',
+  'GROUPBYCOLUMNS',
+  'PERSPECTIVES',
+  'PERSPECTIVETABLES',
+  'PERSPECTIVECOLUMNS',
+  'PERSPECTIVEMEASURES',
+  'PERSPECTIVEHIERARCHIES',
+  'QUERYGROUPS',
+  'REFRESHPOLICIES',
+  'RELATEDCOLUMNDETAILS',
+  'CALENDARS',
+  'CALENDARCOLUMNGROUPS',
+  'CALENDARCOLUMNREFERENCES',
+  'OBJECTTRANSLATIONS',
+  'VARIATIONS',
+  'ATTRIBUTEHIERARCHIES',
+  'CHANGEDPROPERTIES',
+  'CSDLMETADATA',
+  'DATACOVERAGEDEFINITIONS',
+  'EXCLUDEDARTIFACTS',
+  'LINGUISTICMETADATA',
+  'ALTERNATEOFDEFINITIONS',
+  'STORAGETABLES',
+  'TABLESTORAGES',
+  'COLUMNSTORAGES',
+  'PARTITIONSTORAGES',
+  'RELATIONSHIPSTORAGES',
+  'DICTIONARYSTORAGES',
+  'HIERARCHYSTORAGES',
+  'SEGMENTSTORAGES',
+  'STORAGETABLECOLUMNS',
 ];
 
-export const INFO_FUNCTIONS: Record<string, FunctionDefinition> = {};
+export const INFO_FUNCTIONS: Record<string, FunctionDefinition> = {
+  ISINSCOPE: {
+    name: 'ISINSCOPE',
+    category: 'Informação',
+    syntax: 'ISINSCOPE(<columnName>)',
+    description: 'Retorna TRUE quando a coluna especificada é o nível atual na hierarquia de resultados.',
+    example: 'ISINSCOPE(d_Produto[Categoria])',
+    minArgs: 1,
+    maxArgs: 1,
+    evaluate: ([colArg], context) => {
+      if (!colArg) return false;
+      const colStr = typeof colArg === 'string' ? colArg : colArg?.column || '';
+      const tblStr = typeof colArg === 'object' ? colArg?.table : undefined;
+      const activeCols: string[] = context?.scopeColumns || [];
+      if (activeCols.some(c => c.toLowerCase() === colStr.toLowerCase())) return true;
+      return Boolean(context?.filterContext?.isFiltered?.(tblStr, colStr));
+    },
+  },
+  ISBOOLEAN: {
+    name: 'ISBOOLEAN',
+    category: 'Informação',
+    syntax: 'ISBOOLEAN(<value>)',
+    description: 'Verifica se o valor informado é booleano (TRUE ou FALSE).',
+    example: 'ISBOOLEAN(TRUE())',
+    minArgs: 1,
+    maxArgs: 1,
+    evaluate: ([v]) => typeof v === 'boolean',
+  },
+  ISDOUBLE: {
+    name: 'ISDOUBLE',
+    category: 'Informação',
+    syntax: 'ISDOUBLE(<value>)',
+    description: 'Verifica se o valor informado é numérico de ponto flutuante.',
+    example: 'ISDOUBLE(3.14)',
+    minArgs: 1,
+    maxArgs: 1,
+    evaluate: ([v]) => typeof v === 'number' && Number.isFinite(v),
+  },
+  ISINT64: {
+    name: 'ISINT64',
+    category: 'Informação',
+    syntax: 'ISINT64(<value>)',
+    description: 'Verifica se o valor informado é um número inteiro.',
+    example: 'ISINT64(42)',
+    minArgs: 1,
+    maxArgs: 1,
+    evaluate: ([v]) => typeof v === 'number' && Number.isInteger(v),
+  },
+  ISNUMERIC: {
+    name: 'ISNUMERIC',
+    category: 'Informação',
+    syntax: 'ISNUMERIC(<value>)',
+    description: 'Verifica se o valor informado é numérico.',
+    example: 'ISNUMERIC(100)',
+    minArgs: 1,
+    maxArgs: 1,
+    evaluate: ([v]) => typeof v === 'number' && Number.isFinite(v),
+  },
+  ISSTRING: {
+    name: 'ISSTRING',
+    category: 'Informação',
+    syntax: 'ISSTRING(<value>)',
+    description: 'Verifica se o valor informado é uma cadeia de caracteres (texto).',
+    example: 'ISSTRING("PrismBI")',
+    minArgs: 1,
+    maxArgs: 1,
+    evaluate: ([v]) => typeof v === 'string',
+  },
+  ISCURRENCY: {
+    name: 'ISCURRENCY',
+    category: 'Informação',
+    syntax: 'ISCURRENCY(<value>)',
+    description: 'Verifica se o valor informado é compatível com o tipo monetário.',
+    example: 'ISCURRENCY(19.95)',
+    minArgs: 1,
+    maxArgs: 1,
+    evaluate: ([v]) => typeof v === 'number' && Number.isFinite(v),
+  },
+  ISSUBTOTAL: {
+    name: 'ISSUBTOTAL',
+    category: 'Informação',
+    syntax: 'ISSUBTOTAL(<columnName>)',
+    description: 'Cria outra coluna em uma expressão SUMMARIZE que retorna TRUE se a linha contiver um subtotal.',
+    example: 'ISSUBTOTAL(d_Produto[Categoria])',
+    minArgs: 1,
+    maxArgs: 1,
+    evaluate: (_args, context) => Boolean(context?.isSubtotalRow),
+  },
+  ISATLEVEL: {
+    name: 'ISATLEVEL',
+    category: 'Informação',
+    syntax: 'ISATLEVEL(<columnName>)',
+    description: 'Indica se a expressão de cálculo visual está avaliando no nível da coluna especificada.',
+    example: 'ISATLEVEL(d_Calendario[Mes])',
+    minArgs: 1,
+    maxArgs: 1,
+    evaluate: ([colArg], context) => {
+      const colStr = typeof colArg === 'string' ? colArg : colArg?.column || '';
+      const activeCols: string[] = context?.scopeColumns || [];
+      return activeCols.some(c => c.toLowerCase() === colStr.toLowerCase());
+    },
+  },
+};
 
 for (const view of SUPPORTED_INFO_VIEWS) {
   const fnFullName = `INFO.${view}`;

@@ -4,13 +4,14 @@
 
 **Business Intelligence nativo para Linux — leve, rápido e compatível com projetos Power BI (`.pbip` / `.pbix`)**
 
-[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.6.0-f59e0b?style=flat-square)](./package.json)
+[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.7.0-f59e0b?style=flat-square)](./package.json)
+[![CI](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 [![Rust](https://img.shields.io/badge/Rust-Engine_DAX-000000?style=flat-square&logo=rust&logoColor=white)](./src-tauri)
 [![DuckDB](https://img.shields.io/badge/DuckDB-Embarcado-FFF000?style=flat-square&logo=duckdb&logoColor=black)](https://duckdb.org/)
 [![Licença](https://img.shields.io/badge/Licen%C3%A7a-Mutualist_v1.3-10b981?style=flat-square)](./LICENSE.md)
 
-[Funcionalidades](#-principais-funcionalidades) • [Prévia Visual](#-prévia-visual) • [Arquitetura](#-arquitetura) • [Como Executar](#-como-executar) • [Roadmap](./ROADMAP.md)
+[Funcionalidades](#-principais-funcionalidades) • [Prévia Visual](#-prévia-visual) • [Compatibilidade](./docs/COMPATIBILITY.md) • [Arquitetura](#-arquitetura) • [Como Executar](#-como-executar) • [Contribuindo](./CONTRIBUTING.md) • [Roadmap](./ROADMAP.md)
 
 </div>
 
@@ -52,19 +53,21 @@ Construído com **Tauri v2 + Rust + DuckDB** no backend e **React + TypeScript +
 - **Funil & Cascata estilo Power BI:** Funil com `minSize` legível, topo `100%` e taxa de conversão no rodapé; Cascata real com variações positivas/negativas cruzando zero, linhas tracejadas conectoras e coluna `Total` final.
 - **Tabelas, Matrizes & Segmentadores:** Matriz Pivot com totais por linha/coluna, Tabela interativa com Drill-Through e Segmentadores no modo lista suspensa (`dropdown`) ou blocos clicáveis (`tiles`).
 
-### ⚡ Motor Analítico em Rust + DuckDB (`v0.6.0`)
+### ⚡ Motor Analítico em Rust + DuckDB (`v0.7.0`)
 - **DuckDB embarcado:** ingestão nativa rápida de **Excel (`.xlsx`/`.xls`)**, **CSV**, **Parquet**, **JSON** e endpoints **API REST (JSON)**, além de console SQL nativo.
 - **Atualização Real & Gestão de Tabelas:** botão **Atualizar Dados** que recarrega arquivos/fontes vinculados sem perder visuais, medidas ou relacionamentos — incluindo mapeamento de abas com nomes diferentes (ex.: aba `Fato` → `fLançamentos`), substituição de dados por outra planilha e renomeação completa de tabelas.
 - **Power Query (M) & Remapeamento Linux:** resolução automática de caminhos Windows → Linux em `.pbip` e suporte a `Table.RenameColumns`, `Table.RemoveColumns`, `Table.SelectColumns` e `Table.SelectRows`.
-- **Motor DAX Nativo (+110 funções) & QueryPlanner em Rust:** avaliação de medidas com `CALCULATE`, `SWITCH`, `RANKX`, funções matemáticas/trigonométricas, texto (`FORMAT`, `MID`, `FIND`, `SEARCH`, `CONTAINSSTRING`), estatísticas/iteradores (`MEDIAN`, `PERCENTILE.*`, `STDEV.*`, `VAR.*`, `CONCATENATEX`), relacionamentos/tabela (`VALUES`, `DISTINCT`, `TOPN`, `LOOKUPVALUE`, `USERELATIONSHIP`, `CROSSFILTER`), informação (`ISFILTERED`, `HASONEFILTER`, `ISINSCOPE`), financeiras (`PMT`, `PV`, `FV`, `NPER`) e Time Intelligence completo (`TOTALYTD`, `TOTALQTD`, `TOTALMTD`, `PARALLELPERIOD`, `DATESBETWEEN`, `DATESINPERIOD`, `PREVIOUSYEAR`, `PREVIOUSMONTH`, `STARTOF*`/`ENDOF*`, `OPENINGBALANCE*`/`CLOSINGBALANCE*`).
+- **98% de Conformidade DAX (474/484) & Motor Nativo em Rust (+165 funções):** avaliação nativa de `CALCULATE`, `SWITCH`, `RANKX`, `TREATAS`, `CONTAINSROW`, `GENERATESERIES`, `COALESCE`, `CONVERT`, família `IS*`, bit-shifts, matemática/trigonometria, texto (`FORMAT`, `MID`, `FIND`, `SEARCH`, `SUBSTITUTE`, `CONTAINSSTRING`), estatísticas/iteradores (`MEDIAN`, `PERCENTILE.*`, `STDEV.*`, `VAR.*`, `CONCATENATEX`), relacionamentos (`VALUES`, `DISTINCT`, `TOPN`, `LOOKUPVALUE`, `USERELATIONSHIP`, `CROSSFILTER`), financeiro (`PMT`, `PV`, `FV`, `NPER`, `NPV`, `IPMT`, `PPMT`, `SLN`, `SYD`, `DB`, `DDB`, `EFFECT`, `NOMINAL`, `RATE`), `PATH*` e Time Intelligence completo (`TOTALYTD`, `TOTALQTD`, `TOTALMTD`, `PARALLELPERIOD`, `DATESBETWEEN`, `DATESINPERIOD`, `FIRSTNONBLANK`/`LASTNONBLANK`, `OPENINGBALANCE*`/`CLOSINGBALANCE*`), além de 60+ DMVs `INFO.*` no motor TS. Veja a [Matriz de Compatibilidade](./docs/COMPATIBILITY.md).
 - **Análise Interativa:** Cross-filtering bidirecional ao clicar em qualquer visual, Matriz com hierarquia expansível em 2 níveis, Drill-Through entre páginas, Cálculos Visuais e telemetria real no Performance Analyzer.
 
-### 🛠️ Produtividade, Modelagem & Edição Profissional
+### 🛠️ Produtividade, Tela Inicial & Distribuição Linux
+- **Tela Inicial (`WelcomeScreen`) & Auto-Updater:** escolha começar um projeto em branco ou abrir `.pbip`, `.pbix`, `.insight` e sessões recentes ao iniciar, com **atualizador integrado no app** via GitHub Releases e validação SHA-256 (in-place para **AppImage** e download direto para `.deb`/`.rpm`).
+- **GitHub Actions CI/CD:** builds automáticas para Linux (**AppImage**, **`.deb`**, **`.rpm`**) além de manifestos em `packaging/` para **AUR (`prismbi-bin`)** e **Flatpak**.
 - **Edição Profissional no Canvas:** **Undo / Redo** (`Ctrl+Z`, `Ctrl+Y` e botões na Ribbon), **seleção múltipla** (`Shift`/`Ctrl` + clique, arraste em grupo, nudge com setas, `Delete` e barra flutuante de alinhamento/distribuição) e **Smart Snap Guides** a 60fps.
 - **Visualização de Dados & Modelo:** inspeção tabular, gerenciador de relacionamentos com autodetecção e suporte a Tabelas Calendário.
 - **Power Query / ETL, Medidas Rápidas & Biblioteca UDF:** transformações de dados, assistente de medidas rápidas e editor DAX com IntelliSense.
 - **Governança & Temas:** simulação de RLS/OLS, parâmetros What-If, gerenciador de temas claros/escuros e suporte a i18n (`PT`, `EN`, `ES`) e moedas (`BRL`, `USD`, `EUR`).
-- **Atalhos de Canvas:** zoom fluido com `Ctrl + =`, `Ctrl + -`, `Ctrl + 0` e `Ctrl + Scroll` do mouse, além de arraste/redimensionamento a 60fps.
+- **Atalhos de Canvas:** zoom fluido com `Ctrl + =`, `Ctrl + -`, `Ctrl + 0` e `Ctrl + Scroll`, além de movimentação livre no canvas e modelo mantendo o botão do scroll pressionado e `Esc` para sair do Modo Apresentação.
 
 ---
 

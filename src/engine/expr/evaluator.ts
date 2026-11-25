@@ -1014,8 +1014,12 @@ export class Evaluator {
       'HASONEFILTER',
       'ISFILTERED',
       'ISCROSSFILTERED',
+      'ISINSCOPE',
+      'ISSUBTOTAL',
+      'ISATLEVEL',
       'ISEMPTY',
       'FILTERS',
+      'TREATAS',
       'ALL',
       'ALLEXCEPT',
       'ALLNOBLANKROW',
@@ -1844,9 +1848,50 @@ export class Evaluator {
     if (filterNode.kind === 'FunctionCall') {
       const fnName = filterNode.name.toUpperCase();
 
-      if (fnName === 'KEEPFILTERS') {
+      if (fnName === 'KEEPFILTERS' || fnName === 'ALWAYSAPPLY') {
         if (filterNode.args[0]) {
-          this.applyFilterArgumentToContext(filterNode.args[0], filterCtx, true);
+          this.applyFilterArgumentToContext(filterNode.args[0], filterCtx, fnName === 'KEEPFILTERS');
+        }
+        return;
+      }
+
+      if (fnName === 'ALLSELECTEDREMOVE') {
+        filterCtx.clearAll();
+        return;
+      }
+
+      if (fnName === 'ALLSELECTEDAPPLY') {
+        return;
+      }
+
+      if (fnName === 'TREATAS' && filterNode.args.length >= 2) {
+        const firstArg = filterNode.args[0];
+        if (!firstArg) return;
+        const tableVal = this.evalNode(firstArg);
+        const rows: Record<string, any>[] = Array.isArray(tableVal?.rows) ? tableVal.rows : [];
+        const srcCols: string[] = Array.isArray(tableVal?.columns) ? tableVal.columns : [];
+        for (let i = 1; i < filterNode.args.length; i++) {
+          const targetArg = filterNode.args[i];
+          if (targetArg?.kind === 'ColumnRef') {
+            const targetTable = model?.getTable(targetArg.table || '');
+            const effectiveTableId = targetTable ? targetTable.id : targetArg.table || '';
+            const srcCol = srcCols[i - 1] || srcCols[0];
+            if (effectiveTableId && targetArg.column && srcCol) {
+              const allowed = new Set(rows.map(r => r[srcCol]));
+              filterCtx.setColumnFilter(
+                effectiveTableId,
+                targetArg.column,
+                {
+                  tableId: effectiveTableId,
+                  column: targetArg.column,
+                  allowedValues: allowed,
+                  operator: 'in',
+                  rawValues: Array.from(allowed),
+                },
+                isKeepFilters
+              );
+            }
+          }
         }
         return;
       }

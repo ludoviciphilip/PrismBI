@@ -1,6 +1,7 @@
 pub mod dax;
 pub mod engine;
 pub mod pbi;
+pub mod updater;
 
 use dax::{build_filter_context, DaxModel, DaxModelSyncPayload, NativeFilterInput};
 use engine::{DuckDbStore, EngineInfo, ImportedTablePayload, SqlQueryResult, TableSummary};
@@ -245,6 +246,20 @@ fn query_visual_native(
     dax::query_planner::execute_visual_query(&guard, &request)
 }
 
+#[tauri::command]
+fn check_for_updates(current_version: String) -> Result<updater::UpdateCheckResult, String> {
+    updater::check_for_updates(&current_version)
+}
+
+#[tauri::command]
+fn download_and_install_update(
+    download_url: String,
+    asset_name: String,
+    expected_sha256: Option<String>,
+) -> Result<updater::UpdateInstallResult, String> {
+    updater::download_and_install_update(&download_url, &asset_name, expected_sha256.as_deref())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let db = DuckDbStore::new_in_memory().expect("Falha ao inicializar DuckDB nativo");
@@ -274,6 +289,8 @@ pub fn run() {
             evaluate_dax_native,
             evaluate_dax_batch_native,
             query_visual_native,
+            check_for_updates,
+            download_and_install_update,
         ])
         .run(tauri::generate_context!())
         .expect("Erro ao executar PrismBI");

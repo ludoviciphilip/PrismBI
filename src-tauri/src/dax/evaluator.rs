@@ -379,7 +379,8 @@ fn eval_call(
             if args.len() < 2 {
                 return Err("RANKX requer (tabela, expressão)".to_string());
             }
-            let (table_data, row_indices, rank_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+            let (table_eval, row_indices, rank_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let table_data = table_eval.as_ref();
             let target_val = if args.len() >= 3 {
                 evaluate_ast(&args[2], model, ctx, row_stack, vars)?
             } else {
@@ -455,8 +456,36 @@ fn eval_call(
             let Some(first) = args.first() else {
                 return Err("COUNTROWS requer expressão de tabela".to_string());
             };
-            let (_, indices, _) = eval_table_expr(first, model, ctx, row_stack, vars)?;
+            let (_, indices, _) = eval_table_expr_owned(first, model, ctx, row_stack, vars)?;
             Ok(DaxValue::Number(indices.len() as f64))
+        }
+        "ISEMPTY" => {
+            let Some(first) = args.first() else {
+                return Ok(DaxValue::Boolean(true));
+            };
+            let (_, indices, _) = eval_table_expr_owned(first, model, ctx, row_stack, vars)?;
+            Ok(DaxValue::Boolean(indices.is_empty()))
+        }
+        "CONTAINSROW" => {
+            if args.len() < 2 {
+                return Err("CONTAINSROW requer (tabela, valor1, ...)".to_string());
+            }
+            let (table_eval, row_indices, _) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let table_data = table_eval.as_ref();
+            let mut search_keys = Vec::with_capacity(args.len() - 1);
+            for a in &args[1..] {
+                search_keys.push(evaluate_ast(a, model, ctx, row_stack, vars)?.canonical_key());
+            }
+            let found = row_indices.iter().any(|&r_idx| {
+                let row = &table_data.rows[r_idx];
+                if search_keys.len() == 1 {
+                    row.first().is_some_and(|cell| cell.canonical_key() == search_keys[0])
+                } else {
+                    search_keys.len() <= row.len()
+                        && search_keys.iter().enumerate().all(|(ci, k)| row[ci].canonical_key() == *k)
+                }
+            });
+            Ok(DaxValue::Boolean(found))
         }
         "SUMX" | "AVERAGEX" | "MINX" | "MAXX" | "COUNTX" | "COUNTAX"
         | "MEDIANX" | "STDEVX.S" | "STDEVX.P" | "VARX.S" | "VARX.P"
@@ -464,7 +493,8 @@ fn eval_call(
             if args.len() < 2 {
                 return Err(format!("{} requer (tabela, expressão)", fname));
             }
-            let (table_data, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+            let (table_eval, row_indices, iter_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let table_data = table_eval.as_ref();
             if fname == "COUNTAX" {
                 let mut cnt = 0usize;
                 for r_idx in row_indices {
@@ -515,7 +545,8 @@ fn eval_call(
             if args.len() < 3 {
                 return Err(format!("{} requer (tabela, expressão, k)", fname));
             }
-            let (table_data, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+            let (table_eval, row_indices, iter_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let table_data = table_eval.as_ref();
             let k = evaluate_ast(&args[2], model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.5);
             let mut vals = Vec::new();
             for r_idx in row_indices {
@@ -536,7 +567,8 @@ fn eval_call(
             if args.len() < 2 {
                 return Err("CONCATENATEX requer (tabela, expressão, [delimitador])".to_string());
             }
-            let (table_data, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+            let (table_eval, row_indices, iter_ctx) = eval_table_expr_owned(&args[0], model, ctx, row_stack, vars)?;
+            let table_data = table_eval.as_ref();
             let delim = if args.len() >= 3 {
                 evaluate_ast(&args[2], model, ctx, row_stack, vars)?.as_display_string()
             } else {
@@ -644,7 +676,7 @@ fn eval_call(
                 Ok(DaxValue::Boolean(false))
             }
         }
-        "ISINSCOPE" => {
+        "ISINSCOPE" | "ISATLEVEL" => {
             let Some(Expr::TableColRef { table, column }) = args.first() else {
                 return Ok(DaxValue::Boolean(false));
             };
@@ -655,6 +687,45 @@ fn eval_call(
                 .and_then(|cols| cols.get(&column.to_lowercase()))
                 .is_some();
             Ok(DaxValue::Boolean(direct || count == 1))
+        }
+        "ISSUBTOTAL" => Ok(DaxValue::Boolean(false)),
+        "FIRSTNONBLANK" | "LASTNONBLANK" => {
+            if args.len() < 2 {
+                return Err(format!("{} requer (Tabela[Coluna], expressão)", fname));
+            }
+            let Some(Expr::TableColRef { table, column }) = args.first() else {
+                return Err(format!("{} requer Tabela[Coluna]", fname));
+            };
+            let Some(tbl) = model.get_table(table) else {
+                return Ok(DaxValue::Blank);
+            };
+            let Some(cidx) = tbl.get_col_idx(column) else {
+                return Ok(DaxValue::Blank);
+            };
+            let vis = model.get_visible_row_indices(table, ctx);
+            let mut distinct_vals: Vec<(String, DaxValue)> = Vec::new();
+            let mut seen = HashSet::new();
+            for r_idx in vis {
+                let v = &tbl.rows[r_idx][cidx];
+                if !v.is_blank() && seen.insert(v.canonical_key()) {
+                    distinct_vals.push((v.canonical_key(), v.clone()));
+                }
+            }
+            distinct_vals.sort_by(|a, b| a.1.as_display_string().cmp(&b.1.as_display_string()));
+            if fname == "LASTNONBLANK" {
+                distinct_vals.reverse();
+            }
+            for (k, v) in distinct_vals {
+                let mut test_ctx = ctx.clone();
+                let mut set = HashSet::new();
+                set.insert(k);
+                test_ctx.set_column_filter(&tbl.name, column, set);
+                let res = evaluate_ast(&args[1], model, &test_ctx, row_stack, vars)?;
+                if !res.is_blank() {
+                    return Ok(v);
+                }
+            }
+            Ok(DaxValue::Blank)
         }
         "RELATED" => {
             let Some(Expr::TableColRef { table, column }) = args.first() else {
@@ -738,6 +809,76 @@ fn extract_table_name(expr: Option<&Expr>) -> Result<String, String> {
         Some(Expr::Ident(t)) => Ok(t.clone()),
         _ => Err("Esperado nome de tabela".to_string()),
     }
+}
+
+enum TableEval<'a> {
+    Borrowed(&'a DaxTableData),
+    Owned(DaxTableData),
+}
+
+impl<'a> TableEval<'a> {
+    fn as_ref(&self) -> &DaxTableData {
+        match self {
+            TableEval::Borrowed(t) => t,
+            TableEval::Owned(t) => t,
+        }
+    }
+}
+
+fn eval_table_expr_owned<'a>(
+    expr: &Expr,
+    model: &'a DaxModel,
+    ctx: &FilterContext,
+    row_stack: &[RowContext<'_>],
+    vars: &HashMap<String, DaxValue>,
+) -> Result<(TableEval<'a>, Vec<usize>, FilterContext), String> {
+    if let Expr::Call { name, args } = expr {
+        if name.eq_ignore_ascii_case("GENERATESERIES") {
+            let start = args
+                .first()
+                .map(|a| evaluate_ast(a, model, ctx, row_stack, vars))
+                .transpose()?
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1.0);
+            let end = args
+                .get(1)
+                .map(|a| evaluate_ast(a, model, ctx, row_stack, vars))
+                .transpose()?
+                .and_then(|v| v.as_f64())
+                .unwrap_or(start);
+            let step = args
+                .get(2)
+                .map(|a| evaluate_ast(a, model, ctx, row_stack, vars))
+                .transpose()?
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1.0);
+
+            let mut rows = Vec::new();
+            if step.abs() > 1e-12 {
+                let mut cur = start;
+                let max_iters = 100_000usize;
+                for _ in 0..max_iters {
+                    if (step > 0.0 && cur > end + 1e-9) || (step < 0.0 && cur < end - 1e-9) {
+                        break;
+                    }
+                    rows.push(vec![DaxValue::Number(cur)]);
+                    cur += step;
+                }
+            }
+            let mut col_index = HashMap::new();
+            col_index.insert("value".to_string(), 0);
+            let tbl = DaxTableData {
+                name: "GENERATESERIES".to_string(),
+                columns: vec!["Value".to_string()],
+                col_index,
+                rows,
+            };
+            let indices: Vec<usize> = (0..tbl.rows.len()).collect();
+            return Ok((TableEval::Owned(tbl), indices, ctx.clone()));
+        }
+    }
+    let (tbl, indices, base_ctx) = eval_table_expr(expr, model, ctx, row_stack, vars)?;
+    Ok((TableEval::Borrowed(tbl), indices, base_ctx))
 }
 
 fn eval_table_expr<'a>(
@@ -1090,6 +1231,27 @@ fn apply_calculate_modifier(
                         if let Some(tbl) = model.get_table(table) {
                             next_ctx.clear_table(&tbl.name);
                             next_ctx.set_column_filter(&tbl.name, column, allowed);
+                        }
+                    }
+                    return Ok(());
+                }
+                "TREATAS" => {
+                    if args.len() >= 2 {
+                        let (src_tbl, src_indices, _) =
+                            eval_table_expr_owned(&args[0], model, outer_ctx, row_stack, vars)?;
+                        let src_data = src_tbl.as_ref();
+                        for (col_pos, col_expr) in args[1..].iter().enumerate() {
+                            if let Expr::TableColRef { table, column } = col_expr {
+                                if let Some(target_tbl) = model.get_table(table) {
+                                    let mut allowed = HashSet::new();
+                                    for &r_idx in &src_indices {
+                                        if let Some(cell) = src_data.rows[r_idx].get(col_pos) {
+                                            allowed.insert(cell.canonical_key());
+                                        }
+                                    }
+                                    next_ctx.set_column_filter(&target_tbl.name, column, allowed);
+                                }
+                            }
                         }
                     }
                     return Ok(());
@@ -2390,5 +2552,81 @@ mod tests {
             .as_f64()
             .unwrap();
         assert!((by_delivery - 1600.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_dax_v07_rust_expanded_coverage() {
+        let mut model = DaxModel::new();
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput {
+                    name: "fVendas".into(),
+                    columns: vec!["Cat".into(), "Valor".into()],
+                    rows: vec![
+                        serde_json::json!({"Cat": "A", "Valor": 100}).as_object().unwrap().clone(),
+                        serde_json::json!({"Cat": "B", "Valor": 250}).as_object().unwrap().clone(),
+                        serde_json::json!({"Cat": "C", "Valor": 400}).as_object().unwrap().clone(),
+                    ],
+                },
+                DaxTableInput {
+                    name: "dGrupo".into(),
+                    columns: vec!["Nome".into()],
+                    rows: vec![
+                        serde_json::json!({"Nome": "A"}).as_object().unwrap().clone(),
+                        serde_json::json!({"Nome": "C"}).as_object().unwrap().clone(),
+                    ],
+                },
+            ],
+            relationships: vec![],
+            measures: vec![DaxMeasureInput {
+                name: "Total".into(),
+                table_name: "fVendas".into(),
+                formula: "SUM(fVendas[Valor])".into(),
+            }],
+        });
+
+        let ctx = FilterContext::default();
+
+        // TREATAS applies virtual filter from unrelated table dGrupo[Nome] -> fVendas[Cat] (100 + 400 = 500)
+        let treatas_val = model
+            .evaluate_dax("CALCULATE([Total], TREATAS(VALUES(dGrupo[Nome]), fVendas[Cat]))", &ctx)
+            .unwrap()
+            .as_f64()
+            .unwrap();
+        assert!((treatas_val - 500.0).abs() < 1e-6);
+
+        // GENERATESERIES + SUMX: 1 + 2 + 3 + 4 + 5 = 15, COUNTROWS = 5
+        let gs_count = model.evaluate_dax("COUNTROWS(GENERATESERIES(1, 5, 1))", &ctx).unwrap().as_f64().unwrap();
+        assert!((gs_count - 5.0).abs() < 1e-6);
+        let gs_sum = model.evaluate_dax("SUMX(GENERATESERIES(1, 5, 1), [Value])", &ctx).unwrap().as_f64().unwrap();
+        assert!((gs_sum - 15.0).abs() < 1e-6);
+
+        // CONTAINSROW
+        assert_eq!(
+            model.evaluate_dax("CONTAINSROW(VALUES(dGrupo[Nome]), \"A\")", &ctx).unwrap(),
+            DaxValue::Boolean(true)
+        );
+        assert_eq!(
+            model.evaluate_dax("CONTAINSROW(VALUES(dGrupo[Nome]), \"Z\")", &ctx).unwrap(),
+            DaxValue::Boolean(false)
+        );
+
+        // Type/conversion, math/bitwise, parent-child & financial via evaluator
+        assert_eq!(
+            model.evaluate_dax("COALESCE(BLANK(), 42)", &ctx).unwrap().as_f64(),
+            Some(42.0)
+        );
+        assert_eq!(
+            model.evaluate_dax("COMBIN(6, 2)", &ctx).unwrap().as_f64(),
+            Some(15.0)
+        );
+        assert_eq!(
+            model.evaluate_dax("PATHLENGTH(\"1|4|9|12\")", &ctx).unwrap().as_f64(),
+            Some(4.0)
+        );
+        assert_eq!(
+            model.evaluate_dax("SLN(5000, 500, 9)", &ctx).unwrap().as_f64(),
+            Some(500.0)
+        );
     }
 }

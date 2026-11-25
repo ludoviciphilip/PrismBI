@@ -87,6 +87,43 @@ export const ReportView: React.FC = () => {
   const canvasRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
+  const [isPanning, setIsPanning] = useState(false);
+
+  const handleMouseDownPan = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 1) return;
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origLeft = container.scrollLeft;
+    const origTop = container.scrollTop;
+    setIsPanning(true);
+    document.body.style.cursor = 'grabbing';
+    let rafId: number | null = null;
+
+    const onMove = (ev: MouseEvent) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        container.scrollLeft = origLeft - dx;
+        container.scrollTop = origTop - dy;
+        rafId = null;
+      });
+    };
+
+    const onUp = () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      setIsPanning(false);
+      document.body.style.cursor = '';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
 
   const handleSelectVisual = useCallback(
     (id: string, additive?: boolean) => {
@@ -238,7 +275,11 @@ export const ReportView: React.FC = () => {
       {/* Central Canvas Area */}
       <div
         ref={scrollContainerRef}
-        className="flex-1 overflow-auto p-6"
+        onMouseDown={handleMouseDownPan}
+        onAuxClick={(e) => {
+          if (e.button === 1) e.preventDefault();
+        }}
+        className={`flex-1 overflow-auto p-6 ${isPanning ? 'cursor-grabbing select-none' : ''}`}
         onClick={handleCanvasClick}
       >
         {layoutMode === 'mobile' ? (

@@ -3172,17 +3172,19 @@ checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 
 [[package]]
 name = "prismbi"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "calamine",
  "duckdb",
  "encoding_rs",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tempfile",
+ "ureq",
  "walkdir",
  "zip 2.6.1",
 ]

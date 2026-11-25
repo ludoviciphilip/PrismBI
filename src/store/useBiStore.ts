@@ -38,7 +38,37 @@ import {
   refreshTableNative,
   refreshPbipTables,
   NativeImportedTable,
+  UpdateCheckResult,
 } from '../bridge/tauriBridge';
+
+export interface RecentProjectEntry {
+  id: string;
+  name: string;
+  type: 'pbip' | 'pbix' | 'insight';
+  path?: string;
+  openedAt: string;
+}
+
+const RECENT_PROJECTS_KEY = 'prismbi_recent_projects';
+
+function loadRecentProjects(): RecentProjectEntry[] {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(RECENT_PROJECTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.slice(0, 8) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentProjects(entries: RecentProjectEntry[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(RECENT_PROJECTS_KEY, JSON.stringify(entries.slice(0, 8)));
+  } catch {}
+}
 import {
   SupportedLocale,
   SupportedCurrency,
@@ -319,6 +349,17 @@ interface BiState {
   setAiSettingsModalOpen: (open: boolean) => void;
   canvasSizeModalOpen: boolean;
   setCanvasSizeModalOpen: (open: boolean) => void;
+  updateModalOpen: boolean;
+  setUpdateModalOpen: (open: boolean) => void;
+  availableUpdate: UpdateCheckResult | null;
+  setAvailableUpdate: (update: UpdateCheckResult | null) => void;
+
+  // Welcome Screen & Recent Projects
+  showWelcomeScreen: boolean;
+  setShowWelcomeScreen: (show: boolean) => void;
+  recentProjects: RecentProjectEntry[];
+  addRecentProject: (entry: RecentProjectEntry) => void;
+  removeRecentProject: (id: string) => void;
 
   // Language & Currency (i18n)
   language: SupportedLocale;
@@ -2489,6 +2530,25 @@ export const useBiStore = create<BiState>((set, get) => {
     setAiSettingsModalOpen: (open) => set({ aiSettingsModalOpen: open }),
     canvasSizeModalOpen: false,
     setCanvasSizeModalOpen: (open) => set({ canvasSizeModalOpen: open }),
+    updateModalOpen: false,
+    setUpdateModalOpen: (open) => set({ updateModalOpen: open }),
+    availableUpdate: null,
+    setAvailableUpdate: (availableUpdate) => set({ availableUpdate }),
+
+    // Welcome Screen & Recent Projects
+    showWelcomeScreen: true,
+    setShowWelcomeScreen: (showWelcomeScreen) => set({ showWelcomeScreen }),
+    recentProjects: loadRecentProjects(),
+    addRecentProject: (entry) => {
+      const next = [entry, ...get().recentProjects.filter(r => r.id !== entry.id && !(entry.path && r.path === entry.path))].slice(0, 8);
+      saveRecentProjects(next);
+      set({ recentProjects: next });
+    },
+    removeRecentProject: (id) => {
+      const next = get().recentProjects.filter(r => r.id !== id);
+      saveRecentProjects(next);
+      set({ recentProjects: next });
+    },
 
     // State actions
     newProject: (name?: string) => {
@@ -2539,10 +2599,16 @@ export const useBiStore = create<BiState>((set, get) => {
     // Lifecycle & Persistence
     loadInitialSampleData: () => {
       const sample = getSampleDatasets();
+      const shouldRestoreVisuals = get().pages.every(p => p.visuals.length === 0);
       set(s => ({
+        projectName: shouldRestoreVisuals ? 'PrismBI Demo — Varejo Brasil' : s.projectName,
         tables: sample.tables,
         relationships: sample.relationships,
         measures: sample.measures,
+        pages: shouldRestoreVisuals
+          ? [{ id: defaultPageId, name: 'Visão Executiva', order: 1, visuals: initialVisuals }]
+          : s.pages,
+        activePageId: shouldRestoreVisuals ? defaultPageId : s.activePageId,
         sourcePbipPath: null,
         dataVersion: s.dataVersion + 1,
       }));

@@ -131,7 +131,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
   // Mouse Drag to move visual (or multi-selected group) freely within canvas (DOM-driven at 60fps, commits on mouseup)
   const handleMouseDownDrag = (e: React.MouseEvent) => {
-    if (isFocused || isMobile) return;
+    if (e.button !== 0 || isFocused || isMobile) return;
     // Don't drag if clicking buttons, inputs, selects, or tables
     const targetEl = e.target as HTMLElement;
     if (targetEl.closest('button') || targetEl.closest('input') || targetEl.closest('select') || targetEl.closest('table')) {
@@ -305,7 +305,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
   // Mouse drag to resize visual (DOM-driven at 60fps, commits to store on mouseup)
   const handleMouseDownResize = (e: React.MouseEvent) => {
-    if (isMobile) return;
+    if (e.button !== 0 || isMobile) return;
     e.preventDefault();
     e.stopPropagation();
 

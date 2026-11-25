@@ -19,6 +19,42 @@ import { Relationship, Table } from '../../types/bi';
 export const ModelView: React.FC = () => {
   const { tables, relationships, addRelationship, deleteRelationship } = useBiStore();
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const diagramRef = React.useRef<HTMLDivElement>(null);
+  const [isPanning, setIsPanning] = useState(false);
+
+  const handleMouseDownPan = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 1) return;
+    const container = diagramRef.current;
+    if (!container) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origLeft = container.scrollLeft;
+    const origTop = container.scrollTop;
+    setIsPanning(true);
+    document.body.style.cursor = 'grabbing';
+    let rafId: number | null = null;
+
+    const onMove = (ev: MouseEvent) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        container.scrollLeft = origLeft - dx;
+        container.scrollTop = origTop - dy;
+        rafId = null;
+      });
+    };
+    const onUp = () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      setIsPanning(false);
+      document.body.style.cursor = '';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
 
   // Direct Interactive Connection State (Click column A, then click column B)
   const [connectingSource, setConnectingSource] = useState<{ tableId: string; tableName: string; columnName: string } | null>(null);
@@ -305,7 +341,16 @@ export const ModelView: React.FC = () => {
       )}
 
       {/* Diagram Canvas with Entity Cards */}
-      <div className="flex-1 overflow-auto p-8 relative flex flex-wrap gap-8 items-start justify-center">
+      <div
+        ref={diagramRef}
+        onMouseDown={handleMouseDownPan}
+        onAuxClick={(e) => {
+          if (e.button === 1) e.preventDefault();
+        }}
+        className={`flex-1 overflow-auto p-8 relative flex flex-wrap gap-8 items-start justify-center ${
+          isPanning ? 'cursor-grabbing select-none' : ''
+        }`}
+      >
         {tables.map(table => {
           const isFact = !table.isDim && !table.isCalendar;
           const relatedRels = relationships.filter(
