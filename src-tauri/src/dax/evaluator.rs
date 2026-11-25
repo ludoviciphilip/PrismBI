@@ -349,6 +349,16 @@ fn eval_arg(
 
 #[cfg(test)]
 mod tests {
+    /// Monta a chave de filtro como o frontend faz: valor JSON convertido pelo
+    /// tipo da coluna (ver `build_filter_context`).
+    fn typed_keys(model: &DaxModel, table: &str, col: &str, raw: &str) -> std::collections::HashSet<crate::dax::ValueKey> {
+        let ctx = crate::dax::build_filter_context(
+            &[crate::dax::NativeFilterInput { table_id: table.into(), column: col.into(), values: vec![serde_json::Value::String(raw.into())] }],
+            model,
+        );
+        ctx.filters[&table.to_lowercase()][&col.to_lowercase()].clone()
+    }
+
     use super::*;
     use crate::dax::{DaxMeasureInput, DaxModelSyncPayload, DaxRelationshipInput, DaxTableInput};
     use crate::engine::DuckDbStore;
@@ -435,7 +445,7 @@ mod tests {
         assert!((dre_total - 22500.0).abs() < 1e-6);
 
         let mut ctx_rec = FilterContext::default();
-        ctx_rec.set_column_filter("dEstrutura", "Linha", [DaxValue::Text("Receita Bruta".into()).value_key()].into_iter().collect());
+        ctx_rec.set_column_filter("dEstrutura", "Linha", typed_keys(&model, "dEstrutura", "Linha", "Receita Bruta"));
         let dre_rec = model.evaluate_dax("[DRE]", &ctx_rec).unwrap().as_f64().unwrap();
         assert!((dre_rec - 25000.0).abs() < 1e-6);
     }
@@ -531,13 +541,7 @@ mod tests {
         });
 
         let mut ctx_feb_2026 = FilterContext::default();
-        ctx_feb_2026.set_column_filter(
-            "dCal",
-            "Data",
-            [DaxValue::Text("2026-02-15".into()).value_key()]
-                .into_iter()
-                .collect(),
-        );
+        ctx_feb_2026.set_column_filter("dCal", "Data", typed_keys(&model, "dCal", "Data", "2026-02-15"));
 
         let ytd = model.evaluate_dax("[Receita YTD]", &ctx_feb_2026).unwrap().as_f64().unwrap();
         assert!((ytd - 700.0).abs() < 1e-6);
@@ -631,43 +635,23 @@ mod tests {
         );
 
         let mut ctx_set = FilterContext::default();
-        ctx_set.set_column_filter(
-            "dCalendario",
-            "Ano",
-            [DaxValue::Text("2026".into()).value_key()].into_iter().collect(),
-        );
-        ctx_set.set_column_filter(
-            "dCalendario",
-            "Nome do Mês",
-            [DaxValue::Text("Setembro".into()).value_key()].into_iter().collect(),
-        );
+        ctx_set.set_column_filter("dCalendario", "Ano", typed_keys(&model, "dCalendario", "Ano", "2026"));
+        ctx_set.set_column_filter("dCalendario", "Nome do Mês", typed_keys(&model, "dCalendario", "Nome do Mês", "Setembro"));
         let fat_set = model.evaluate_dax("[Faturamento]", &ctx_set).expect("eval Faturamento Setembro");
         let sal_set = model.evaluate_dax("[Salários]", &ctx_set).expect("eval Salários Setembro");
         let mut ctx_out = FilterContext::default();
-        ctx_out.set_column_filter(
-            "dCalendario",
-            "Nome do Mês",
-            [DaxValue::Text("Outubro".into()).value_key()].into_iter().collect(),
-        );
+        ctx_out.set_column_filter("dCalendario", "Nome do Mês", typed_keys(&model, "dCalendario", "Nome do Mês", "Outubro"));
         let fat_out = model.evaluate_dax("[Faturamento]", &ctx_out).expect("eval Faturamento Outubro");
 
         let mut ctx_nov_mesano = FilterContext::default();
-        ctx_nov_mesano.set_column_filter(
-            "dCalendario",
-            "Mês/Ano",
-            [DaxValue::Text("Nov/2026".into()).value_key()].into_iter().collect(),
-        );
+        ctx_nov_mesano.set_column_filter("dCalendario", "Mês/Ano", typed_keys(&model, "dCalendario", "Mês/Ano", "Nov/2026"));
         let fat_nov = model.evaluate_dax("[Faturamento]", &ctx_nov_mesano).expect("eval Fat Nov");
         let lucro_nov = model.evaluate_dax("[Lucro Atual]", &ctx_nov_mesano).expect("eval Lucro Nov");
         let fat_prev_nov = model.evaluate_dax("[Faturamento Mês Passado]", &ctx_nov_mesano).expect("eval Fat Prev Nov");
         let lucro_prev_nov = model.evaluate_dax("[Lucro Mês Passado]", &ctx_nov_mesano).expect("eval Lucro Prev Nov");
 
         let mut ctx_out_mesano = FilterContext::default();
-        ctx_out_mesano.set_column_filter(
-            "dCalendario",
-            "Mês/Ano",
-            [DaxValue::Text("Out/2026".into()).value_key()].into_iter().collect(),
-        );
+        ctx_out_mesano.set_column_filter("dCalendario", "Mês/Ano", typed_keys(&model, "dCalendario", "Mês/Ano", "Out/2026"));
         let fat_out_m = model.evaluate_dax("[Faturamento]", &ctx_out_mesano).expect("eval Fat Out");
         let lucro_out_m = model.evaluate_dax("[Lucro Atual]", &ctx_out_mesano).expect("eval Lucro Out");
         let fat_prev_out = model.evaluate_dax("[Faturamento Mês Passado]", &ctx_out_mesano).expect("eval Fat Prev Out");
@@ -780,11 +764,7 @@ mod tests {
         });
 
         let mut ctx_nov = FilterContext::default();
-        ctx_nov.set_column_filter(
-            "dCalendario",
-            "Mês/Ano",
-            [DaxValue::Text("Nov/2026".into()).value_key()].into_iter().collect(),
-        );
+        ctx_nov.set_column_filter("dCalendario", "Mês/Ano", typed_keys(&model, "dCalendario", "Mês/Ano", "Nov/2026"));
 
         let prev_dateadd = model.evaluate_dax("[Fat Mes Passado DateAdd]", &ctx_nov).unwrap().as_f64().unwrap();
         let prev_month = model.evaluate_dax("[Fat Mes Passado Prev]", &ctx_nov).unwrap().as_f64().unwrap();
@@ -876,16 +856,8 @@ mod tests {
         });
 
         let mut ctx = FilterContext::default();
-        ctx.set_column_filter(
-            "dCal",
-            "Ano",
-            [DaxValue::Text("2026".into()).value_key()].into_iter().collect(),
-        );
-        ctx.set_column_filter(
-            "dCal",
-            "Mes",
-            [DaxValue::Text("3".into()).value_key()].into_iter().collect(),
-        );
+        ctx.set_column_filter("dCal", "Ano", typed_keys(&model, "dCal", "Ano", "2026"));
+        ctx.set_column_filter("dCal", "Mes", typed_keys(&model, "dCal", "Mes", "3"));
 
         let total = model.evaluate_dax("[Fat]", &ctx).unwrap().as_f64().unwrap();
         assert!((total - 128723.52).abs() < 1e-6);
@@ -988,7 +960,7 @@ mod tests {
         assert!((between - 400.0).abs() < 1e-6);
 
         let mut ctx_apr = FilterContext::default();
-        ctx_apr.set_column_filter("dCal", "Trimestre", [DaxValue::Text("T2".into()).value_key()].into_iter().collect());
+        ctx_apr.set_column_filter("dCal", "Trimestre", typed_keys(&model, "dCal", "Trimestre", "T2"));
         let qtd = model.evaluate_dax("[QTD T2]", &ctx_apr).unwrap().as_f64().unwrap();
         assert!((qtd - 1200.0).abs() < 1e-6);
         let close_m = model.evaluate_dax("CLOSINGBALANCEMONTH([Total], dCal[Data])", &ctx_apr).unwrap().as_f64().unwrap();

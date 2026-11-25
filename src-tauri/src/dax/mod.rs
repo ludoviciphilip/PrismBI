@@ -261,20 +261,17 @@ impl DaxValue {
             DaxValue::Decimal(n) => ValueKey::Num((n * 1_000_000.0).round() as i64),
             DaxValue::Currency(c) => ValueKey::Num(((*c as f64 / 10_000.0) * 1_000_000.0).round() as i64),
             DaxValue::DateTime(s) => ValueKey::Date((*s * 86_400.0).round() as i64),
+            // Estrito: texto só casa com texto (comparação sem diferenciar
+            // maiúsculas, como no DAX). A conversão de valores vindos do JSON
+            // (slicers, filtros de visual) é feita pelo tipo da coluna em
+            // `build_filter_context`, não adivinhando aqui.
             DaxValue::Text(s) => {
                 let t = s.trim();
                 if t.is_empty() {
-                    return ValueKey::Blank;
+                    ValueKey::Blank
+                } else {
+                    ValueKey::Text(t.to_lowercase())
                 }
-                if let Ok(n) = t.replace(',', ".").parse::<f64>() {
-                    if n.is_finite() {
-                        return ValueKey::Num((n * 1_000_000.0).round() as i64);
-                    }
-                }
-                if let Some(serial) = functions::parse_iso_to_serial(t) {
-                    return ValueKey::Date((serial * 86_400.0).round() as i64);
-                }
-                ValueKey::Text(t.to_lowercase())
             }
         }
     }
@@ -725,6 +722,10 @@ pub struct DaxModel {
     pub tables: HashMap<String, DaxTableData>,
     pub relationships: Vec<DaxRelationshipInput>,
     pub measures: HashMap<String, DaxMeasureInput>,
+    /// Chaves de filtro pré-calculadas no sync: tabela -> coluna -> linha.
+    /// A propagação de filtros compara milhões de células por consulta; sem
+    /// isso cada comparação de texto alocava um `to_lowercase()`.
+    key_cache: HashMap<String, Vec<Vec<ValueKey>>>,
 }
 
 impl Default for DaxModel {
@@ -739,17 +740,33 @@ impl DaxModel {
             tables: HashMap::new(),
             relationships: Vec::new(),
             measures: HashMap::new(),
+            key_cache: HashMap::new(),
+        }
+    }
+
+    fn build_key_cache(tbl: &DaxTableData) -> Vec<Vec<ValueKey>> {
+        (0..tbl.columns.len())
+            .map(|c| tbl.rows.iter().map(|r| r.get(c).map(DaxValue::value_key).unwrap_or(ValueKey::Blank)).collect())
+            .collect()
+    }
+
+    /// Chaves da coluna `col` da tabela `tkey` (minúscula), do cache quando
+    /// ele está consistente com a tabela, senão calculadas na hora.
+    fn column_keys<'a>(&'a self, tkey: &str, tbl: &DaxTableData, col: usize) -> std::borrow::Cow<'a, [ValueKey]> {
+        match self.key_cache.get(tkey).and_then(|cols| cols.get(col)) {
+            Some(keys) if keys.len() == tbl.rows.len() => std::borrow::Cow::Borrowed(keys.as_slice()),
+            _ => std::borrow::Cow::Owned(tbl.rows.iter().map(|r| r[col].value_key()).collect()),
         }
     }
 
     pub fn sync_from_payload(&mut self, payload: DaxModelSyncPayload) {
         self.tables.clear();
+        self.key_cache.clear();
         for t in payload.tables {
             let key = t.name.to_lowercase();
-            self.tables.insert(
-                key,
-                DaxTableData::from_json_rows_typed(&t.name, t.columns, &t.rows, &t.column_types),
-            );
+            let data = DaxTableData::from_json_rows_typed(&t.name, t.columns, &t.rows, &t.column_types);
+            self.key_cache.insert(key.clone(), Self::build_key_cache(&data));
+            self.tables.insert(key, data);
         }
         self.relationships = payload.relationships;
         self.measures.clear();
@@ -782,8 +799,9 @@ impl DaxModel {
             if let Some(col_filters) = ctx.filters.get(tkey) {
                 for (ckey, allowed) in col_filters {
                     if let Some(cidx) = tdata.get_col_idx(ckey) {
-                        for (r_idx, row) in tdata.rows.iter().enumerate() {
-                            if mask[r_idx] && !allowed.contains(&row[cidx].value_key()) {
+                        let keys = self.column_keys(tkey, tdata, cidx);
+                        for (r_idx, k) in keys.iter().enumerate() {
+                            if mask[r_idx] && !allowed.contains(k) {
                                 mask[r_idx] = false;
                             }
                         }
@@ -875,18 +893,19 @@ impl DaxModel {
                             // termina). Só a volta fato -> dimensão é marcada como
                             // usada, para evitar o "bounce-back" bidirecional.
                             let to_mask = &table_masks[&to_k];
-                            let allowed_keys: HashSet<ValueKey> = to_tbl
-                                .rows
+                            let to_keys = self.column_keys(&to_k, to_tbl, to_col);
+                            let allowed_keys: HashSet<&ValueKey> = to_keys
                                 .iter()
                                 .enumerate()
                                 .filter(|(i, _)| to_mask[*i])
-                                .map(|(_, r)| r[to_col].value_key())
+                                .map(|(_, k)| k)
                                 .collect();
 
+                            let from_keys = self.column_keys(&from_k, from_tbl, from_col);
                             let from_mask = table_masks.get_mut(&from_k).unwrap();
                             let mut changed = false;
-                            for (r_idx, row) in from_tbl.rows.iter().enumerate() {
-                                if from_mask[r_idx] && !allowed_keys.contains(&row[from_col].value_key()) {
+                            for (r_idx, k) in from_keys.iter().enumerate() {
+                                if from_mask[r_idx] && !allowed_keys.contains(k) {
                                     from_mask[r_idx] = false;
                                     changed = true;
                                 }
@@ -909,18 +928,19 @@ impl DaxModel {
                         ) {
                             used_rels.insert(rel_idx);
                             let from_mask = &table_masks[&from_k];
-                            let allowed_keys: HashSet<ValueKey> = from_tbl
-                                .rows
+                            let from_keys = self.column_keys(&from_k, from_tbl, from_col);
+                            let allowed_keys: HashSet<&ValueKey> = from_keys
                                 .iter()
                                 .enumerate()
                                 .filter(|(i, _)| from_mask[*i])
-                                .map(|(_, r)| r[from_col].value_key())
+                                .map(|(_, k)| k)
                                 .collect();
 
+                            let to_keys = self.column_keys(&to_k, to_tbl, to_col);
                             let to_mask = table_masks.get_mut(&to_k).unwrap();
                             let mut changed = false;
-                            for (r_idx, row) in to_tbl.rows.iter().enumerate() {
-                                if to_mask[r_idx] && !allowed_keys.contains(&row[to_col].value_key()) {
+                            for (r_idx, k) in to_keys.iter().enumerate() {
+                                if to_mask[r_idx] && !allowed_keys.contains(k) {
                                     to_mask[r_idx] = false;
                                     changed = true;
                                 }
@@ -1019,12 +1039,16 @@ mod type_rule_tests {
     #[test]
     fn value_key_unifies_numeric_representations_for_filters() {
         assert_eq!(DaxValue::Integer(2024).value_key(), DaxValue::Decimal(2024.0).value_key());
-        assert_eq!(DaxValue::Text("2024".into()).value_key(), DaxValue::Integer(2024).value_key());
-        // Text "2024" (a year) must NOT collide with a date whose serial happens to differ
+        // Texto "2024" não é o número 2024 (era o bug do canonical_key).
+        assert_ne!(DaxValue::Text("2024".into()).value_key(), DaxValue::Integer(2024).value_key());
         assert_ne!(DaxValue::Text("2024".into()).value_key(), DaxValue::DateTime(2024.0).value_key());
-        let a = DaxValue::Text("2024-03-01".into()).value_key();
+        assert_eq!(DaxValue::Text(" Ana ".into()).value_key(), DaxValue::Text("ana".into()).value_key());
+        // Valores de filtro chegam como JSON e são convertidos pelo tipo da coluna.
+        let a = DaxValue::from_json_as(&JsonValue::from("2024-03-01"), Some(ColumnType::Date)).value_key();
         let b = DaxValue::DateTime(functions::parse_iso_to_serial("2024-03-01").unwrap()).value_key();
         assert_eq!(a, b);
+        let n = DaxValue::from_json_as(&JsonValue::from("2024"), Some(ColumnType::Integer)).value_key();
+        assert_eq!(n, DaxValue::Integer(2024).value_key());
     }
 
     #[test]
@@ -1208,7 +1232,7 @@ mod bench_tests {
         let ctx = build_filter_context(
             &[
                 NativeFilterInput { table_id: "Dim1".into(), column: "Grupo1".into(), values: vec![json!("Grupo1-7")] },
-                NativeFilterInput { table_id: "Dim2".into(), column: "Grupo2".into(), values: vec![json!("Grupo2-3")] },
+                NativeFilterInput { table_id: "Dim2".into(), column: "Grupo2".into(), values: vec![json!("Grupo2-49")] }, // i%50==7 => (7i)%50==49: resultado não vazio
             ],
             &model,
         );
@@ -1227,5 +1251,6 @@ mod bench_tests {
             ITERS,
             last
         );
+        assert!(!last.is_blank(), "o benchmark deve medir um filtro com linhas visíveis");
     }
 }
