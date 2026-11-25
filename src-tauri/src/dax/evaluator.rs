@@ -1,7 +1,8 @@
 use crate::dax::ast::{BinaryOp, Expr, UnaryOp};
 use crate::dax::functions::{
     add_days, add_months, calc_geomean, calc_median, calc_percentile, calc_stdev, calc_variance,
-    civil_to_days, days_in_month, parse_flexible_ymd, parse_iso_ymd, try_eval_scalar_fn,
+    calc_xirr, calc_xnpv, civil_to_days, days_in_month, parse_flexible_ymd, parse_iso_ymd,
+    try_eval_scalar_fn, DatedFlow,
 };
 use crate::dax::parser::parse_dax;
 use crate::dax::{DaxModel, DaxTableData, DaxValue, FilterContext, RelOverride};
@@ -768,6 +769,32 @@ fn eval_call(
             }
             Ok(DaxValue::Blank)
         }
+        "XNPV" | "XIRR" => {
+            let min_args = if fname == "XNPV" { 4 } else { 3 };
+            if args.len() < min_args {
+                return Err(if fname == "XNPV" {
+                    "XNPV requer (tabela, valores, datas, taxa)".to_string()
+                } else {
+                    "XIRR requer (tabela, valores, datas, [estimativa])".to_string()
+                });
+            }
+            let flows = eval_dated_flows(&fname, args, model, ctx, row_stack, vars)?;
+            if flows.is_empty() {
+                return Ok(DaxValue::Blank);
+            }
+            if fname == "XNPV" {
+                let rate = evaluate_ast(&args[3], model, ctx, row_stack, vars)?
+                    .as_f64()
+                    .ok_or("XNPV: taxa deve ser numérica")?;
+                calc_xnpv(rate, &flows).map(DaxValue::Number)
+            } else {
+                let guess = match args.get(3) {
+                    None | Some(Expr::Blank) => 0.1,
+                    Some(e) => evaluate_ast(e, model, ctx, row_stack, vars)?.as_f64().unwrap_or(0.1),
+                };
+                calc_xirr(&flows, guess).map(DaxValue::Number)
+            }
+        }
         "EARLIER" | "EARLIEST" => {
             let depth = if fname == "EARLIEST" {
                 None
@@ -844,6 +871,41 @@ fn eval_call(
             }
         }
     }
+}
+
+/// Iterates `args[0]` (a table) evaluating `args[1]` (amount) and `args[2]` (date) per row,
+/// for XNPV/XIRR. Rows with a blank amount are skipped; a blank/invalid date is an error.
+fn eval_dated_flows(
+    fname: &str,
+    args: &[Expr],
+    model: &DaxModel,
+    ctx: &FilterContext,
+    row_stack: &[RowContext<'_>],
+    vars: &HashMap<String, DaxValue>,
+) -> Result<Vec<DatedFlow>, String> {
+    let (table_eval, row_indices, iter_ctx) = eval_table_expr(&args[0], model, ctx, row_stack, vars)?;
+    let table_data = table_eval.as_ref();
+    let mut flows = Vec::with_capacity(row_indices.len());
+    for r_idx in row_indices {
+        let mut next_stack = row_stack.to_vec();
+        next_stack.push(RowContext { table: table_data, row_idx: r_idx });
+        let value = evaluate_ast(&args[1], model, &iter_ctx, &next_stack, vars)?;
+        if value.is_blank() {
+            continue;
+        }
+        let amount = value
+            .as_f64()
+            .ok_or_else(|| format!("{}: valor não numérico '{}'", fname, value.as_display_string()))?;
+        let date = evaluate_ast(&args[2], model, &iter_ctx, &next_stack, vars)?;
+        let day = match &date {
+            DaxValue::Number(n) => n.floor() as i64,
+            other => parse_flexible_ymd(&other.as_display_string())
+                .map(|(y, m, d)| civil_to_days(y, m, d) as i64)
+                .ok_or_else(|| format!("{}: data inválida '{}'", fname, other.as_display_string()))?,
+        };
+        flows.push((amount, day));
+    }
+    Ok(flows)
 }
 
 /// EARLIER(col, n) / EARLIEST(col): value of `col` in an *outer* row context.

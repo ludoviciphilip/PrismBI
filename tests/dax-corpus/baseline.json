@@ -291,6 +291,8 @@
     "stats.vars.column",
     "stats.varxp.table_expr",
     "stats.varxs.table_expr",
+    "stats.xirr.cashflow",
+    "stats.xnpv.cashflow_10pct",
     "time.closingbalancemonth.jan_2025",
     "time.closingbalancequarter.q1_2025",
     "time.closingbalanceyear.2024",
