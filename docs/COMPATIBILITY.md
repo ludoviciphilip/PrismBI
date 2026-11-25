@@ -1,4 +1,4 @@
-# Matriz de Compatibilidade DAX, Visuais e Fontes (PrismBI `v0.8.0`)
+# Matriz de Compatibilidade DAX, Visuais e Fontes (PrismBI `v0.9.0`)
 
 Este documento resume o nível atual de compatibilidade do **PrismBI** com projetos do Microsoft Power BI (`.pbip` / `.pbix`) e a especificação pública **DAX**.
 

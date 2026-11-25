@@ -8,7 +8,7 @@
 
 🇺🇸 **English** • 🇧🇷 [Ler em Português](./README.pt-BR.md)
 
-[![Version](https://img.shields.io/badge/version-0.8.2-f59e0b?style=flat-square)](./package.json)
+[![Version](https://img.shields.io/badge/version-0.9.0-f59e0b?style=flat-square)](./package.json)
 [![CI](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml)
 [![Release](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
@@ -58,10 +58,11 @@ Powered by **Tauri v2 + Rust + DuckDB** on the backend and **React + TypeScript 
 - **Power BI-Style Funnel & Waterfall:** Funnel with readable `minSize`, `100%` top stage, and footer conversion rate; true Waterfall with positive/negative variations crossing zero, dashed connector lines, and final `Total` column.
 - **Tables, Matrices & Slicers:** Pivot Matrix with row/column subtotals, interactive Table with Drill-Through, and Slicers supporting dropdown lists and clickable `tiles` mode.
 
-### ⚡ Rust + DuckDB Analytical Engine (`v0.8.0`)
+### ⚡ Rust + DuckDB Analytical Engine (`v0.9.0`)
 - **Embedded DuckDB:** fast native ingestion of **Excel (`.xlsx`/`.xls`)**, **CSV**, **Parquet**, **JSON**, and **REST API (JSON)** endpoints, plus a built-in native SQL console.
 - **Real Data Refresh & Table Management:** **Refresh Data** reloads linked files/sources without losing visuals, measures, or relationships — including mapping differently named Excel sheets (e.g., sheet `Fato` → table `fLançamentos`), replacing table data from another workbook, and full table renaming.
-- **Power Query (`M`) & Linux Path Remapping:** automatic Windows → Linux file path resolution inside `.pbip` projects and support for `Table.RenameColumns`, `Table.RemoveColumns`, `Table.SelectColumns`, and `Table.SelectRows`.
+- **Visual Power Query (`v0.9.0`):** a Power BI-style editor (Queries pane, Home/Transform/Add Column/View tabs, ~80 operations, editable Applied Steps, per-step formula bar, Advanced Editor, column quality/distribution/profile). Every query re-runs on DuckDB from the raw source (40 step types, non-destructive), and **M is genuinely parsed and generated** (round-trip on `.pbip` import and export), with automatic Windows → Linux path resolution.
+- **Full-size model (`v0.9.0`):** the Rust engine reads tables straight from DuckDB (1M rows in ~0.13 s); the 5,000-row preview is only used by grids.
 - **Measured DAX conformance: 364/368 (98.9%) in the native Rust engine** on an [independently verified corpus](./docs/DAX_CONFORMANCE.md) of 368 cases (expected values computed by Python oracles, run on every CI build). **Typed Rust engine (165+ functions),** about 3× faster than v0.7 on a 200k-row benchmark: native evaluation of `CALCULATE`, `SWITCH`, `RANKX`, `TREATAS`, `CONTAINSROW`, `GENERATESERIES`, `COALESCE`, `CONVERT`, `IS*` family, bit-shifts, math/trigonometry, text (`FORMAT`, `MID`, `FIND`, `SEARCH`, `SUBSTITUTE`, `CONTAINSSTRING`), statistics & iterators (`MEDIAN`, `PERCENTILE.*`, `STDEV.*`, `VAR.*`, `CONCATENATEX`), relationships (`VALUES`, `DISTINCT`, `TOPN`, `LOOKUPVALUE`, `USERELATIONSHIP`, `CROSSFILTER`), financial functions (`PMT`, `PV`, `FV`, `NPER`, `NPV`, `IPMT`, `PPMT`, `SLN`, `SYD`, `DB`, `DDB`, `EFFECT`, `NOMINAL`, `RATE`), `PATH*`, and full Time Intelligence (`TOTALYTD`, `TOTALQTD`, `TOTALMTD`, `PARALLELPERIOD`, `DATESBETWEEN`, `DATESINPERIOD`, `FIRSTNONBLANK`/`LASTNONBLANK`, `OPENINGBALANCE*`/`CLOSINGBALANCE*`), plus 60+ `INFO.*` DMVs in the TS engine. See the full [Compatibility Matrix](./docs/COMPATIBILITY.md).
 - **Interactive Analysis:** bidirectional cross-filtering on click, 2-level expandable Matrix hierarchies, cross-page Drill-Through, Visual Calculations, and live telemetry in the Performance Analyzer.
 
@@ -79,7 +80,7 @@ Powered by **Tauri v2 + Rust + DuckDB** on the backend and **React + TypeScript 
 - **GitHub Actions CI/CD:** automated Linux release builds (**AppImage**, **`.deb`**, **`.rpm`**) plus packaging manifests in `packaging/` for **AUR (`prismbi-bin`)** and **Flatpak**.
 - **Pro Canvas Editing:** **Undo / Redo** (`Ctrl+Z`, `Ctrl+Y`, and Ribbon controls), **multi-select** (`Shift`/`Ctrl` + click, group drag, arrow-key nudge, `Delete`, and floating alignment/distribution toolbar), and **60fps Smart Snap Guides**.
 - **Data & Model Views:** tabular data inspector, relationship manager with auto-detection, and Calendar Table generator.
-- **Power Query / ETL, Quick Measures & UDF Library:** no-code data transformations, quick measure wizard, and DAX editor with IntelliSense.
+- **Quick Measures & UDF Library:** quick measure wizard, visual sorting ("Sort by", table/matrix headers, slicers), and DAX editor with IntelliSense.
 - **Governance & Theming:** RLS/OLS simulation, What-If parameters, light/dark theme manager, multi-language UI (`EN`, `PT`, `ES`), and currency formatting (`USD`, `BRL`, `EUR`).
 - **Canvas Shortcuts:** smooth zooming via `Ctrl + =`, `Ctrl + -`, `Ctrl + 0`, and `Ctrl + Scroll`, middle-mouse hold-and-drag panning across both Report Canvas and Semantic Model view, and `Esc` to exit Presentation Mode.
 

@@ -76,9 +76,14 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 
 ---
 
-## `v0.9.0` — Power Query Visual (ETL) & Round-Trip Real de Scripts `M`
-- [ ] Editor ETL visual passo a passo com preview em tempo real: **Alterar Tipo**, **Filtrar Linhas**, **Dividir/Mesclar Colunas**, **Substituir Valores**, **Preencher Abaixo/Acima**, **Unpivot / Pivot**, **Agrupar Por (`GroupBy`)**, **Coluna Condicional/Personalizada**, **Mesclar (`Merge/Join`)** e **Acrescentar (`Append`)**.
-- [ ] Geração e leitura bidirecional (round-trip) dos scripts **Power Query (`M`)** correspondentes na importação e exportação de projetos `.pbip`.
+## `v0.9.0` — Power Query Visual (ETL) & Round-Trip Real de Scripts `M` (Concluído)
+- [x] Editor ETL visual passo a passo com preview em tempo real: **Alterar Tipo**, **Filtrar Linhas**, **Dividir/Mesclar Colunas**, **Substituir Valores**, **Preencher Abaixo/Acima**, **Unpivot / Pivot**, **Agrupar Por (`GroupBy`)**, **Coluna Condicional/Personalizada**, **Mesclar (`Merge/Join`)** e **Acrescentar (`Append`)**.
+- [x] Geração e leitura bidirecional (round-trip) dos scripts **Power Query (`M`)** correspondentes na importação e exportação de projetos `.pbip`.
+
+### Também na `v0.9.0`
+- [x] **Motor Rust 2.0 — etapa 2 (parcial):** o modelo DAX lê as tabelas direto do DuckDB (sem o limite de 5.000 linhas da prévia; 1M linhas em ~0,13 s). O armazenamento colunar com dicionário continua planejado.
+- [x] Ordenação de visuais ("Classificar por", cabeçalhos de tabela/matriz, gráficos, segmentações e cartões de filtro), salva no projeto e no `.pbip`.
+- [x] Pendente para a `v0.11.0`: tabela comum, dispersão e Cálculos Visuais ainda calculam sobre a prévia de 5.000 linhas (com aviso no visual).
 
 ---
 
