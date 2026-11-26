@@ -121,4 +121,64 @@ describe('captureBookmark / applyBookmark (puras)', () => {
     const slicerAfter = patch.pages?.[0].visuals.find(v => v.id === 'vSlicer');
     expect(slicerAfter?.formatConfig.hidden).toBe(true);
   });
+
+  it('seams E↔G: captura e restaura drillPath/drillMode (gráfico) e a expansão da matriz', () => {
+    const chartVisual: Visual = {
+      id: 'vChart',
+      type: 'column',
+      title: 'Vendas',
+      x: 0, y: 0, w: 100, h: 100,
+      dataConfig: { tableId: 't1', xAxisField: 'Data', currentDrillLevel: 1, drillMode: 'drill', drillPath: [2024] },
+      formatConfig: { showTitle: true },
+    };
+    const matrixVisualEntry: Visual = {
+      id: 'vMatrix',
+      type: 'matrix',
+      title: 'Matriz',
+      x: 0, y: 0, w: 100, h: 100,
+      dataConfig: {
+        tableId: 't1',
+        matrixRowFields: ['Regiao', 'Cidade', 'Loja'],
+        // Estado de expansão local (ver `MatrixExpansion` em engine/drill.ts), opcional e novo.
+        matrixExpansion: { depth: 0, expanded: ['["Sul"]'], collapsed: [] },
+      },
+      formatConfig: { showTitle: true },
+    };
+
+    const captured = captureBookmark({
+      activePageId: 'p1',
+      filters: [],
+      visuals: [chartVisual, matrixVisualEntry],
+    });
+    expect(captured.visualState?.vChart).toMatchObject({ drillLevel: 1, drillMode: 'drill', drillPath: [2024] });
+    expect(captured.visualState?.vMatrix).toMatchObject({ matrixExpansion: { depth: 0, expanded: ['["Sul"]'], collapsed: [] } });
+
+    const bookmark = { id: 'b6', name: 'Teste', ...captured } as any;
+    const freshChart = { ...chartVisual, dataConfig: { ...chartVisual.dataConfig, currentDrillLevel: 0, drillMode: undefined, drillPath: undefined } };
+    const freshMatrix = { ...matrixVisualEntry, dataConfig: { ...matrixVisualEntry.dataConfig, matrixExpansion: undefined } };
+    const patch = applyBookmark(bookmark, { pages: [page([freshChart, freshMatrix])], filters: [], activePageId: 'p1' });
+    const restoredChart = patch.pages?.[0].visuals.find(v => v.id === 'vChart');
+    expect(restoredChart?.dataConfig.currentDrillLevel).toBe(1);
+    expect(restoredChart?.dataConfig.drillMode).toBe('drill');
+    expect(restoredChart?.dataConfig.drillPath).toEqual([2024]);
+    const restoredMatrix = patch.pages?.[0].visuals.find(v => v.id === 'vMatrix');
+    expect(restoredMatrix?.dataConfig.matrixExpansion).toEqual({ depth: 0, expanded: ['["Sul"]'], collapsed: [] });
+  });
+
+  it('seams E↔G: indicador antigo (sem drillPath/drillMode/matrixExpansion) continua válido', () => {
+    const legacyVisualState = { hidden: false, drillLevel: 2, sortField: 'Mes', sortOrder: 'asc' as const };
+    const bookmark = {
+      id: 'b7',
+      name: 'Antigo',
+      activePageId: 'p1',
+      filters: [],
+      visualState: { vA: legacyVisualState },
+      capture: { data: true, display: true, currentPage: true },
+    } as any;
+    const patch = applyBookmark(bookmark, { pages: [page([visualA])], filters: [], activePageId: 'p1' });
+    const restored = patch.pages?.[0].visuals.find(v => v.id === 'vA');
+    expect(restored?.dataConfig.currentDrillLevel).toBe(2);
+    expect(restored?.dataConfig.drillMode).toBe(visualA.dataConfig.drillMode);
+    expect(restored?.dataConfig.drillPath).toBe(visualA.dataConfig.drillPath);
+  });
 });

@@ -244,6 +244,11 @@ export interface VisualDataConfig {
   drillPath?: unknown[];
   /** Matriz: campos das linhas (N níveis). O primeiro espelha `xAxisField`. */
   matrixRowFields?: string[];
+  /** v0.10 Rodada 2 (seams E↔G): estado de expansão da matriz hierárquica, só para
+   * indicadores (Bookmarks) restaurarem — ver `MatrixExpansion` em engine/drill.ts.
+   * Continua não persistido no projeto fora de um indicador (editar a matriz
+   * normalmente não grava aqui). */
+  matrixExpansion?: { depth: number; expanded: string[]; collapsed: string[] };
   // --- fim Bloco G ---
   kpiTarget?: number;
   kpiComparisonField?: string;
@@ -353,6 +358,12 @@ export interface BookmarkVisualState {
   drillLevel?: number;
   sortField?: string;
   sortOrder?: 'asc' | 'desc';
+  // --- v0.10 Rodada 2 (seams E↔G): opcionais, indicadores antigos continuam válidos ---
+  /** Gráficos com hierarquia: `drillPath`/`drillMode` (ver `VisualDataConfig`). */
+  drillPath?: unknown[];
+  drillMode?: 'drill' | 'expand';
+  /** Matriz hierárquica: níveis expandidos (ver `VisualDataConfig.matrixExpansion`). */
+  matrixExpansion?: { depth: number; expanded: string[]; collapsed: string[] };
 }
 
 export interface Bookmark {

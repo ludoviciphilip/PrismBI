@@ -58,6 +58,12 @@ export function captureBookmark(input: CaptureBookmarkInput): CapturedBookmarkFi
         drillLevel: visual.dataConfig?.currentDrillLevel,
         sortField: visual.dataConfig?.sortField,
         sortOrder: visual.dataConfig?.sortOrder,
+        // v0.10 Rodada 2 (seams E↔G): sem isto, restaurar um indicador num nível > 0
+        // mostra "todos os valores" daquele nível (drillMode) em vez do ponto escolhido
+        // (drillPath); a matriz perde quais linhas estavam expandidas.
+        drillMode: visual.dataConfig?.drillMode,
+        drillPath: visual.dataConfig?.drillPath,
+        matrixExpansion: visual.dataConfig?.matrixExpansion,
       };
     }
 
@@ -137,6 +143,13 @@ export function applyBookmark(bookmark: Bookmark, ctx: ApplyBookmarkContext): Ap
                 currentDrillLevel: vs.drillLevel ?? next.dataConfig?.currentDrillLevel,
                 sortField: vs.sortField ?? next.dataConfig?.sortField,
                 sortOrder: vs.sortOrder ?? next.dataConfig?.sortOrder,
+                // v0.10 Rodada 2 (seams E↔G): `drillMode`/`drillPath` são lidos a cada
+                // render por `getDrillState` (sem estado React próprio), então só
+                // gravar aqui já restaura o ponto certo do drill. `matrixExpansion`
+                // sincroniza de volta para o `useState` local em `useVisualDrill`.
+                drillMode: vs.drillMode ?? next.dataConfig?.drillMode,
+                drillPath: vs.drillPath ?? next.dataConfig?.drillPath,
+                matrixExpansion: vs.matrixExpansion ?? next.dataConfig?.matrixExpansion,
               },
             };
           }

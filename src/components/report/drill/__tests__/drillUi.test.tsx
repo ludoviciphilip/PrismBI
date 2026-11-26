@@ -337,6 +337,20 @@ describe('Matriz com N níveis', () => {
     expect(screen.queryByTestId('hierarchical-matrix')).toBeNull();
   });
 
+  it('seams E↔G: um indicador grava dataConfig.matrixExpansion e a matriz se re-expande', () => {
+    seed(matrixVisual());
+    render(<LiveCard id="v1" />);
+    expect(rowLabels()).toEqual(['0:Norte=2', '0:Sul=3']);
+
+    // Simula o patch que `applyBookmark` escreve em dataConfig ao restaurar um indicador.
+    act(() => {
+      useBiStore.getState().updateVisual('v1', {
+        dataConfig: { ...getVisual().dataConfig, matrixExpansion: { depth: 0, expanded: [JSON.stringify(['Sul'])], collapsed: [] } },
+      });
+    });
+    expect(rowLabels()).toEqual(['0:Norte=2', '0:Sul=3', '1:Curitiba=2', '1:POA=2']);
+  });
+
   it('hover numa linha (seams F↔G): a dica de página filtra pelo caminho INTEIRO da linha', () => {
     vi.useFakeTimers();
     const st = useBiStore.getState();

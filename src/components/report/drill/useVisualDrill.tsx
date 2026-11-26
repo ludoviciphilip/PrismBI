@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DataType, Filter, Table, Visual } from '../../../types/bi';
 import { useBiStore } from '../../../store/useBiStore';
 import { globalDataEngine } from '../../../engine/dataEngine';
@@ -120,7 +120,19 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
   const [hovered, setHovered] = useState(false);
   const [drillOn, setDrillOn] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; keys: unknown[] } | null>(null);
-  const [expansion, setExpansion] = useState<MatrixExpansion>(COLLAPSED_MATRIX);
+  const [expansion, setExpansion] = useState<MatrixExpansion>(() => dc.matrixExpansion ?? COLLAPSED_MATRIX);
+  // v0.10 Rodada 2 (seams E↔G): a expansão da matriz é estado local (não persistido
+  // no projeto), mas um indicador (Bookmark) PRECISA restaurá-la. `dc.matrixExpansion`
+  // só muda quando algo de fora (a aplicação do indicador) grava um valor novo — a
+  // edição normal (+/−, "expandir tudo") nunca escreve em `dc`, só em `expansion` — então
+  // sincronizar aqui nunca sobrescreve um toggle manual do usuário.
+  const lastSyncedExpansion = useRef(dc.matrixExpansion);
+  useEffect(() => {
+    if (dc.matrixExpansion !== lastSyncedExpansion.current) {
+      lastSyncedExpansion.current = dc.matrixExpansion;
+      setExpansion(dc.matrixExpansion ?? COLLAPSED_MATRIX);
+    }
+  }, [dc.matrixExpansion]);
 
   const applyPatch = useCallback(
     (patch: Partial<Visual['dataConfig']> | null) => {
