@@ -44,6 +44,7 @@ import {
 import { getFieldFormat, cellStyleFromFormat, buildBarSeriesData, resolverFromRows, resolverFromSeries, activeFormats, styleForTotalCell } from './conditionalFormat/apply';
 import { FormattedCell } from './conditionalFormat/FormattedCell';
 import { resolveTooltipPage, buildTemporaryFilters, useTooltipHover, TooltipPopover } from './tooltipPage';
+import { useVisualDrill } from './drill';
 
 export interface SnapGuide {
   orientation: 'v' | 'h';
@@ -421,6 +422,13 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     visual.type !== 'textbox' &&
     Boolean(tables.find(t => t.id === visual.dataConfig.tableId)?.rowsTruncated);
 
+  // v0.10 Frente G: drill-down hierárquico (gráficos) e matriz com N níveis.
+  const drill = useVisualDrill(visual, filters, {
+    native: supportsNativeRustQuery,
+    onShowTable: () => setShowRawTable(true),
+    onDrillthrough: (field, value) => setDrillPop({ field, value }),
+  });
+
   const nativeCacheKey = useMemo(() => {
     if (!supportsNativeRustQuery) return '';
     // Sort/limit are applied client-side after the native query, so they don't invalidate it.
@@ -482,6 +490,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
   }, [supportsNativeRustQuery, nativeCacheKey]);
 
   const queryResult = useMemo(() => {
+    if (drill.chartResult) return { ...tsQueryResult, ...drill.chartResult };
     if (supportsNativeRustQuery && asyncNativeResult) {
       // The native engine returns categories unsorted and without TopN; apply the
       // exact same shared sort (+ limit after sort) as the JS QueryPlanner.
@@ -512,7 +521,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       };
     }
     return tsQueryResult;
-  }, [supportsNativeRustQuery, asyncNativeResult, tsQueryResult, visual, tables]);
+  }, [supportsNativeRustQuery, asyncNativeResult, tsQueryResult, visual, tables, drill.chartResult]);
 
   // "Classificar por" — shared by the header "..." menu and table/matrix header clicks
   const sortKind = sortMenuKind(visual);
@@ -556,6 +565,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
   // Handle cross-filtering & drill-through prompt when user clicks on a chart data point
   const onChartClick = useCallback((params: any) => {
     if (!params) return;
+    if (drill.handlePointClick(params)) return;
     const catName = params.name || params.data?.name;
     if (catName && catName !== 'Sem dados' && visual.dataConfig.xAxisField) {
       setCrossFilter(visual.dataConfig.tableId, visual.dataConfig.xAxisField, catName);
@@ -564,7 +574,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
         value: catName,
       });
     }
-  }, [visual.dataConfig.tableId, visual.dataConfig.xAxisField, setCrossFilter]);
+  }, [visual.dataConfig.tableId, visual.dataConfig.xAxisField, setCrossFilter, drill.handlePointClick]);
 
   // Report Page Tooltip (v0.10 Rodada 2, frente F): resolve a página de dica
   // (Padrão/Página do relatório/Automático) e, no hover, abre um popover com
@@ -603,7 +613,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     click: onChartClick,
     mouseover: onChartMouseOver,
     mouseout: onChartMouseOut,
-  }), [onChartClick, onChartMouseOver, onChartMouseOut]);
+    contextmenu: drill.handleContextMenu,
+  }), [onChartClick, onChartMouseOver, onChartMouseOut, drill.handleContextMenu]);
 
   // Célula de tabela/matriz sob o mouse abre a mesma dica de página (debounce de 150ms).
   // `field` por padrão é o eixo X (linha da matriz); tabelas simples passam a própria coluna.
@@ -1340,6 +1351,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     <div
       ref={cardRef}
       data-visual-id={visual.id}
+      {...drill.hoverProps}
       onClick={(e) => {
         e.stopPropagation();
         if (didDragMoveRef.current) {
@@ -1406,6 +1418,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
         {/* Action Buttons */}
         <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100">
+          {drill.header}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -1740,6 +1753,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               </div>
             );
           })()
+        ) : visual.type === 'matrix' && drill.renderMatrix ? (
+          drill.renderMatrix(isCurrencyField)
         ) : visual.type === 'matrix' ? (
           (() => {
             const { categories, series } = queryResult;
@@ -2061,6 +2076,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           </ErrorBoundary>
         )}
       </div>
+
+      {drill.overlay}
 
       {/* Floating Interactive Drill-Through Popover */}
       {drillPop && (

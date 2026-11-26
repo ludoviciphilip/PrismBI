@@ -137,6 +137,8 @@ export interface PbiVisualMeta {
   categoryField?: string | null;
   legendField?: string | null;
   valueFields: string[];
+  /** v0.10 Frente G: projeções extras de Category/Rows (hierarquia). */
+  drillFields?: string[];
   columnCount?: number | null;
   slicerMode?: string | null;
   actionType?: string | null;
@@ -444,6 +446,25 @@ export interface NativeVisualQueryRequest {
   yAxisFields: string[];
   aggregation?: string;
   filters: { tableId: string; column: string; values: any[] }[];
+  /** v0.10 Frente G: agrupamento do eixo por níveis (drill/expandir/hierarquia de data). */
+  categoryLevels?: { field: string; datePart?: string | null }[];
+  /** v0.10 Frente G: caminho de drill (entra no build_filter_context do Rust). */
+  drillFilters?: { field: string; datePart?: string | null; value: unknown }[];
+  /** v0.10 Frente G: linhas da matriz (N níveis) e estado de expansão. */
+  matrixRows?: { field: string; datePart?: string | null }[];
+  matrixExpandDepth?: number;
+  matrixExpanded?: unknown[][];
+  matrixCollapsed?: unknown[][];
+}
+
+export interface NativeMatrixNodeDto {
+  key: unknown;
+  label: string;
+  values: number[];
+  rowTotal?: number | null;
+  hasChildren: boolean;
+  expanded: boolean;
+  children: NativeMatrixNodeDto[];
 }
 
 export interface NativeVisualSeries {
@@ -457,6 +478,9 @@ export interface NativeVisualQueryResult {
   summaryValue?: number | null;
   queryTimeMs: number;
   engine: string;
+  /** v0.10 Frente G: chave de cada nível por categoria (alinhado com `categories`). */
+  categoryKeys?: unknown[][];
+  matrix?: { rows: NativeMatrixNodeDto[]; columnTotals: number[]; grandTotal?: number | null } | null;
 }
 
 export async function queryVisualNative(

@@ -329,6 +329,7 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
     let mut category_field: Option<String> = None;
     let mut legend_field: Option<String> = None;
     let mut value_fields = Vec::new();
+    let mut drill_fields: Vec<String> = Vec::new();
 
     if let Some(qstate) = visual_obj
         .get("query")
@@ -368,12 +369,15 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
                     || role_l == "x"
                     || (is_slicer && role_l == "values")
                 {
+                    let qualified = match &tbl {
+                        Some(t) if !t.eq_ignore_ascii_case("medidas") => format!("{}.{}", t, fld),
+                        _ => fld,
+                    };
                     if category_field.is_none() {
-                        let qualified = match &tbl {
-                            Some(t) if !t.eq_ignore_ascii_case("medidas") => format!("{}.{}", t, fld),
-                            _ => fld,
-                        };
                         category_field = Some(qualified);
+                    } else if !is_slicer && !drill_fields.contains(&qualified) {
+                        // v0.10 Frente G: projeções seguintes = hierarquia de drill / linhas da matriz.
+                        drill_fields.push(qualified);
                     }
                 } else if role_l == "series" || role_l == "columns" || role_l == "legend" {
                     if legend_field.is_none() {
@@ -468,6 +472,7 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
         category_field,
         legend_field,
         value_fields,
+        drill_fields,
         column_count,
         slicer_mode,
         action_type,
@@ -1190,6 +1195,10 @@ fn extract_pbir_field_entity_prop(field: &JsonValue) -> Option<(Option<String>, 
     let prop = node.get("Property").and_then(|v| v.as_str())?.to_string();
     Some((entity, prop))
 }
+
+#[cfg(test)]
+#[path = "tests_drill_import.rs"]
+mod drill_import_tests;
 
 #[cfg(test)]
 mod tests {

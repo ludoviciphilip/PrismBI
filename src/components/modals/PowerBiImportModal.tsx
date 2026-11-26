@@ -22,6 +22,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { Filter, Measure, Page, Relationship, Table, Visual, VisualType } from '../../types/bi';
 import { CURRENT_ENGINE_VERSION } from '../../engine/migrations';
+import { drillConfigFromPbiMeta } from '../report/drill/pbiImport';
 import { conditionalFormatsFromPbiMeta } from '../../engine/conditionalFormat';
 
 interface PowerBiImportModalProps {
@@ -237,6 +238,7 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({
                   xAxisField: v.categoryField || undefined,
                   legendField: v.legendField || undefined,
                   yAxisFields: v.valueFields.length > 0 ? v.valueFields : undefined,
+                  ...drillConfigFromPbiMeta(v, vType),
                   aggregation: 'SUM',
                   ...(v.sortField && vType !== 'slicer' ? { sortField: v.sortField } : {}),
                   ...(v.sortOrder ? { sortOrder: v.sortOrder } : {}),
