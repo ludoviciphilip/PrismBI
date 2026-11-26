@@ -1,9 +1,33 @@
-use crate::dax::{build_filter_context, DaxModel, FilterContext, NativeFilterInput, ValueKey};
+use crate::dax::{build_filter_context, functions, DaxModel, DaxValue, FilterContext, NativeFilterInput, ValueKey};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// v0.10 Frente G: um nível de agrupamento (eixo de drill ou linha de matriz).
+/// `date_part` ("year" | "quarter" | "month" | "day") agrupa uma coluna de
+/// data pela parte (hierarquia automática de datas).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeGroupLevel {
+    pub field: String,
+    #[serde(default)]
+    pub date_part: Option<String>,
+}
+
+/// v0.10 Frente G: um passo do caminho de drill (valor escolhido num nível
+/// acima do atual). Vira um `NativeFilterInput` concreto e entra no contexto
+/// de filtro via `build_filter_context`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeDrillFilter {
+    pub field: String,
+    #[serde(default)]
+    pub date_part: Option<String>,
+    pub value: JsonValue,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeVisualQueryRequest {
     pub visual_id: String,
@@ -15,6 +39,27 @@ pub struct NativeVisualQueryRequest {
     pub aggregation: Option<String>,
     #[serde(default)]
     pub filters: Vec<NativeFilterInput>,
+    /// Frente G: quando não vazio, substitui `x_axis_field` como agrupamento
+    /// do eixo (1 nível = drill; N níveis = "expandir todos os níveis", com
+    /// as categorias sendo as tuplas que têm dados).
+    #[serde(default)]
+    pub category_levels: Vec<NativeGroupLevel>,
+    /// Frente G: caminho de drill (filtros dos níveis acima do atual).
+    #[serde(default)]
+    pub drill_filters: Vec<NativeDrillFilter>,
+    /// Frente G: linhas da matriz (N níveis). Com 2+ níveis a resposta traz
+    /// `matrix` (árvore com subtotais avaliados pelo motor em cada nível).
+    #[serde(default)]
+    pub matrix_rows: Vec<NativeGroupLevel>,
+    /// Linhas com profundidade < `matrix_expand_depth` vêm expandidas.
+    #[serde(default)]
+    pub matrix_expand_depth: usize,
+    /// Caminhos (chaves de cada nível) expandidos individualmente (+).
+    #[serde(default)]
+    pub matrix_expanded: Vec<Vec<JsonValue>>,
+    /// Caminhos recolhidos individualmente (−), vencem `matrix_expand_depth`.
+    #[serde(default)]
+    pub matrix_collapsed: Vec<Vec<JsonValue>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +77,38 @@ pub struct NativeVisualQueryResult {
     pub summary_value: Option<f64>,
     pub query_time_ms: f64,
     pub engine: String,
+    /// Frente G: valor (chave) de cada nível para cada categoria, alinhado
+    /// com `categories`. Só presente quando a requisição usa `category_levels`
+    /// ou `matrix_rows`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub category_keys: Vec<Vec<JsonValue>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix: Option<NativeMatrixResult>,
+}
+
+/// Frente G: uma linha da matriz hierárquica. `values` é a medida avaliada no
+/// contexto de filtro deste nó (subtotal do nível, NUNCA a soma dos filhos).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeMatrixNode {
+    pub key: JsonValue,
+    pub label: String,
+    pub values: Vec<f64>,
+    /// Com legenda (colunas): a medida no contexto da linha sem o filtro da coluna.
+    pub row_total: Option<f64>,
+    pub has_children: bool,
+    pub expanded: bool,
+    pub children: Vec<NativeMatrixNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeMatrixResult {
+    pub rows: Vec<NativeMatrixNode>,
+    /// Total geral por coluna (série), avaliado no contexto base.
+    pub column_totals: Vec<f64>,
+    /// Com legenda: total geral da medida principal (canto inferior direito).
+    pub grand_total: Option<f64>,
 }
 
 fn resolve_table_and_col(model: &DaxModel, default_table: &str, raw_field: &str) -> (String, String) {
@@ -61,32 +138,44 @@ fn eval_field_value(
     field_name: &str,
     agg: &str,
 ) -> f64 {
+    eval_field_opt(model, ctx, default_table, field_name, agg).unwrap_or(0.0)
+}
+
+/// Like `eval_field_value`, but `None` when the result is BLANK (a measure
+/// returning BLANK, or an implicit aggregation over no non-blank cells), so
+/// grouped queries can drop rows with no data, as Power BI does.
+fn eval_field_opt(
+    model: &DaxModel,
+    ctx: &FilterContext,
+    default_table: &str,
+    field_name: &str,
+    agg: &str,
+) -> Option<f64> {
     let clean_name = field_name.trim().trim_start_matches('Σ').trim();
     if model.get_measure(clean_name).is_some() {
         return model
             .evaluate_dax(&format!("[{}]", clean_name), ctx)
             .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
+            .filter(|v| !v.is_blank())
+            .and_then(|v| v.as_f64());
     }
 
     let (tbl_name, col_name) = resolve_table_and_col(model, default_table, clean_name);
-    let Some(tbl) = model.get_table(&tbl_name) else {
-        return 0.0;
-    };
-    let Some(cidx) = tbl.get_col_idx(&col_name) else {
-        return 0.0;
-    };
+    let tbl = model.get_table(&tbl_name)?;
+    let cidx = tbl.get_col_idx(&col_name)?;
     let visible = model.get_visible_row_indices(&tbl.name, ctx);
 
+    let non_zero = |n: f64| if n == 0.0 { None } else { Some(n) };
     match agg.to_uppercase().as_str() {
-        "COUNT" => visible.iter().filter(|&&i| !tbl.rows[i][cidx].is_blank()).count() as f64,
-        "DISTINCTCOUNT" => visible
-            .iter()
-            .filter(|&&i| !tbl.rows[i][cidx].is_blank())
-            .map(|&i| tbl.rows[i][cidx].canonical_key())
-            .collect::<HashSet<_>>()
-            .len() as f64,
+        "COUNT" => non_zero(visible.iter().filter(|&&i| !tbl.rows[i][cidx].is_blank()).count() as f64),
+        "DISTINCTCOUNT" => non_zero(
+            visible
+                .iter()
+                .filter(|&&i| !tbl.rows[i][cidx].is_blank())
+                .map(|&i| tbl.rows[i][cidx].canonical_key())
+                .collect::<HashSet<_>>()
+                .len() as f64,
+        ),
         _ => {
             let nums: Vec<f64> = visible
                 .iter()
@@ -100,14 +189,14 @@ fn eval_field_value(
                 })
                 .collect();
             if nums.is_empty() {
-                return 0.0;
+                return None;
             }
-            match agg.to_uppercase().as_str() {
+            Some(match agg.to_uppercase().as_str() {
                 "AVG" | "AVERAGE" => nums.iter().sum::<f64>() / nums.len() as f64,
                 "MIN" => nums.iter().copied().fold(f64::INFINITY, f64::min),
                 "MAX" => nums.iter().copied().fold(f64::NEG_INFINITY, f64::max),
                 _ => nums.iter().sum(),
-            }
+            })
         }
     }
 }
@@ -118,7 +207,7 @@ pub fn execute_visual_query(
 ) -> Result<NativeVisualQueryResult, String> {
     let t0 = Instant::now();
     let agg = req.aggregation.as_deref().unwrap_or("SUM");
-    let base_ctx = build_filter_context(&req.filters, model);
+    let base_ctx = build_query_context(model, req);
 
     // 1. Card, KPI, or Gauge
     if matches!(req.visual_type.as_str(), "card" | "kpi" | "gauge") {
@@ -137,6 +226,8 @@ pub fn execute_visual_query(
             summary_value: Some(summary),
             query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
             engine: "rust-native".to_string(),
+            category_keys: Vec::new(),
+            matrix: None,
         });
     }
 
@@ -163,6 +254,8 @@ pub fn execute_visual_query(
             summary_value: summary,
             query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
             engine: "rust-native".to_string(),
+            category_keys: Vec::new(),
+            matrix: None,
         });
     }
 
@@ -202,7 +295,19 @@ pub fn execute_visual_query(
             summary_value: None,
             query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
             engine: "rust-native".to_string(),
+            category_keys: Vec::new(),
+            matrix: None,
         });
+    }
+
+    // 4a. Frente G: matriz com N níveis (subtotal por nível avaliado pelo motor)
+    if !req.matrix_rows.is_empty() {
+        return Ok(execute_matrix_query(model, req, &base_ctx, agg, t0));
+    }
+
+    // 4b. Frente G: eixo por níveis (drill / expandir todos os níveis / hierarquia de data)
+    if !req.category_levels.is_empty() {
+        return Ok(execute_levels_query(model, req, &base_ctx, agg, t0));
     }
 
     // 4. Grouped visuals & matrix
@@ -268,6 +373,8 @@ pub fn execute_visual_query(
             summary_value: None,
             query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
             engine: "rust-native".to_string(),
+            category_keys: Vec::new(),
+            matrix: None,
         });
     }
 
@@ -301,8 +408,434 @@ pub fn execute_visual_query(
         summary_value: None,
         query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
         engine: "rust-native".to_string(),
+        category_keys: Vec::new(),
+        matrix: None,
     })
 }
+
+// ---------------------------------------------------------------------------
+// v0.10 Frente G: drill-down (caminho de drill, hierarquia de datas, expandir
+// todos os níveis) e matriz com N níveis. Toda medida é avaliada pelo motor no
+// contexto de filtro do nó/categoria; nada é somado a partir dos filhos.
+// ---------------------------------------------------------------------------
+
+/// Valor impossível usado quando o caminho de drill não casa com nada (um
+/// filtro com conjunto vazio seria ignorado por `build_filter_context`).
+const NO_MATCH_SENTINEL: &str = "\u{0}__prismbi_drill_no_match__";
+const MAX_MATRIX_NODES: usize = 50_000;
+const MAX_LEVEL_CATEGORIES: usize = 10_000;
+
+/// Parte de uma data (via `functions::serial_to_civil`, o mesmo cálculo de
+/// YEAR/MONTH/DAY do motor): ano, trimestre 1-4, mês 1-12 ou dia 1-31.
+fn date_part_of(v: &DaxValue, part: &str) -> Option<i64> {
+    let serial = v.as_date_serial()?;
+    if !serial.is_finite() {
+        return None;
+    }
+    let (y, m, d) = functions::serial_to_civil(serial);
+    Some(match part.to_ascii_lowercase().as_str() {
+        "year" => y as i64,
+        "quarter" => (m as i64 - 1) / 3 + 1,
+        "month" => m as i64,
+        "day" => d as i64,
+        _ => return None,
+    })
+}
+
+fn canonical_table(model: &DaxModel, t: &str) -> String {
+    model
+        .get_table(t)
+        .map(|x| x.name.to_lowercase())
+        .unwrap_or_else(|| t.to_lowercase())
+}
+
+/// Valores concretos da coluna que um passo do caminho de drill seleciona.
+fn drill_filter_values(model: &DaxModel, tbl_name: &str, col: &str, df: &NativeDrillFilter) -> Vec<JsonValue> {
+    let Some(part) = df.date_part.as_deref() else {
+        return vec![df.value.clone()];
+    };
+    let Some(want) = df.value.as_f64().map(|f| f.round() as i64) else {
+        return Vec::new();
+    };
+    let Some(tbl) = model.get_table(tbl_name) else {
+        return Vec::new();
+    };
+    let Some(cidx) = tbl.get_col_idx(col) else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for r in &tbl.rows {
+        let v = &r[cidx];
+        if date_part_of(v, part) == Some(want) && seen.insert(v.value_key()) {
+            out.push(v.to_json());
+        }
+    }
+    out
+}
+
+/// Acrescenta um filtro do caminho de drill. Se já existe filtro na mesma
+/// coluna (segmentador, filtro de página...), os dois se intersectam em vez
+/// de um sobrescrever o outro dentro de `build_filter_context`.
+fn merge_drill_filter(model: &DaxModel, filters: &mut Vec<NativeFilterInput>, new: NativeFilterInput) {
+    let col_type = model
+        .get_table(&new.table_id)
+        .and_then(|t| t.get_col_idx(&new.column).and_then(|i| t.col_types.get(i).copied()));
+    let key = |v: &JsonValue| DaxValue::from_json_as(v, col_type).value_key();
+    let target_tbl = canonical_table(model, &new.table_id);
+    let mut values = new.values;
+    let existing = filters
+        .iter()
+        .rposition(|f| canonical_table(model, &f.table_id) == target_tbl && f.column.eq_ignore_ascii_case(&new.column));
+    if let Some(idx) = existing.filter(|&i| !filters[i].values.is_empty()) {
+        let allowed: HashSet<ValueKey> = filters[idx].values.iter().map(key).collect();
+        values.retain(|v| allowed.contains(&key(v)));
+    }
+    if values.is_empty() {
+        values.push(JsonValue::String(NO_MATCH_SENTINEL.to_string()));
+    }
+    match existing {
+        Some(idx) => filters[idx].values = values,
+        None => filters.push(NativeFilterInput {
+            table_id: new.table_id,
+            column: new.column,
+            values,
+        }),
+    }
+}
+
+/// Contexto de filtro da consulta: filtros do relatório/página/visual mais o
+/// caminho de drill, tudo pelo `build_filter_context` (inclusive a sombra do
+/// ALLSELECTED, que assim também respeita o drill, como no Power BI).
+fn build_query_context(model: &DaxModel, req: &NativeVisualQueryRequest) -> FilterContext {
+    if req.drill_filters.is_empty() {
+        return build_filter_context(&req.filters, model);
+    }
+    let mut filters = req.filters.clone();
+    for df in &req.drill_filters {
+        let (tbl_name, col) = resolve_table_and_col(model, &req.table_id, &df.field);
+        let values = drill_filter_values(model, &tbl_name, &col, df);
+        merge_drill_filter(
+            model,
+            &mut filters,
+            NativeFilterInput {
+                table_id: tbl_name,
+                column: col,
+                values,
+            },
+        );
+    }
+    build_filter_context(&filters, model)
+}
+
+struct LevelGroup {
+    key: JsonValue,
+    label: String,
+    allowed: HashSet<ValueKey>,
+}
+
+/// Valores distintos de um nível visíveis em `ctx`, em ordem (chave tipada;
+/// partes de data em ordem numérica). Cada grupo carrega o conjunto de
+/// valores brutos da coluna que ele representa (para o filtro do nó).
+fn collect_groups(
+    model: &DaxModel,
+    req: &NativeVisualQueryRequest,
+    ctx: &FilterContext,
+    level: &NativeGroupLevel,
+) -> (String, String, Vec<LevelGroup>) {
+    let (tbl_name, col) = resolve_table_and_col(model, &req.table_id, &level.field);
+    let mut map: BTreeMap<ValueKey, LevelGroup> = BTreeMap::new();
+    let Some(tbl) = model.get_table(&tbl_name) else {
+        return (tbl_name, col, Vec::new());
+    };
+    let Some(cidx) = tbl.get_col_idx(&col) else {
+        return (tbl.name.clone(), col, Vec::new());
+    };
+    for r_idx in model.get_visible_row_indices(&tbl.name, ctx) {
+        let v = &tbl.rows[r_idx][cidx];
+        let (sort_key, key, label) = match level.date_part.as_deref() {
+            Some(part) => match date_part_of(v, part) {
+                Some(n) => (ValueKey::Num(n.saturating_mul(1_000_000)), JsonValue::from(n), n.to_string()),
+                None => (ValueKey::Blank, JsonValue::Null, String::new()),
+            },
+            None => (v.value_key(), v.to_json(), v.as_display_string()),
+        };
+        map.entry(sort_key)
+            .or_insert_with(|| LevelGroup {
+                key,
+                label,
+                allowed: HashSet::new(),
+            })
+            .allowed
+            .insert(v.value_key());
+    }
+    (tbl.name.clone(), col, map.into_values().collect())
+}
+
+/// Séries do visual: uma por campo de valor, ou uma por valor da legenda
+/// (colunas da matriz) com a medida principal.
+enum SeriesSpec {
+    Fields(Vec<String>),
+    Legend {
+        tbl: String,
+        col: String,
+        entries: Vec<(String, HashSet<ValueKey>)>,
+        primary: String,
+    },
+}
+
+impl SeriesSpec {
+    fn new(model: &DaxModel, req: &NativeVisualQueryRequest, base_ctx: &FilterContext) -> Self {
+        let fields: Vec<String> = req
+            .y_axis_fields
+            .iter()
+            .map(|y| y.trim().trim_start_matches('Σ').trim().to_string())
+            .collect();
+        match req.legend_field.as_ref().filter(|s| !s.trim().is_empty()) {
+            Some(leg) => {
+                let (tbl, col, groups) = collect_groups(
+                    model,
+                    req,
+                    base_ctx,
+                    &NativeGroupLevel {
+                        field: leg.clone(),
+                        date_part: None,
+                    },
+                );
+                SeriesSpec::Legend {
+                    tbl,
+                    col,
+                    entries: groups
+                        .into_iter()
+                        .filter(|g| !g.label.is_empty())
+                        .map(|g| (g.label, g.allowed))
+                        .collect(),
+                    primary: fields.first().cloned().unwrap_or_default(),
+                }
+            }
+            None => SeriesSpec::Fields(fields),
+        }
+    }
+
+    fn names(&self) -> Vec<String> {
+        match self {
+            SeriesSpec::Fields(f) => f.clone(),
+            SeriesSpec::Legend { entries, .. } => entries.iter().map(|(n, _)| n.clone()).collect(),
+        }
+    }
+
+    fn eval_values(&self, model: &DaxModel, req: &NativeVisualQueryRequest, ctx: &FilterContext, agg: &str) -> Vec<Option<f64>> {
+        match self {
+            SeriesSpec::Fields(fields) => fields
+                .iter()
+                .map(|f| eval_field_opt(model, ctx, &req.table_id, f, agg))
+                .collect(),
+            SeriesSpec::Legend { tbl, col, entries, primary } => entries
+                .iter()
+                .map(|(_, allowed)| {
+                    if primary.is_empty() {
+                        return None;
+                    }
+                    let mut cctx = ctx.clone();
+                    cctx.set_column_filter(tbl, col, allowed.clone());
+                    eval_field_opt(model, &cctx, &req.table_id, primary, agg)
+                })
+                .collect(),
+        }
+    }
+
+    fn eval_row_total(&self, model: &DaxModel, req: &NativeVisualQueryRequest, ctx: &FilterContext, agg: &str) -> Option<f64> {
+        match self {
+            SeriesSpec::Fields(_) => None,
+            SeriesSpec::Legend { primary, .. } if !primary.is_empty() => eval_field_opt(model, ctx, &req.table_id, primary, agg),
+            SeriesSpec::Legend { .. } => None,
+        }
+    }
+}
+
+type Leaf = (Vec<JsonValue>, Vec<String>, FilterContext);
+
+#[allow(clippy::too_many_arguments)]
+fn enumerate_leaves(
+    model: &DaxModel,
+    req: &NativeVisualQueryRequest,
+    ctx: &FilterContext,
+    levels: &[NativeGroupLevel],
+    depth: usize,
+    keys: &mut Vec<JsonValue>,
+    labels: &mut Vec<String>,
+    out: &mut Vec<Leaf>,
+) {
+    let (tbl, col, groups) = collect_groups(model, req, ctx, &levels[depth]);
+    for g in groups {
+        if out.len() >= MAX_LEVEL_CATEGORIES {
+            return;
+        }
+        let mut cctx = ctx.clone();
+        cctx.set_column_filter(&tbl, &col, g.allowed);
+        keys.push(g.key);
+        labels.push(g.label);
+        if depth + 1 == levels.len() {
+            out.push((keys.clone(), labels.clone(), cctx));
+        } else {
+            enumerate_leaves(model, req, &cctx, levels, depth + 1, keys, labels, out);
+        }
+        keys.pop();
+        labels.pop();
+    }
+}
+
+fn elapsed_ms(t0: Instant) -> f64 {
+    (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0
+}
+
+/// Eixo agrupado por `category_levels` (1 nível = drill; N = tuplas com dados,
+/// rótulos concatenados). Categorias sem nenhum valor (tudo BLANK) somem.
+fn execute_levels_query(
+    model: &DaxModel,
+    req: &NativeVisualQueryRequest,
+    base_ctx: &FilterContext,
+    agg: &str,
+    t0: Instant,
+) -> NativeVisualQueryResult {
+    let spec = SeriesSpec::new(model, req, base_ctx);
+    let names = spec.names();
+    let mut leaves = Vec::new();
+    enumerate_leaves(model, req, base_ctx, &req.category_levels, 0, &mut Vec::new(), &mut Vec::new(), &mut leaves);
+    let mut categories = Vec::with_capacity(leaves.len());
+    let mut category_keys = Vec::with_capacity(leaves.len());
+    let mut data: Vec<Vec<f64>> = vec![Vec::with_capacity(leaves.len()); names.len()];
+    for (keys, labels, ctx) in leaves {
+        let vals = spec.eval_values(model, req, &ctx, agg);
+        if vals.iter().all(Option::is_none) {
+            continue;
+        }
+        categories.push(labels.join(" "));
+        category_keys.push(keys);
+        for (i, v) in vals.into_iter().enumerate() {
+            data[i].push(v.unwrap_or(0.0));
+        }
+    }
+    NativeVisualQueryResult {
+        categories,
+        series: names
+            .into_iter()
+            .zip(data)
+            .map(|(name, data)| NativeVisualSeries { name, data })
+            .collect(),
+        summary_value: None,
+        query_time_ms: elapsed_ms(t0),
+        engine: "rust-native".to_string(),
+        category_keys,
+        matrix: None,
+    }
+}
+
+fn is_matrix_path_expanded(req: &NativeVisualQueryRequest, path: &[JsonValue]) -> bool {
+    if req.matrix_collapsed.iter().any(|p| p.as_slice() == path) {
+        return false;
+    }
+    if req.matrix_expanded.iter().any(|p| p.as_slice() == path) {
+        return true;
+    }
+    path.len().saturating_sub(1) < req.matrix_expand_depth
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_matrix_nodes(
+    model: &DaxModel,
+    req: &NativeVisualQueryRequest,
+    ctx: &FilterContext,
+    agg: &str,
+    spec: &SeriesSpec,
+    depth: usize,
+    path: &mut Vec<JsonValue>,
+    budget: &mut usize,
+) -> Vec<NativeMatrixNode> {
+    let levels = &req.matrix_rows;
+    let (tbl, col, groups) = collect_groups(model, req, ctx, &levels[depth]);
+    let mut out = Vec::with_capacity(groups.len());
+    for g in groups {
+        if *budget == 0 {
+            break;
+        }
+        let mut nctx = ctx.clone();
+        nctx.set_column_filter(&tbl, &col, g.allowed);
+        let vals = spec.eval_values(model, req, &nctx, agg);
+        let row_total = spec.eval_row_total(model, req, &nctx, agg);
+        if vals.iter().all(Option::is_none) && row_total.is_none() {
+            continue;
+        }
+        *budget -= 1;
+        path.push(g.key.clone());
+        let has_children = depth + 1 < levels.len();
+        let expanded = has_children && is_matrix_path_expanded(req, path);
+        let children = if expanded {
+            build_matrix_nodes(model, req, &nctx, agg, spec, depth + 1, path, budget)
+        } else {
+            Vec::new()
+        };
+        path.pop();
+        out.push(NativeMatrixNode {
+            key: g.key,
+            label: g.label,
+            values: vals.into_iter().map(|v| v.unwrap_or(0.0)).collect(),
+            row_total,
+            has_children,
+            expanded,
+            children,
+        });
+    }
+    out
+}
+
+/// Matriz com N níveis nas linhas. Cada nó (e cada total) é a medida
+/// avaliada no próprio contexto de filtro, então medidas não aditivas
+/// (DISTINCTCOUNT, AVERAGE...) têm subtotais corretos.
+fn execute_matrix_query(
+    model: &DaxModel,
+    req: &NativeVisualQueryRequest,
+    base_ctx: &FilterContext,
+    agg: &str,
+    t0: Instant,
+) -> NativeVisualQueryResult {
+    let spec = SeriesSpec::new(model, req, base_ctx);
+    let names = spec.names();
+    let mut budget = MAX_MATRIX_NODES;
+    let rows = build_matrix_nodes(model, req, base_ctx, agg, &spec, 0, &mut Vec::new(), &mut budget);
+    let column_totals = spec
+        .eval_values(model, req, base_ctx, agg)
+        .into_iter()
+        .map(|v| v.unwrap_or(0.0))
+        .collect();
+    let grand_total = spec.eval_row_total(model, req, base_ctx, agg);
+    let series = names
+        .into_iter()
+        .enumerate()
+        .map(|(i, name)| NativeVisualSeries {
+            name,
+            data: rows.iter().map(|r| r.values.get(i).copied().unwrap_or(0.0)).collect(),
+        })
+        .collect();
+    NativeVisualQueryResult {
+        categories: rows.iter().map(|r| r.label.clone()).collect(),
+        series,
+        summary_value: None,
+        query_time_ms: elapsed_ms(t0),
+        engine: "rust-native".to_string(),
+        category_keys: rows.iter().map(|r| vec![r.key.clone()]).collect(),
+        matrix: Some(NativeMatrixResult {
+            rows,
+            column_totals,
+            grand_total,
+        }),
+    }
+}
+
+#[cfg(test)]
+#[path = "tests_drill.rs"]
+mod drill_tests;
+
 
 #[cfg(test)]
 mod tests {
@@ -361,6 +894,7 @@ mod tests {
                 y_axis_fields: vec!["Receita".into()],
                 aggregation: Some("NONE".into()),
                 filters: vec![],
+                ..Default::default()
             },
         )
         .unwrap();
@@ -379,6 +913,7 @@ mod tests {
                 y_axis_fields: vec!["Receita".into(), "Qtd".into()],
                 aggregation: Some("NONE".into()),
                 filters: vec![],
+                ..Default::default()
             },
         )
         .unwrap();
@@ -401,6 +936,7 @@ mod tests {
                     column: "Categoria".into(),
                     values: vec![serde_json::json!("A")],
                 }],
+                ..Default::default()
             },
         )
         .unwrap();
@@ -418,6 +954,7 @@ mod tests {
                 y_axis_fields: vec!["Receita".into()],
                 aggregation: Some("NONE".into()),
                 filters: vec![],
+                ..Default::default()
             },
         )
         .unwrap();
