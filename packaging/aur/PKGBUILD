@@ -7,10 +7,10 @@
 pkgname=prismbi-bin
 pkgver=0.9.1
 pkgrel=1
-pkgdesc="Business Intelligence nativo para Linux com compatibilidade .pbip/.pbix, Rust e DuckDB"
+pkgdesc="Open-source Power BI alternative: native BI desktop app that opens .pbip/.pbix, with a Rust DAX engine, Power Query editor and DuckDB"
 arch=('x86_64')
 url="https://github.com/ludoviciphilip/PrismBI"
-license=('custom:Mutualist-v1.3')
+license=("LicenseRef-Mutualist-1.3")
 depends=('webkit2gtk-4.1' 'gtk3' 'libsecret' 'hicolor-icon-theme')
 provides=('prismbi')
 conflicts=('prismbi')
@@ -19,7 +19,7 @@ _deb="PrismBI_${pkgver}_amd64.deb"
 source=("${_deb}::${url}/releases/download/v${pkgver}/${_deb}"
         "LICENSE.md::https://raw.githubusercontent.com/ludoviciphilip/PrismBI/v${pkgver}/LICENSE.md")
 sha256sums=('75a8d0afc458b07217007025420585d5530e5b1f3bf606da95e3ada302aeb2b9'
-            'SKIP')
+            'a1938d74a10b43dce8fbf024ae18a2c074b8fa734f58be74e91a49a5a6047758')
 noextract=("${_deb}")
 
 package() {
