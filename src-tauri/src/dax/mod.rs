@@ -11,6 +11,7 @@ mod tests_duckdb_sync;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 /// Declared or inferred storage type for a model column. Drives how raw JSON
 /// cell values are parsed into typed `DaxValue`s at sync time, and how
@@ -73,6 +74,11 @@ pub fn build_filter_context(filters: &[NativeFilterInput], model: &DaxModel) -> 
             ctx.set_column_filter(&f.table_id, &f.column, allowed);
         }
     }
+    // §2.3/§3: ALLSELECTED restores this query's starting ("visual") filter
+    // state, not the model's unfiltered state (that's ALL/REMOVEFILTERS).
+    // Captured once here, before any CALCULATE runs, and carried forward
+    // unchanged through every nested CALCULATE/context transition.
+    ctx.shadow = Some(Arc::new(ctx.clone()));
     ctx
 }
 
@@ -694,37 +700,91 @@ pub struct RelOverride {
     pub direction: Option<String>,
 }
 
+/// §2.3: a filter over a *combination* of columns of one table (FILTER over
+/// several columns, SUMMARIZE/VALUES used directly as a filter, multi-column
+/// TREATAS). Unlike independent per-column filters — which AND each column's
+/// allowed set separately and so let through combinations that were never
+/// actually in the source table (e.g. (CategoriaA, SubB) when only
+/// (CategoriaA, SubA) and (CategoriaB, SubB) exist) — a `TupleFilter` only
+/// keeps rows whose exact tuple of values appears in `tuples`.
+#[derive(Debug, Clone)]
+pub struct TupleFilter {
+    /// Lowercase table name.
+    pub table: String,
+    /// Lowercase column names, in a fixed order matching each tuple's order.
+    pub columns: Vec<String>,
+    pub tuples: HashSet<Vec<ValueKey>>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FilterContext {
     /// table_lower -> col_lower -> allowed value keys
     pub filters: HashMap<String, HashMap<String, HashSet<ValueKey>>>,
     /// Dynamic USERELATIONSHIP / CROSSFILTER overrides applied inside CALCULATE
     pub rel_overrides: Vec<RelOverride>,
+    /// §2.3: multi-column tuple filters (see `TupleFilter`), on top of the
+    /// per-column `filters` above.
+    pub tuple_filters: Vec<TupleFilter>,
+    /// §2.3/§3: the filter state this query started from (the visual's own
+    /// filters/slicers, before any CALCULATE), for ALLSELECTED. `None` means
+    /// "this context IS the shadow" (set once by `build_filter_context`);
+    /// every CALCULATE clones the same `Arc` forward untouched.
+    pub shadow: Option<Arc<FilterContext>>,
 }
 
 impl FilterContext {
     pub fn set_column_filter(&mut self, table: &str, col: &str, allowed: HashSet<ValueKey>) {
-        self.filters
-            .entry(table.to_lowercase())
-            .or_default()
-            .insert(col.to_lowercase(), allowed);
+        let t = table.to_lowercase();
+        let c = col.to_lowercase();
+        self.tuple_filters.retain(|tf| !(tf.table == t && tf.columns.contains(&c)));
+        self.filters.entry(t).or_default().insert(c, allowed);
+    }
+
+    /// Replaces (or adds) the tuple filter with this exact `(table, columns)`
+    /// signature; any single-column filter already on one of those columns
+    /// stays (a tuple filter narrows further, it doesn't replace column filters
+    /// on *other* columns).
+    pub fn set_tuple_filter(&mut self, table: &str, columns: &[String], tuples: HashSet<Vec<ValueKey>>) {
+        let t = table.to_lowercase();
+        let cols: Vec<String> = columns.iter().map(|c| c.to_lowercase()).collect();
+        self.tuple_filters.retain(|tf| !(tf.table == t && tf.columns == cols));
+        self.tuple_filters.push(TupleFilter { table: t, columns: cols, tuples });
     }
 
     pub fn clear_table(&mut self, table: &str) {
-        self.filters.remove(&table.to_lowercase());
+        let t = table.to_lowercase();
+        self.filters.remove(&t);
+        self.tuple_filters.retain(|tf| tf.table != t);
     }
 
     pub fn clear_column(&mut self, table: &str, col: &str) {
-        if let Some(cols) = self.filters.get_mut(&table.to_lowercase()) {
-            cols.remove(&col.to_lowercase());
+        let t = table.to_lowercase();
+        let c = col.to_lowercase();
+        if let Some(cols) = self.filters.get_mut(&t) {
+            cols.remove(&c);
         }
+        // ALL(col) on a column that participates in a tuple filter drops the
+        // whole tuple constraint (losing the other columns' restriction too):
+        // a simplification of the DAX marginalization rule, documented in
+        // docs/RUST_ENGINE_2.md §2.3.
+        self.tuple_filters.retain(|tf| !(tf.table == t && tf.columns.contains(&c)));
     }
 
     pub fn clear_except(&mut self, table: &str, keep_cols: &[String]) {
+        let t = table.to_lowercase();
         let keep: HashSet<String> = keep_cols.iter().map(|s| s.to_lowercase()).collect();
-        if let Some(cols) = self.filters.get_mut(&table.to_lowercase()) {
+        if let Some(cols) = self.filters.get_mut(&t) {
             cols.retain(|k, _| keep.contains(k));
         }
+        self.tuple_filters
+            .retain(|tf| tf.table != t || tf.columns.iter().all(|c| keep.contains(c)));
+    }
+
+    /// Context ALLSELECTED should restore: this query's starting filter
+    /// state (shadow), or `self` when `self` already IS the shadow (no
+    /// CALCULATE has run yet since `build_filter_context`).
+    pub fn shadow_ctx(&self) -> &FilterContext {
+        self.shadow.as_deref().unwrap_or(self)
     }
 }
 
@@ -849,12 +909,37 @@ impl DaxModel {
         self.measures.get(&name.trim().to_lowercase())
     }
 
+    /// §3 item 3 / blank member: true when some active many-to-one relationship
+    /// into `dim_table` has fact rows whose (non-blank) FK value doesn't match
+    /// any row of the dimension's key column — i.e. VertiPaq would add a blank
+    /// row to `dim_table`. VALUES()/ADDCOLUMNS over it must surface that blank
+    /// member; ALL/DISTINCT and the physical table itself never do.
+    pub fn has_orphan_member(&self, dim_table: &str) -> bool {
+        self.relationships.iter().any(|rel| {
+            rel.is_active
+                && rel.to_table.eq_ignore_ascii_case(dim_table)
+                && (|| -> Option<bool> {
+                    let dim = self.get_table(dim_table)?;
+                    let dim_cidx = dim.get_col_idx(&rel.to_column)?;
+                    let fact = self.get_table(&rel.from_table)?;
+                    let fact_cidx = fact.get_col_idx(&rel.from_column)?;
+                    let dim_keys: HashSet<ValueKey> =
+                        dim.rows.iter().map(|r| r[dim_cidx].value_key()).collect();
+                    Some(fact.rows.iter().any(|r| {
+                        let k = r[fact_cidx].value_key();
+                        !matches!(k, ValueKey::Blank) && !dim_keys.contains(&k)
+                    }))
+                })()
+                .unwrap_or(false)
+        })
+    }
+
     /// Computes visible row indices for `target_table` under `ctx` by propagating active relationships.
     pub fn get_visible_row_indices(&self, target_table: &str, ctx: &FilterContext) -> Vec<usize> {
         let Some(tbl) = self.get_table(target_table) else {
             return Vec::new();
         };
-        if ctx.filters.is_empty() {
+        if ctx.filters.is_empty() && ctx.tuple_filters.is_empty() {
             return (0..tbl.rows.len()).collect();
         }
 
@@ -875,6 +960,28 @@ impl DaxModel {
                 }
             }
             table_masks.insert(tkey.clone(), mask);
+        }
+
+        // §2.3: tuple filters (FILTER over several columns, SUMMARIZE/VALUES used
+        // directly as a filter, multi-column TREATAS) keep only rows whose exact
+        // tuple of values was in the source table — a per-column AND would let
+        // through combinations that never actually occurred together.
+        for tf in &ctx.tuple_filters {
+            let Some(tdata) = self.tables.get(&tf.table) else { continue };
+            let cidxs: Vec<usize> = tf.columns.iter().filter_map(|c| tdata.get_col_idx(c)).collect();
+            if cidxs.len() != tf.columns.len() {
+                continue;
+            }
+            if let Some(mask) = table_masks.get_mut(&tf.table) {
+                for (r_idx, row) in tdata.rows.iter().enumerate() {
+                    if mask[r_idx] {
+                        let key: Vec<ValueKey> = cidxs.iter().map(|&ci| row[ci].value_key()).collect();
+                        if !tf.tuples.contains(&key) {
+                            mask[r_idx] = false;
+                        }
+                    }
+                }
+            }
         }
 
         // Effective relationships after USERELATIONSHIP / CROSSFILTER overrides
@@ -929,7 +1036,12 @@ impl DaxModel {
         // Propagate filters along relationships (1/to -> N/from always, and from -> to if bidirectional)
         // Track traversed relationships so a bidirectional edge never bounces propagated filters
         // backward from a sparse table (e.g. monthly opening balances) onto the calendar table.
-        let mut queue: VecDeque<String> = ctx.filters.keys().cloned().collect();
+        let mut queue: VecDeque<String> = ctx
+            .filters
+            .keys()
+            .cloned()
+            .chain(ctx.tuple_filters.iter().map(|tf| tf.table.clone()))
+            .collect();
         let mut used_rels: HashSet<usize> = HashSet::new();
         let mut hops = 0usize;
         while let Some(src_key) = queue.pop_front() {
