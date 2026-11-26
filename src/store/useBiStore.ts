@@ -9,6 +9,7 @@ import {
   Page,
   Visual,
   VisualType,
+  VisualDataConfig,
   Filter,
   Bookmark,
   DashboardTile,
@@ -26,6 +27,13 @@ import {
 } from '../types/bi';
 import { EtlQuery, EtlStep, EtlSource } from '../types/etl';
 import { etlApply, etlFromM, etlLoadRaw, setBrowserRawProvider } from '../services/etl/etlClient';
+import {
+  buildSlicerFilterValue,
+  findSyncSiblings,
+  pageInSyncScope,
+  resolveSlicerField,
+  slicerFilterId,
+} from '../components/report/slicer/slicerFilter';
 
 export interface ApplyAllQueriesResult {
   applied: { tableId: string; name: string; rowCount: number; truncated: boolean; measuresOnly?: boolean }[];
@@ -251,6 +259,15 @@ interface BiState {
   removeFilter: (id: string) => void;
   clearFilters: () => void;
   setCrossFilter: (tableId: string, column: string, value: any) => void;
+  /** Sets a slicer visual's selection (list/between/relative), computes its Filter,
+   *  and — when the visual has a syncGroup — propagates the same selection to every
+   *  other slicer visual sharing that group on the pages allowed by its syncPages. */
+  setSlicerSelection: (
+    visualId: string,
+    selection: Partial<Pick<NonNullable<VisualDataConfig['slicerConfig']>, 'selectedValues' | 'between' | 'relative'>>
+  ) => void;
+  /** Re-resolves every 'relative-date' slicer's filter against "today" (called on project load). */
+  recalculateRelativeDateFilters: () => void;
 
   // Drill-through
   activeDrillthrough: ActiveDrillthrough | null;
@@ -2273,6 +2290,85 @@ export const useBiStore = create<BiState>((set, get) => {
       }
     },
 
+    setSlicerSelection: (visualId, selection) => {
+      const state = get();
+      let triggerVisual: Visual | null = null;
+      for (const p of state.pages) {
+        const v = p.visuals.find(x => x.id === visualId);
+        if (v) {
+          triggerVisual = v;
+          break;
+        }
+      }
+      if (!triggerVisual) return;
+
+      const targets = [{ visual: triggerVisual, selectionOverride: selection }];
+      const syncGroup = triggerVisual.dataConfig.slicerConfig?.syncGroup;
+      const syncPages = triggerVisual.dataConfig.slicerConfig?.syncPages;
+      if (syncGroup) {
+        for (const sib of findSyncSiblings(state.pages, syncGroup, triggerVisual.id)) {
+          if (pageInSyncScope(syncPages, sib.pageId)) {
+            targets.push({ visual: sib.visual, selectionOverride: selection });
+          }
+        }
+      }
+
+      const updatedById = new Map<string, Visual>();
+      for (const { visual, selectionOverride } of targets) {
+        const nextSlicerConfig = { ...visual.dataConfig.slicerConfig, ...selectionOverride } as NonNullable<
+          VisualDataConfig['slicerConfig']
+        >;
+        updatedById.set(visual.id, {
+          ...visual,
+          dataConfig: { ...visual.dataConfig, slicerConfig: nextSlicerConfig },
+        });
+      }
+
+      const nextPages = state.pages.map(p => ({
+        ...p,
+        visuals: p.visuals.map(v => updatedById.get(v.id) || v),
+      }));
+
+      let nextFilters = state.filters;
+      for (const visual of updatedById.values()) {
+        const fId = slicerFilterId(visual.id);
+        const { tableId, column } = resolveSlicerField(visual, state.tables);
+        const resolved = buildSlicerFilterValue(visual.dataConfig.slicerConfig!);
+        nextFilters = nextFilters.filter(f => f.id !== fId);
+        if (resolved) {
+          nextFilters = [
+            ...nextFilters,
+            { id: fId, level: 'visual', visualId: visual.id, tableId, column, operator: resolved.operator, value: resolved.value },
+          ];
+        }
+      }
+
+      pushPagesHistory(nextPages, { filters: nextFilters });
+    },
+
+    recalculateRelativeDateFilters: () => {
+      const state = get();
+      const today = new Date();
+      let nextFilters = state.filters;
+      for (const page of state.pages) {
+        for (const visual of page.visuals) {
+          const slicerConfig = visual.dataConfig.slicerConfig;
+          if (!slicerConfig?.relative) continue;
+          const fId = slicerFilterId(visual.id);
+          const resolved = buildSlicerFilterValue(slicerConfig, today);
+          nextFilters = nextFilters.filter(f => f.id !== fId);
+          if (resolved) {
+            const { tableId, column } = resolveSlicerField(visual, state.tables);
+            nextFilters = [
+              ...nextFilters,
+              { id: fId, level: 'visual', visualId: visual.id, tableId, column, operator: resolved.operator, value: resolved.value },
+            ];
+          }
+        }
+      }
+      if (nextFilters !== state.filters) set({ filters: nextFilters });
+    },
+
     // Drill-through State & Actions
     activeDrillthrough: null,
 
@@ -3082,6 +3178,7 @@ export const useBiStore = create<BiState>((set, get) => {
       }));
       globalDataEngine.setSchema(state.tables || [], state.relationships || [], state.measures || []);
       (state.tables || []).forEach(t => globalDuckDb.registerTable(t));
+      get().recalculateRelativeDateFilters();
       pushModelToRustAsync(state.tables || [], state.relationships || [], state.measures || [], () =>
         set(s => ({ dataVersion: s.dataVersion + 1 }))
       );

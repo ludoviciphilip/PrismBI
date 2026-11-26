@@ -252,12 +252,58 @@ fn extension_for(kind: InstallKind) -> Option<&'static str> {
     }
 }
 
-fn pick_asset(assets: &[GithubAsset], kind: InstallKind) -> Option<&GithubAsset> {
+/// Language used for the (now single) Windows MSI, since v0.10.0.
+///
+/// Before v0.10.0 `bundle.windows.wix.language` listed `["pt-BR", "en-US"]`,
+/// so `tauri-bundler` built TWO installers per release
+/// (`PrismBI_<ver>_x64_pt-BR.msi` and `PrismBI_<ver>_x64_en-US.msi`) and the
+/// updater just grabbed "the first `.msi` it found" — not deterministic,
+/// and it could silently pick the wrong language's installer.
+///
+/// The app has its own i18n, so the installer's language barely matters;
+/// pt-BR was kept as the single build language (see docs/install-windows.md
+/// / README "Windows" section for the rationale).
+pub const MSI_LANGUAGE: &str = "pt-BR";
+
+/// Exact filename tauri-bundler/WiX produces for the Windows MSI:
+/// `PrismBI_<version>_x64_<language>.msi`. `version` is the RELEASE's own
+/// version (the `latest_clean` tag), not the currently-running app version.
+pub fn expected_msi_name(version: &str, language: &str) -> String {
+    format!("PrismBI_{}_x64_{}.msi", version, language)
+}
+
+/// Picks the right asset for `kind`, deterministically — never "whatever
+/// `.msi` happens to come first in the GitHub API response".
+///
+/// For `MsiInstalled`, this first looks for the exact name the current
+/// build produces (`expected_msi_name(version, MSI_LANGUAGE)`). Older
+/// releases (pre-v0.10.0) published TWO MSIs for the same version
+/// (`..._pt-BR.msi` and `..._en-US.msi`); if the exact name is absent this
+/// falls back to the `.msi` whose name contains `MSI_LANGUAGE`, and only if
+/// that is also absent, to the alphabetically-first `.msi` asset — so the
+/// choice never depends on array/iteration order.
+fn pick_asset<'a>(assets: &'a [GithubAsset], kind: InstallKind, version: &str) -> Option<&'a GithubAsset> {
     if kind == InstallKind::Portable {
         return assets.iter().find(|a| {
             let n = a.name.to_lowercase();
             n.ends_with(".zip") && n.contains("portable")
         });
+    }
+    if kind == InstallKind::MsiInstalled {
+        let expected = expected_msi_name(version, MSI_LANGUAGE).to_lowercase();
+        if let Some(a) = assets.iter().find(|a| a.name.to_lowercase() == expected) {
+            return Some(a);
+        }
+        let mut candidates: Vec<&GithubAsset> =
+            assets.iter().filter(|a| a.name.to_lowercase().ends_with(".msi")).collect();
+        candidates.sort_by(|a, b| a.name.cmp(&b.name));
+        if let Some(a) = candidates
+            .iter()
+            .find(|a| a.name.to_lowercase().contains(&MSI_LANGUAGE.to_lowercase()))
+        {
+            return Some(a);
+        }
+        return candidates.first().copied();
     }
     let ext = extension_for(kind)?;
     assets.iter().find(|a| a.name.to_lowercase().ends_with(ext))
@@ -411,7 +457,7 @@ pub fn check_for_updates(
     let install_kind = detect_install_kind();
     let update_available = is_newer_version(current_version, &latest_clean);
 
-    let chosen = pick_asset(&release.assets, install_kind);
+    let chosen = pick_asset(&release.assets, install_kind, &latest_clean);
     let find = |name: &str| {
         release
             .assets
@@ -637,10 +683,10 @@ mod tests {
             asset("PrismBI_0.8.0_amd64.deb"),
             asset("PrismBI_0.8.0_amd64.AppImage"),
             asset("PrismBI-0.8.0-1.x86_64.rpm"),
-            asset("PrismBI_0.9.1_x64.msi"),
+            asset("PrismBI_0.9.1_x64_pt-BR.msi"),
             asset("PrismBI_0.9.1_x64-portable.zip"),
         ];
-        let pick = |k| pick_asset(&assets, k).map(|a| a.name.clone());
+        let pick = |k| pick_asset(&assets, k, "0.9.1").map(|a| a.name.clone());
         assert!(pick(InstallKind::AppImage).unwrap().ends_with(".AppImage"));
         assert!(pick(InstallKind::Unknown).unwrap().ends_with(".AppImage"));
         assert!(pick(InstallKind::Deb).unwrap().ends_with(".deb"));
@@ -649,7 +695,69 @@ mod tests {
         assert!(pick(InstallKind::Portable).unwrap().ends_with("-portable.zip"));
         assert!(pick(InstallKind::Managed).is_none());
         // .deb instalado nunca recebe AppImage por engano (bug da v0.7).
-        assert!(pick_asset(&assets[1..2], InstallKind::Deb).is_none());
+        assert!(pick_asset(&assets[1..2], InstallKind::Deb, "0.9.1").is_none());
+    }
+
+    /// v0.10.0: nome novo (único MSI, só pt-BR, gerado por `wix.language = "pt-BR"`).
+    #[test]
+    fn pick_asset_msi_new_single_language_name() {
+        let assets = vec![
+            asset("PrismBI_0.10.0_x64_pt-BR.msi"),
+            asset("PrismBI_0.10.0_x64-portable.zip"),
+        ];
+        let picked = pick_asset(&assets, InstallKind::MsiInstalled, "0.10.0").unwrap();
+        assert_eq!(picked.name, "PrismBI_0.10.0_x64_pt-BR.msi");
+    }
+
+    /// Releases antigas (pré-v0.10.0): `wix.language = ["pt-BR", "en-US"]` gerava
+    /// DOIS MSIs para a mesma versão. O updater precisa escolher sempre o mesmo
+    /// (pt-BR), nunca "o primeiro .msi encontrado" (que dependia da ordem dos
+    /// assets na resposta da API do GitHub).
+    #[test]
+    fn pick_asset_msi_old_two_language_release_is_deterministic() {
+        // Ordem 1: en-US primeiro.
+        let assets_a = vec![
+            asset("PrismBI_0.9.1_x64_en-US.msi"),
+            asset("PrismBI_0.9.1_x64_pt-BR.msi"),
+        ];
+        // Ordem 2: pt-BR primeiro (mesmos assets, ordem trocada).
+        let assets_b = vec![
+            asset("PrismBI_0.9.1_x64_pt-BR.msi"),
+            asset("PrismBI_0.9.1_x64_en-US.msi"),
+        ];
+        let picked_a = pick_asset(&assets_a, InstallKind::MsiInstalled, "0.9.1").unwrap();
+        let picked_b = pick_asset(&assets_b, InstallKind::MsiInstalled, "0.9.1").unwrap();
+        assert_eq!(picked_a.name, "PrismBI_0.9.1_x64_pt-BR.msi");
+        assert_eq!(picked_b.name, "PrismBI_0.9.1_x64_pt-BR.msi");
+    }
+
+    /// Se por algum motivo só existir o en-US (sem pt-BR), ainda assim escolhe
+    /// de forma determinística (não "o primeiro encontrado").
+    #[test]
+    fn pick_asset_msi_falls_back_to_alphabetically_first_when_preferred_language_absent() {
+        let assets = vec![
+            asset("PrismBI_0.9.1_x64_fr-FR.msi"),
+            asset("PrismBI_0.9.1_x64_en-US.msi"),
+        ];
+        let picked = pick_asset(&assets, InstallKind::MsiInstalled, "0.9.1").unwrap();
+        assert_eq!(picked.name, "PrismBI_0.9.1_x64_en-US.msi");
+    }
+
+    /// Portable ZIP continua escolhido por sufixo "-portable.zip", sem MSI no caminho.
+    #[test]
+    fn pick_asset_portable_zip_ignores_msi_assets() {
+        let assets = vec![
+            asset("PrismBI_0.10.0_x64_pt-BR.msi"),
+            asset("PrismBI_0.10.0_x64-portable.zip"),
+        ];
+        let picked = pick_asset(&assets, InstallKind::Portable, "0.10.0").unwrap();
+        assert_eq!(picked.name, "PrismBI_0.10.0_x64-portable.zip");
+    }
+
+    #[test]
+    fn expected_msi_name_matches_tauri_bundler_wix_output_pattern() {
+        assert_eq!(expected_msi_name("0.10.0", "pt-BR"), "PrismBI_0.10.0_x64_pt-BR.msi");
+        assert_eq!(MSI_LANGUAGE, "pt-BR");
     }
 
     #[test]

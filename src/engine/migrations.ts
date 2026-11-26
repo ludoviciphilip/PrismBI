@@ -1,7 +1,9 @@
 import { ProjectState } from './storage';
-import { Table, Relationship, Measure, WhatIfParameter, RlsRole, CalculationGroup, PowerQueryStep, DataType, TableSourceConfig } from '../types/bi';
+import { Table, Relationship, Measure, WhatIfParameter, RlsRole, CalculationGroup, PowerQueryStep, DataType, TableSourceConfig, Page } from '../types/bi';
 import { EtlQuery, EtlStep, EtlType, Cond } from '../types/etl';
 import { fileEtlSource, inlineEtlSource } from '../services/etl/etlSource';
+import { migrateConditionalFormats } from './migrations/condfmt';
+import { migrateSlicerConfigs } from './migrations/slicers';
 
 export const CURRENT_ENGINE_VERSION = '2.2.0';
 
@@ -385,13 +387,21 @@ export function migrateProjectState(rawState: any): ProjectState {
   const rawWhatIf: WhatIfParameter[] = Array.isArray(rawState.whatIfParameters) ? rawState.whatIfParameters : [];
   const synced = syncWhatIfWithModel(rawWhatIf, tables, normalizedMeasures);
 
+  const rawPages: Page[] = Array.isArray(rawState.pages) ? rawState.pages : [];
+  const migratedPages: Page[] = rawPages.map(p => ({
+    ...p,
+    visuals: Array.isArray(p.visuals)
+      ? p.visuals.map(v => ({ ...v, formatConfig: migrateConditionalFormats(v.formatConfig) as any }))
+      : p.visuals,
+  }));
+
   return {
     version: CURRENT_ENGINE_VERSION,
     projectName: rawState.projectName || 'Projeto InsightHub',
     tables: synced.tables,
     relationships: normalizedRelationships,
     measures: synced.measures,
-    pages: Array.isArray(rawState.pages) ? rawState.pages : [],
+    pages: migrateSlicerConfigs(migratedPages),
     activePageId: rawState.activePageId || rawState.pages?.[0]?.id || 'page_executivo',
     filters: Array.isArray(rawState.filters) ? rawState.filters : [],
     bookmarks: Array.isArray(rawState.bookmarks) ? rawState.bookmarks : [],

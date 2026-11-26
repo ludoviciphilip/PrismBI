@@ -31,6 +31,7 @@ import { useTranslation } from '../../i18n';
 import { getEffectiveCanvasSize } from '../../engine/shared/canvasPresets';
 import { applyVisualSort, fieldMatches, sortCategoryLabels } from '../../engine/visualSort';
 import { VisualSortMenu } from './VisualSortMenu';
+import { SlicerBody } from './slicer';
 import {
   sortMenuKind,
   getSortableFields,
@@ -39,6 +40,8 @@ import {
   patchForOrder,
   patchForHeaderClick,
 } from './visualSortOptions';
+import { getFieldFormat, cellStyleFromFormat, buildBarSeriesData, resolverFromRows, resolverFromSeries, activeFormats } from './conditionalFormat/apply';
+import { FormattedCell } from './conditionalFormat/FormattedCell';
 
 export interface SnapGuide {
   orientation: 'v' | 'h';
@@ -84,6 +87,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
   const tables = useBiStore(s => s.tables);
   const measures = useBiStore(s => s.measures);
   const setCrossFilter = useBiStore(s => s.setCrossFilter);
+  const updateSlicerSelection = useBiStore(s => s.setSlicerSelection);
   const updateVisual = useBiStore(s => s.updateVisual);
   const moveVisualsDelta = useBiStore(s => s.moveVisualsDelta);
   const deleteVisual = useBiStore(s => s.deleteVisual);
@@ -629,7 +633,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             name: s.name,
             type: 'bar',
             stack: visual.type === 'stacked-column' ? 'total' : undefined,
-            data: s.data,
+            data: buildBarSeriesData(activeFormats(visual), s.name, s.data),
             itemStyle: { borderRadius: [4, 4, 0, 0] },
             label: {
               show: visual.formatConfig.showDataLabels ?? false,
@@ -687,7 +691,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             name: s.name,
             type: 'bar',
             stack: visual.type === 'stacked-bar' ? 'total' : undefined,
-            data: s.data,
+            data: buildBarSeriesData(activeFormats(visual), s.name, s.data),
             itemStyle: { borderRadius: [0, 4, 4, 0] },
             label: {
               show: visual.formatConfig.showDataLabels ?? false,
@@ -1539,9 +1543,14 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                 : 'text-slate-800 dark:text-slate-100'
               : 'text-slate-800 dark:text-slate-100';
 
+            const cardCondFormat = isValBlank ? {} : getFieldFormat(activeFormats(visual), yField, val, [val]);
+
             return (
               <div className="flex flex-col items-center justify-center h-full text-center p-2">
-                <span className={`text-3xl font-extrabold tracking-tight ${signColorClass}`}>
+                <span
+                  className={`text-3xl font-extrabold tracking-tight ${cardCondFormat.color ? '' : signColorClass}`}
+                  style={cellStyleFromFormat(cardCondFormat)}
+                >
                   {displayText}
                 </span>
                 <span className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-1">
@@ -1562,6 +1571,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               >
                 {queryResult.categories.map((label, idx) => {
                   const rawVal = Number(queryResult.series[0]?.data[idx] ?? 0) || 0;
+                  const multiCardFormat = getFieldFormat(activeFormats(visual), label, rawVal, [rawVal]);
                   const targetMeasure = measures.find(m => m.name.toLowerCase() === label.toLowerCase());
                   const isPct = targetMeasure?.format === 'percentage' || label.includes('%');
                   const isCurr = targetMeasure?.format === 'currency' || isCurrencyField(label);
@@ -1591,11 +1601,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                     <div
                       key={label}
                       className="p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/50 flex flex-col justify-center min-w-0"
+                      style={multiCardFormat.background ? { backgroundColor: multiCardFormat.background } : undefined}
                     >
                       <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 truncate" title={label}>
                         {label}
                       </span>
-                      <span className={`text-lg font-extrabold mt-0.5 truncate ${signColorClass}`}>
+                      <span
+                        className={`text-lg font-extrabold mt-0.5 truncate ${multiCardFormat.color ? '' : signColorClass}`}
+                        style={multiCardFormat.color ? { color: multiCardFormat.color } : undefined}
+                      >
                         {formatted}
                       </span>
                     </div>
@@ -1613,17 +1627,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             const targetTableObj = tables.find(
               t => t.id === hintTbl || t.name === hintTbl || t.id === visual.dataConfig.tableId || t.name === visual.dataConfig.tableId
             );
-            const slicerTableId = targetTableObj?.id || hintTbl;
             const slicerCol = hintCol;
-            const activeSlicerFilter = filters.find(
-              f =>
-                (f.tableId === slicerTableId ||
-                  f.tableId === visual.dataConfig.tableId ||
-                  (targetTableObj && f.tableId === targetTableObj.name)) &&
-                (f.column.toLowerCase() === slicerCol.toLowerCase() || f.column.toLowerCase() === rawSlicerCol.toLowerCase())
-            );
-            const activeVal = activeSlicerFilter ? String(activeSlicerFilter.value) : 'TODOS';
-            const isTiles = visual.dataConfig.slicerConfig?.mode === 'tiles';
+            const slicerColumn = targetTableObj?.columns.find(c => c.name.toLowerCase() === slicerCol.toLowerCase());
+            const mode = visual.dataConfig.slicerConfig?.mode || 'dropdown';
+            const hasSelection =
+              mode === 'between'
+                ? Boolean(visual.dataConfig.slicerConfig?.between?.start || visual.dataConfig.slicerConfig?.between?.end)
+                : mode === 'relative-date'
+                  ? false
+                  : (visual.dataConfig.slicerConfig?.selectedValues?.length || 0) > 0;
 
             return (
               <div className="flex flex-col h-full justify-center p-2 space-y-2 overflow-auto">
@@ -1631,63 +1643,16 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                   <label className="text-xs font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1">
                     <Filter className="w-3 h-3 text-amber-500" /> {t.visualCard.selectField} {slicerCol}:
                   </label>
-                  {activeVal !== 'TODOS' && (
+                  {hasSelection && (
                     <button
-                      onClick={() => setCrossFilter(slicerTableId, slicerCol, '')}
+                      onClick={() => updateSlicerSelection(visual.id, { selectedValues: [], between: {} })}
                       className="text-[10px] text-amber-600 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-300 font-semibold cursor-pointer"
                     >
                       {t.common.clear}
                     </button>
                   )}
                 </div>
-                {isTiles ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setCrossFilter(slicerTableId, slicerCol, '')}
-                      className={`px-2 py-1 rounded text-[11px] font-semibold border transition-colors cursor-pointer ${
-                        activeVal === 'TODOS'
-                          ? 'bg-amber-500 text-slate-950 border-amber-500'
-                          : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-amber-400'
-                      }`}
-                    >
-                      {t.visualCard.allRecords}
-                    </button>
-                    {queryResult.categories.map(c => {
-                      const selected = activeVal === c;
-                      return (
-                        <button
-                          key={c}
-                          type="button"
-                          onClick={() => setCrossFilter(slicerTableId, slicerCol, selected ? '' : c)}
-                          className={`px-2 py-1 rounded text-[11px] font-medium border transition-colors cursor-pointer ${
-                            selected
-                              ? 'bg-amber-500 text-slate-950 border-amber-500 font-bold'
-                              : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-amber-400'
-                          }`}
-                        >
-                          {c}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <select
-                    value={activeVal}
-                    className="w-full text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded px-2 py-1.5 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500 font-medium"
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setCrossFilter(slicerTableId, slicerCol, val === 'TODOS' ? '' : val);
-                    }}
-                  >
-                    <option value="TODOS">{t.visualCard.allRecords}</option>
-                    {queryResult.categories.map(c => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                )}
+                <SlicerBody visual={visual} table={targetTableObj} column={slicerColumn} categories={queryResult.categories} />
               </div>
             );
           })()
@@ -1830,14 +1795,19 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                 <span>{cat}</span>
                               </div>
                             </td>
-                            {series.map(s => (
-                              <td
-                                key={s.name}
-                                className="px-2.5 py-1 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap"
-                              >
-                                {fmtCell(Number(s.data[rIdx]) || 0, s.name)}
-                              </td>
-                            ))}
+                            {series.map(s => {
+                              const cellVal = Number(s.data[rIdx]) || 0;
+                              const cellFormat = getFieldFormat(activeFormats(visual), s.name, cellVal, s.data, resolverFromSeries(series, rIdx));
+                              return (
+                                <FormattedCell
+                                  key={s.name}
+                                  format={cellFormat}
+                                  className="px-2.5 py-1 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap"
+                                >
+                                  {fmtCell(cellVal, s.name)}
+                                </FormattedCell>
+                              );
+                            })}
                             {series.length > 1 && (
                               <td className="px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap">
                                 {fmtCell(rowTotals[rIdx])}
@@ -1925,26 +1895,33 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                 {queryResult.rawRows.slice(0, 20).map((row, i) => {
                   const firstCol = Object.keys(row)[0] || 'Categoria';
                   const firstVal = row[firstCol];
+                  const tableFormats = activeFormats(visual);
                   return (
                     <tr key={i} className="hover:bg-amber-50/50 dark:hover:bg-slate-800/60 group/row">
-                      {Object.keys(row).slice(0, 6).map(col => (
-                        <td
-                          key={col}
-                          onClick={() => {
-                            const val = row[col];
-                            if (val !== undefined && val !== null) {
-                              setCrossFilter(visual.dataConfig.tableId, col, val);
-                              setDrillPop({ field: col, value: val });
-                            }
-                          }}
-                          className="px-2 py-1 text-slate-600 dark:text-slate-300 truncate max-w-[120px] cursor-pointer hover:text-amber-800 dark:hover:text-amber-400 hover:font-semibold"
-                          title={`Filtrar ou detalhar por ${col}: ${row[col]}`}
-                        >
-                          {typeof row[col] === 'number' && isCurrencyField(col)
-                            ? formatCurrency(row[col])
-                            : String(row[col] ?? '')}
-                        </td>
-                      ))}
+                      {Object.keys(row).slice(0, 6).map(col => {
+                        const colVal = row[col];
+                        const colVisible = queryResult.rawRows.map(r => Number(r[col])).filter(n => Number.isFinite(n));
+                        const cellFormat = getFieldFormat(tableFormats, col, colVal, colVisible, resolverFromRows(queryResult.rawRows, row));
+                        return (
+                          <FormattedCell
+                            key={col}
+                            format={cellFormat}
+                            onClick={() => {
+                              const val = row[col];
+                              if (val !== undefined && val !== null) {
+                                setCrossFilter(visual.dataConfig.tableId, col, val);
+                                setDrillPop({ field: col, value: val });
+                              }
+                            }}
+                            className="px-2 py-1 text-slate-600 dark:text-slate-300 truncate max-w-[120px] cursor-pointer hover:text-amber-800 dark:hover:text-amber-400 hover:font-semibold"
+                            title={`Filtrar ou detalhar por ${col}: ${row[col]}`}
+                          >
+                            {typeof row[col] === 'number' && isCurrencyField(col)
+                              ? formatCurrency(row[col])
+                              : String(row[col] ?? '')}
+                          </FormattedCell>
+                        );
+                      })}
                       <td className="px-1 py-0.5 text-center">
                         <button
                           onClick={(e) => {

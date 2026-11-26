@@ -49,6 +49,16 @@ pub(super) fn eval_table_expr<'a>(
                 let (source_indices, base_ctx): (Vec<usize>, FilterContext) =
                     if upper == "VALUES" || upper == "DISTINCT" {
                         (model.get_visible_row_indices(table, ctx), ctx.clone())
+                    } else if upper == "ALLSELECTED" {
+                        // §3 item 3: restore the visual's shadow filter on this
+                        // column, not the model-wide unfiltered state.
+                        let shadow = ctx.shadow_ctx();
+                        let mut restored = ctx.clone();
+                        match shadow.filters.get(&tbl.name.to_lowercase()).and_then(|m| m.get(&column.to_lowercase())) {
+                            Some(v) => restored.set_column_filter(&tbl.name, column, v.clone()),
+                            None => restored.clear_column(&tbl.name, column),
+                        }
+                        (model.get_visible_row_indices(table, &restored), restored)
                     } else {
                         let mut cleared = ctx.clone();
                         cleared.clear_column(&tbl.name, column);
@@ -60,6 +70,23 @@ pub(super) fn eval_table_expr<'a>(
                     let v = tbl.rows[r_idx][cidx].clone();
                     if seen.insert(v.canonical_key()) {
                         values.push(v);
+                    }
+                }
+                // Blank member: VALUES (never ALL/DISTINCT/ALLSELECTED) over a
+                // column of a dimension with an orphan FK surfaces one extra
+                // BLANK row, unless this column is itself directly filtered
+                // (a direct filter can never match the blank member).
+                if upper == "VALUES" {
+                    let has_direct_filter = ctx
+                        .filters
+                        .get(&tbl.name.to_lowercase())
+                        .and_then(|m| m.get(&column.to_lowercase()))
+                        .is_some_and(|s| !s.is_empty());
+                    if !has_direct_filter
+                        && model.has_orphan_member(table)
+                        && seen.insert(DaxValue::Blank.canonical_key())
+                    {
+                        values.push(DaxValue::Blank);
                     }
                 }
                 let mut col_index = HashMap::new();
@@ -458,6 +485,24 @@ pub(super) fn eval_base_table_expr<'a>(
         Expr::Call { name, args } if name.eq_ignore_ascii_case("ALL") || name.eq_ignore_ascii_case("ALLSELECTED") => {
             let tname = extract_table_name(args.first())?;
             let tbl = model_table(&tname)?;
+            if name.eq_ignore_ascii_case("ALLSELECTED") {
+                let shadow = ctx.shadow_ctx();
+                let mut restored = ctx.clone();
+                let tl = tbl.name.to_lowercase();
+                match shadow.filters.get(&tl) {
+                    Some(cols) => {
+                        restored.filters.insert(tl.clone(), cols.clone());
+                    }
+                    None => {
+                        restored.filters.remove(&tl);
+                    }
+                }
+                restored.tuple_filters.retain(|tf| tf.table != tl);
+                restored
+                    .tuple_filters
+                    .extend(shadow.tuple_filters.iter().filter(|tf| tf.table == tl).cloned());
+                return Ok((TableEval::Borrowed(tbl), (0..tbl.rows.len()).collect(), restored));
+            }
             let mut cleared_ctx = ctx.clone();
             cleared_ctx.clear_table(&tbl.name);
             for rel in &model.relationships {
@@ -471,6 +516,28 @@ pub(super) fn eval_base_table_expr<'a>(
             let tname = extract_table_name(args.first())?;
             let tbl = model_table(&tname)?;
             let indices = model.get_visible_row_indices(&tname, ctx);
+            // Blank member (VALUES only, see `has_orphan_member`): append one
+            // synthetic all-BLANK row, unless the table itself is directly
+            // filtered (a direct filter on any of its columns can never match it).
+            if name.eq_ignore_ascii_case("VALUES") {
+                let has_direct_filter = ctx
+                    .filters
+                    .get(&tbl.name.to_lowercase())
+                    .is_some_and(|m| m.values().any(|s| !s.is_empty()));
+                if !has_direct_filter && model.has_orphan_member(&tbl.name) {
+                    let mut rows: Vec<Vec<DaxValue>> = indices.iter().map(|&i| tbl.rows[i].clone()).collect();
+                    rows.push(vec![DaxValue::Blank; tbl.columns.len()]);
+                    let n = rows.len();
+                    let synth = DaxTableData {
+                        name: tbl.name.clone(),
+                        columns: tbl.columns.clone(),
+                        col_index: tbl.col_index.clone(),
+                        col_types: tbl.col_types.clone(),
+                        rows,
+                    };
+                    return Ok((TableEval::Owned(synth), (0..n).collect(), ctx.clone()));
+                }
+            }
             Ok((TableEval::Borrowed(tbl), indices, ctx.clone()))
         }
         Expr::Call { name, args } if name.eq_ignore_ascii_case("TOPN") => {

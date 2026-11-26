@@ -159,6 +159,24 @@ export interface ConditionalFormatRule {
   color: string;
 }
 
+// --- Bloco B (v0.10, Frente "Formatação condicional") ---
+export type CondFormatTarget = 'background' | 'fontColor' | 'dataBar' | 'icon';
+export interface CondFormatStop { kind: 'lowest' | 'highest' | 'number' | 'percent'; value?: number; color: string; }
+export interface ConditionalFormat {
+  id: string;
+  target: CondFormatTarget;
+  /** Campo do visual que recebe a formatação (nome da coluna/medida como aparece em yAxisFields/xAxisField). */
+  applyTo: string;
+  /** Valor que decide a cor; padrão = o próprio campo. */
+  basedOn?: { field: string; kind: 'measure' | 'column'; aggregation?: VisualDataConfig['aggregation'] };
+  mode: 'rules' | 'gradient' | 'fieldValue';
+  rules?: Array<ConditionalFormatRule & { valueKind?: 'number' | 'percent' }>;
+  gradient?: { min: CondFormatStop; mid?: CondFormatStop; max: CondFormatStop };
+  dataBar?: { positiveColor: string; negativeColor: string; showBarOnly?: boolean };
+  icons?: { set: 'arrows' | 'traffic' | 'flags'; rules: ConditionalFormatRule[] };
+}
+// --- fim Bloco B ---
+
 export interface VisualFormatConfig {
   showTitle: boolean;
   title?: string;
@@ -178,10 +196,13 @@ export interface VisualFormatConfig {
   textContent?: string;
   actionType?: 'back' | 'page-navigation';
   actionTargetPageId?: string;
+  /** @deprecated legado (pré v0.10), migrado para `conditionalFormats` em src/engine/migrations/condfmt.ts */
   conditionalFormatting?: {
     field: string;
     rules: ConditionalFormatRule[];
   };
+  /** v0.10: formatação condicional completa (gradiente, regras, valor de campo, barras, ícones). */
+  conditionalFormats?: ConditionalFormat[];
 }
 
 export interface VisualCalculation {
@@ -209,14 +230,33 @@ export interface VisualDataConfig {
   kpiComparisonField?: string;
   visualCalculations?: VisualCalculation[];
   slicerConfig?: {
-    mode: 'list' | 'dropdown' | 'slider' | 'relative-date' | 'tiles';
+    mode: 'list' | 'dropdown' | 'slider' | 'relative-date' | 'tiles' | 'between';
     selectedValues?: any[];
+    /** @deprecated migrated to `relative` by src/engine/migrations/slicers.ts */
     dateRange?: {
       start?: string;
       end?: string;
       relativePreset?: 'last7days' | 'last30days' | 'thisMonth' | 'thisYear' | 'all';
     };
+    /** 'between' mode range. ISO date string for date columns, number for numeric columns. */
+    between?: { start?: string | number; end?: string | number };
+    /** 'relative-date' mode definition. Re-resolved to a concrete range on every load via src/engine/relativeDate.ts. */
+    relative?: RelativeDateFilter;
+    /** Search box on top of list/dropdown/tiles modes. */
+    showSearch?: boolean;
+    /** Slicers with the same syncGroup share their selection (Power BI "Sincronizar segmentações"). */
+    syncGroup?: string;
+    /** Pages where the sync applies; empty/absent = all pages. */
+    syncPages?: string[];
   };
+}
+
+export type RelativeDateUnit = 'days' | 'weeks' | 'months' | 'quarters' | 'years';
+export interface RelativeDateFilter {
+  anchor: 'last' | 'this' | 'next';
+  count: number;
+  unit: RelativeDateUnit;
+  includeToday?: boolean;
 }
 
 export interface Visual {

@@ -176,6 +176,32 @@ selected_total = per_product_total(1) + per_product_total(3)  # Caneta + Mouse s
 EXPECTED["filter.allselected.share_of_selected_caneta"] = per_product_total(1) / selected_total
 EXPECTED["filter.allselected.share_of_selected_mouse"] = per_product_total(3) / selected_total
 
+# ALLSELECTED: table arg, no-args, column not covered by the shadow, and a
+# 3-item-slicer variant of the DIVIDE/share pattern above.
+EXPECTED["filter.allselected.table_arg_restores_slicer"] = per_product_total(1) + per_product_total(3)
+shadow_cal_cid = filt(prod_ids={1, 3}, cli_ids={1, 3})
+EXPECTED["filter.allselected.noargs_restores_whole_shadow"] = total_valor(shadow_cal_cid)
+shadow_cidade_only = filt(cli_ids={1, 3})
+EXPECTED["filter.allselected.column_not_in_shadow_clears"] = total_valor(shadow_cidade_only)
+den3 = per_product_total(1) + per_product_total(2) + per_product_total(3)
+EXPECTED["filter.allselected.divide_share_three_selected"] = per_product_total(2) / den3
+
+# -- Tuple filters (§2.3): FILTER/SUMMARIZE over 2+ columns, multi-column
+# TREATAS, KEEPFILTERS intersecting tuples instead of replacing them. ---------
+pair_11_22 = {r["VendaID"] for r in f_vendas if (r["ProdutoID"], r["ClienteID"]) in {(1, 1), (2, 2)}}
+EXPECTED["filter.tuple.treatas_pair_restricts_combo"] = total_by_ids(pair_11_22)
+EXPECTED["filter.tuple.filter_multi_col_predicate_on_physical"] = total_by_ids(pair_11_22)
+EXPECTED["filter.tuple.summarize_bare_as_filter"] = total_by_ids(pair_11_22)
+EXPECTED["filter.tuple.summarize_dim_pairs_as_filter"] = per_product_total(1) + per_product_total(3)
+outer_pairs_345 = {r["VendaID"] for r in f_vendas if (r["ProdutoID"], r["ClienteID"]) in {(1, 1), (2, 2), (3, 3)}}
+inner_pairs_11_41 = {r["VendaID"] for r in f_vendas if (r["ProdutoID"], r["ClienteID"]) in {(1, 1), (4, 1)}}
+EXPECTED["filter.tuple.keepfilters_intersects_pairs"] = total_by_ids(outer_pairs_345 & inner_pairs_11_41)
+
+# -- KEEPFILTERS wrapping a table expression (FILTER/CALCULATETABLE), not just
+# a bare predicate: must still intersect, not replace. -----------------------
+EXPECTED["filter.keepfilters.filter_table_arg_intersects"] = total_valor(filt(prod_cat={"Papelaria"}))
+EXPECTED["filter.keepfilters.calculatetable_arg_intersects"] = total_valor(filt(prod_cat={"Informatica"}))
+
 # -- VALUES vs DISTINCT (sem violacao de integridade referencial) ------------
 EXPECTED["filter.values.countrows_table_no_dedup"] = len(d_produto)
 EXPECTED["filter.distinct.countrows_column"] = len({p["Categoria"] for p in d_produto})
@@ -245,6 +271,13 @@ EXPECTED["filter.rel.blankrow.countrows_table_excludes"] = len(d_produto_rel)  #
 EXPECTED["filter.rel.blankrow.values_table_includes"] = len(d_produto_rel) + 1  # VALUES(tabela) inclui
 EXPECTED["filter.rel.blankrow.distinct_column_excludes"] = len({p["Produto"] for p in d_produto_rel})  # DISTINCT nunca inclui
 EXPECTED["filter.rel.blankrow.values_column_includes"] = len({p["Produto"] for p in d_produto_rel}) + 1  # VALUES(coluna) inclui
+
+# Blank member extras: direct filter excludes it; ADDCOLUMNS/SUMX over
+# VALUES keep it; another column (Categoria) also surfaces it.
+EXPECTED["filter.rel.blankrow.direct_filter_excludes_values_table"] = sum(1 for p in d_produto_rel if p["Categoria"] == "Escritorio")
+EXPECTED["filter.rel.blankrow.addcolumns_over_values_includes"] = len(d_produto_rel) + 1
+EXPECTED["filter.rel.blankrow.sumx_constant_counts_blank"] = len({p["Produto"] for p in d_produto_rel}) + 1
+EXPECTED["filter.rel.blankrow.values_column_categoria_includes"] = len({p["Categoria"] for p in d_produto_rel}) + 1
 
 # ---------------------------------------------------------------------------
 # Modelo "filter_bidir": relacionamento bidirecional (crossFilter both) e
