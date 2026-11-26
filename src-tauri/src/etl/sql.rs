@@ -1950,3 +1950,198 @@ fn unpivot_sql(
         sel(&inner, &p, "")
     ))
 }
+
+// ---------------------------------------------------------------------------
+// Coverage tests: the SQL-generation helpers below are the engine's main
+// defense against SQL injection (every user-controlled identifier/value
+// passes through `quote_ident`/`lit_str`/`lit_scalar`/`check_user_name`
+// before it's spliced into generated SQL), so they're tested directly with
+// adversarial inputs rather than only through end-to-end ETL runs.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests_cov {
+    use super::*;
+
+    #[test]
+    fn quote_ident_escapes_embedded_quotes() {
+        assert_eq!(quote_ident("Vendas"), "\"Vendas\"");
+        assert_eq!(quote_ident("a\"b"), "\"a\"\"b\"");
+        // Classic injection attempt: closing the identifier then appending SQL.
+        assert_eq!(
+            quote_ident("x\"; DROP TABLE t; --"),
+            "\"x\"\"; DROP TABLE t; --\""
+        );
+        assert_eq!(quote_ident(""), "\"\"");
+    }
+
+    #[test]
+    fn lit_str_escapes_quotes_and_splices_nul() {
+        assert_eq!(lit_str("hello"), "'hello'");
+        assert_eq!(lit_str("it's"), "'it''s'");
+        assert_eq!(lit_str("' OR 1=1 --"), "''' OR 1=1 --'");
+        // NUL bytes cannot live inside a single SQL string literal in DuckDB,
+        // so they are spliced in as chr(0) concatenations.
+        let out = lit_str("a\0b");
+        assert!(out.contains("chr(0)"));
+        assert!(out.starts_with('(') && out.ends_with(')'));
+    }
+
+    #[test]
+    fn lit_num_integers_vs_non_integers_and_non_finite() {
+        assert_eq!(lit_num(42.0).unwrap(), "42");
+        assert_eq!(lit_num(-7.0).unwrap(), "-7");
+        assert_eq!(lit_num(0.0).unwrap(), "0");
+        // Non-integers go through a round-trip-safe scientific literal cast.
+        let dec = lit_num(3.5).unwrap();
+        assert!(dec.starts_with("CAST("));
+        assert!(dec.contains("AS DOUBLE"));
+        assert!(lit_num(f64::NAN).is_err());
+        assert!(lit_num(f64::INFINITY).is_err());
+        assert!(lit_num(f64::NEG_INFINITY).is_err());
+    }
+
+    #[test]
+    fn lit_scalar_covers_every_variant() {
+        assert_eq!(lit_scalar(&Scalar::Null).unwrap(), "NULL");
+        assert_eq!(lit_scalar(&Scalar::Bool(true)).unwrap(), "TRUE");
+        assert_eq!(lit_scalar(&Scalar::Bool(false)).unwrap(), "FALSE");
+        assert_eq!(lit_scalar(&Scalar::Number(5.0)).unwrap(), "5");
+        assert_eq!(lit_scalar(&Scalar::Text("o'brien".into())).unwrap(), "'o''brien'");
+    }
+
+    #[test]
+    fn raw_table_name_and_flag_name_and_is_hidden() {
+        assert_eq!(raw_table_name("Vendas"), "raw__Vendas");
+        assert_eq!(flag_name("Preco"), "__err__Preco");
+        assert!(is_hidden(ROW_IDX));
+        assert!(is_hidden("__err__Preco"));
+        assert!(!is_hidden("Preco"));
+    }
+
+    #[test]
+    fn check_user_name_rejects_reserved_and_malformed_names() {
+        assert!(check_user_name("Preco").is_ok());
+        assert!(check_user_name("").is_err());
+        assert!(check_user_name("col\0name").is_err());
+        assert!(check_user_name(ROW_IDX).is_err());
+        assert!(check_user_name("__err__x").is_err());
+        assert!(check_user_name("__etl_s0").is_err()); // CTE_PREFIX collision
+        assert!(check_user_name("__rid").is_err());
+        assert!(check_user_name("__src").is_err());
+        assert!(check_user_name("__ord").is_err());
+    }
+
+    #[test]
+    fn cat_of_classifies_duckdb_type_names() {
+        assert_eq!(cat_of("VARCHAR"), Cat::Text);
+        assert_eq!(cat_of("BIGINT"), Cat::Int);
+        assert_eq!(cat_of("DOUBLE"), Cat::Float);
+        assert_eq!(cat_of("DECIMAL(19,4)"), Cat::Decimal);
+        assert_eq!(cat_of("TIMESTAMP"), Cat::Timestamp);
+        assert_eq!(cat_of("DATE"), Cat::Date);
+        assert_eq!(cat_of("BOOLEAN"), Cat::Bool);
+        assert_eq!(cat_of("NULL"), Cat::Null);
+        assert_eq!(cat_of("some_weird_type"), Cat::Other);
+        assert!(Cat::Int.is_numeric());
+        assert!(!Cat::Text.is_numeric());
+    }
+
+    #[test]
+    fn etl_type_name_distinguishes_currency_from_plain_decimal() {
+        assert_eq!(etl_type_name("DECIMAL(19,4)"), "currency");
+        assert_eq!(etl_type_name("DECIMAL(10,2)"), "decimal");
+        assert_eq!(etl_type_name("BIGINT"), "integer");
+        assert_eq!(etl_type_name("VARCHAR"), "text");
+        assert_eq!(etl_type_name("BOOLEAN"), "boolean");
+        assert_eq!(etl_type_name("DATE"), "date");
+        assert_eq!(etl_type_name("TIMESTAMP"), "datetime");
+    }
+
+    #[test]
+    fn culture_info_known_and_unknown_locales() {
+        let inv = culture_info(None).unwrap();
+        assert_eq!(format!("{:?}", inv.order), "Iso");
+        let en_us = culture_info(Some("en-US")).unwrap();
+        assert_eq!(format!("{:?}", en_us.order), "Mdy");
+        let pt_br = culture_info(Some("pt-BR")).unwrap();
+        assert_eq!(format!("{:?}", pt_br.order), "Dmy");
+        assert_eq!(pt_br.dec, ',');
+        assert!(culture_info(Some("xx-totally-bogus")).is_err());
+    }
+
+    #[test]
+    fn to_text_covers_numeric_date_and_bool_categories() {
+        let inv = culture_info(None).unwrap();
+        assert_eq!(to_text("col", Cat::Text, inv), "col");
+        assert_eq!(to_text("col", Cat::Int, inv), "CAST(col AS VARCHAR)");
+        let date_sql = to_text("d", Cat::Date, inv);
+        assert!(date_sql.contains("strftime"));
+        assert!(date_sql.contains("%Y-%m-%d"));
+        let bool_sql = to_text("b", Cat::Bool, inv);
+        assert!(bool_sql.contains("'true'") && bool_sql.contains("'false'"));
+        assert_eq!(to_text("x", Cat::Null, inv), "CAST(NULL AS VARCHAR)");
+    }
+
+    #[test]
+    fn convert_expr_blank_text_becomes_null_for_non_text_targets() {
+        let inv = culture_info(None).unwrap();
+        let sql = convert_expr("c", Cat::Text, EtlType::Integer, inv, false);
+        // Empty/blank text must short-circuit to NULL, not to a conversion
+        // error flag (see module docs on changeType semantics).
+        assert!(sql.starts_with("(CASE WHEN trim(c) = '' THEN NULL ELSE"));
+    }
+
+    #[test]
+    fn convert_expr_text_target_delegates_to_to_text_without_blank_wrapping() {
+        let inv = culture_info(None).unwrap();
+        // Text -> Text has no "blank becomes null" wrapper: it's the identity.
+        let sql = convert_expr("c", Cat::Text, EtlType::Text, inv, false);
+        assert_eq!(sql, "c");
+    }
+
+    #[test]
+    fn convert_expr_date_from_serial_number() {
+        let inv = culture_info(None).unwrap();
+        let sql = convert_expr("c", Cat::Decimal, EtlType::Date, inv, false);
+        // Numeric -> Date goes through the Excel-serial conversion path
+        // (DATE '1899-12-30' + the integer serial), not the text/blank path.
+        assert!(sql.contains("CAST(c AS DOUBLE)"));
+        assert!(sql.contains("1899-12-30"));
+    }
+
+    #[test]
+    fn proper_trim_clean_sql_fragments_reference_the_input_expression() {
+        assert!(trim_ws_sql("col").contains("regexp_replace(col"));
+        assert!(clean_sql("col").contains("regexp_replace(col"));
+        assert!(proper_sql("col").contains("col"));
+        // clean_sql strips control characters via a hex character class.
+        assert!(clean_sql("col").contains("\\x00-\\x1F"));
+    }
+
+    #[test]
+    fn clean_err_truncates_at_duckdb_line_marker() {
+        let raw = "Parser Error: syntax error\n\nLINE 3: SELECT * FROM x\n        ^";
+        assert_eq!(clean_err(raw), "Parser Error: syntax error");
+        // No LINE marker: passed through unchanged.
+        assert_eq!(clean_err("plain error"), "plain error");
+    }
+
+    #[test]
+    fn chain_visible_filters_hidden_columns_and_col_lookup() {
+        let chain = Chain {
+            ctes: vec!["SELECT 1".to_string()],
+            schema: vec![
+                ColInfo { name: ROW_IDX.to_string(), ty: "BIGINT".into() },
+                ColInfo { name: "Nome".to_string(), ty: "VARCHAR".into() },
+                ColInfo { name: flag_name("Nome"), ty: "BOOLEAN".into() },
+            ],
+        };
+        assert_eq!(chain.visible_names(), vec!["Nome".to_string()]);
+        assert!(chain.col("Nome").is_some());
+        assert!(chain.col("missing").is_none());
+        assert_eq!(chain.last_cte(), "\"__etl_s0\"");
+        let sql = chain.select("\"Nome\"", "LIMIT 10");
+        assert!(sql.starts_with("WITH \"__etl_s0\" AS (SELECT 1)"));
+        assert!(sql.contains("LIMIT 10"));
+    }
+}
