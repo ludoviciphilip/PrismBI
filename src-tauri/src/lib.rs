@@ -5,6 +5,16 @@ pub mod etl;
 pub mod pbi;
 pub mod updater;
 
+// Coverage-only test modules for v0.10 round 1 (see docs/TEST_COVERAGE.md).
+// These live outside src/dax/**, src/pbi/** and updater.rs (other fronts'
+// territory) and test only through the crate's pub/pub(crate) API.
+#[cfg(test)]
+mod tests_cov_dax;
+#[cfg(test)]
+mod tests_cov_pbi;
+#[cfg(test)]
+mod tests_cov_updater;
+
 use connectors::{
     CredentialStore, ConnectionManager, ConnectorConfig, DbConnectionInfo, DbSchemaInfo,
     DbTableInfo, NativeKeyringStore, PreviewResult,
