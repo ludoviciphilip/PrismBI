@@ -116,6 +116,14 @@ pub struct ExportVisualPayload {
     /// Caixa de busca do segmentador (`objects.searchBox[0].properties.show`).
     #[serde(default)]
     pub slicer_show_search: Option<bool>,
+    /// v0.10 Rodada 2 (seams H↔G): hierarquia de drill de um gráfico (níveis
+    /// abaixo de `x_axis_field`), exportada como projeções extras em Category.
+    #[serde(default)]
+    pub drill_fields: Vec<String>,
+    /// v0.10 Rodada 2 (seams H↔G): campos das linhas de uma matriz hierárquica
+    /// (N níveis). O 1º espelha `x_axis_field` (não duplicado na exportação).
+    #[serde(default)]
+    pub matrix_row_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -483,7 +491,31 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
                 } else {
                     "Category"
                 };
-                query_state.insert(role.to_string(), json!({ "projections": [{ "queryRef": qref }] }));
+                // v0.10 Rodada 2 (seams H↔G): a hierarquia completa (drillFields do
+                // gráfico, ou matrixRowFields[1..] da matriz) vira projeções extras na
+                // MESMA role — exatamente o formato que a importação da G lê de volta
+                // (`drill_fields`/`matrixRowFields`, pbip.rs linhas ~372-380).
+                let extra_fields: &[String] = if vis.visual_type == "matrix" {
+                    if vis.matrix_row_fields.len() > 1 {
+                        &vis.matrix_row_fields[1..]
+                    } else {
+                        &[]
+                    }
+                } else if role == "Category" {
+                    &vis.drill_fields
+                } else {
+                    &[]
+                };
+                let mut projections = vec![json!({ "queryRef": qref })];
+                for f in extra_fields {
+                    let fqref = if f.contains('.') {
+                        f.clone()
+                    } else {
+                        format!("{}.{}", vis.table_id, f)
+                    };
+                    projections.push(json!({ "queryRef": fqref }));
+                }
+                query_state.insert(role.to_string(), json!({ "projections": projections }));
             }
 
             if let Some(leg) = &vis.legend_field {
@@ -1464,5 +1496,105 @@ mod tests {
         vis.sort_field = None;
         vis.sort_order = None;
         assert!(build_sort_definition(&vis, &measures).is_none());
+    }
+
+    /// v0.10 Rodada 2 (seams H↔G): a hierarquia completa (além do 1º campo) não
+    /// pode se perder no round-trip .pbip — drillFields de um gráfico e
+    /// matrixRowFields de uma matriz hierárquica viram várias projeções em
+    /// Category/Rows, exatamente o formato que a importação da G lê de volta.
+    #[test]
+    fn test_pbip_round_trip_preserves_drill_hierarchy_beyond_first_field() {
+        let dir = tempdir().unwrap();
+        let payload = ExportPbipPayload {
+            project_name: "Projeto Hierarquia".into(),
+            tables: vec![ExportTablePayload {
+                name: "f_Vendas".into(),
+                is_hidden: Some(false),
+                m_script: None,
+                columns: vec![
+                    ExportColumnPayload {
+                        name: "Regiao".into(),
+                        data_type: "text".into(),
+                        format_string: None,
+                        sort_by_column: None,
+                        is_hidden: None,
+                        is_calculated: None,
+                        expression: None,
+                    },
+                    ExportColumnPayload {
+                        name: "Valor".into(),
+                        data_type: "number".into(),
+                        format_string: None,
+                        sort_by_column: None,
+                        is_hidden: None,
+                        is_calculated: None,
+                        expression: None,
+                    },
+                ],
+            }],
+            relationships: vec![],
+            measures: vec![ExportMeasurePayload {
+                name: "Total".into(),
+                table_name: "f_Vendas".into(),
+                formula: "SUM(f_Vendas[Valor])".into(),
+                format_string: None,
+                display_folder: None,
+                description: None,
+            }],
+            pages: vec![ExportPagePayload {
+                id: "pg_1".into(),
+                name: "Resumo".into(),
+                width: 1280.0,
+                height: 720.0,
+                filters: vec![],
+                visuals: vec![
+                    // Gráfico drillável: Categoria -> Produto -> SubProduto (3 níveis).
+                    ExportVisualPayload {
+                        id: "vis_chart".into(),
+                        visual_type: "column".into(),
+                        title: "Vendas".into(),
+                        x: 0.0,
+                        y: 0.0,
+                        w: 400.0,
+                        h: 300.0,
+                        table_id: "f_Vendas".into(),
+                        x_axis_field: Some("Regiao".into()),
+                        legend_field: None,
+                        y_axis_fields: vec!["Total".into()],
+                        drill_fields: vec!["Produto".into(), "SubProduto".into()],
+                        ..Default::default()
+                    },
+                    // Matriz hierárquica de 3 níveis (matrixRowFields[0] espelha xAxisField).
+                    ExportVisualPayload {
+                        id: "vis_matrix".into(),
+                        visual_type: "matrix".into(),
+                        title: "Matriz".into(),
+                        x: 420.0,
+                        y: 0.0,
+                        w: 400.0,
+                        h: 300.0,
+                        table_id: "f_Vendas".into(),
+                        x_axis_field: Some("Regiao".into()),
+                        legend_field: None,
+                        y_axis_fields: vec!["Total".into()],
+                        matrix_row_fields: vec!["Regiao".into(), "Cidade".into(), "Loja".into()],
+                        ..Default::default()
+                    },
+                ],
+            }],
+            ..Default::default()
+        };
+
+        let pbip_path = save_pbip_project(dir.path(), &payload).expect("save pbip");
+        let reopened = open_pbip_project(Path::new(&pbip_path), None).expect("reopen pbip");
+
+        let chart = reopened.pages[0].visuals.iter().find(|v| v.id == "vis_chart").expect("chart");
+        assert_eq!(chart.category_field.as_deref(), Some("f_Vendas.Regiao"));
+        assert_eq!(chart.drill_fields, vec!["f_Vendas.Produto".to_string(), "f_Vendas.SubProduto".to_string()]);
+
+        let matrix = reopened.pages[0].visuals.iter().find(|v| v.id == "vis_matrix").expect("matrix");
+        assert_eq!(matrix.category_field.as_deref(), Some("f_Vendas.Regiao"));
+        // Os níveis ALÉM do primeiro (Cidade, Loja) não podem se perder.
+        assert_eq!(matrix.drill_fields, vec!["f_Vendas.Cidade".to_string(), "f_Vendas.Loja".to_string()]);
     }
 }

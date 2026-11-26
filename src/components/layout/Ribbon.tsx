@@ -353,6 +353,9 @@ export const Ribbon: React.FC<{
             slicerRelativeUnit: v.dataConfig.slicerConfig?.relative?.unit ?? null,
             slicerRelativeIncludeToday: v.dataConfig.slicerConfig?.relative?.includeToday ?? null,
             slicerShowSearch: v.dataConfig.slicerConfig?.showSearch ?? null,
+            // v0.10 Rodada 2 (seams H↔G): hierarquia completa no round-trip .pbip.
+            drillFields: v.dataConfig.drillFields ?? [],
+            matrixRowFields: v.dataConfig.matrixRowFields ?? [],
           })),
         })),
         themeName: state.activeThemeId || theme || 'PrismTheme',

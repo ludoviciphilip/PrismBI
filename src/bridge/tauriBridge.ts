@@ -267,6 +267,12 @@ export interface ExportPbipPayload {
       slicerRelativeUnit?: string | null;
       slicerRelativeIncludeToday?: boolean | null;
       slicerShowSearch?: boolean | null;
+      /** v0.10 Rodada 2 (seams H↔G): hierarquia de drill do gráfico (níveis
+       * abaixo de xAxisField), exportada como projeções extras em Category. */
+      drillFields?: string[];
+      /** v0.10 Rodada 2 (seams H↔G): campos das linhas da matriz hierárquica
+       * (N níveis). O 1º espelha xAxisField e não é duplicado na exportação. */
+      matrixRowFields?: string[];
     }[];
   }[];
   themeName?: string | null;
