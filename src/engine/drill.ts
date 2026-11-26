@@ -243,6 +243,36 @@ export function concatLevelLabels(levels: DrillLevel[], keys: unknown[]): string
   return levels.map((lv, i) => levelValueLabel(lv, keys[i])).join(' ');
 }
 
+/**
+ * Filtros (DrillFilterSpec) para um caminho completo de valores, nível a nível —
+ * a linha inteira de uma matriz hierárquica, ou os níveis atualmente agrupados de
+ * um gráfico. `DRILL_ALL` (nível "ir para o próximo nível") não gera filtro.
+ */
+export function buildPathFilters(levels: DrillLevel[], path: unknown[]): DrillFilterSpec[] {
+  const out: DrillFilterSpec[] = [];
+  for (let i = 0; i < levels.length && i < path.length; i++) {
+    const value = path[i];
+    if (isDrillAll(value)) continue;
+    const lv = levels[i];
+    out.push(lv.datePart ? { field: lv.field, datePart: lv.datePart, value } : { field: lv.field, value });
+  }
+  return out;
+}
+
+/**
+ * v0.10 Rodada 2 (seams F↔G): filtro temporário completo para um ponto sob o
+ * mouse de um gráfico — os ancestrais do drill (`buildDrillPathFilters`) mais o(s)
+ * nível(is) atualmente agrupado(s) (`groupingLevels`) com os valores do próprio
+ * ponto (`pointKeys`, na mesma ordem de `groupingLevels`). Nunca usa `xAxisField` +
+ * o rótulo cru: num nível drillado ou de hierarquia de data, filtra pelo campo e
+ * (quando aplicável) a parte de data do nível atual, com todo o caminho acima.
+ */
+export function buildHoverFilters(state: DrillState, levels: DrillLevel[], pointKeys: unknown[]): DrillFilterSpec[] {
+  const ancestors = buildDrillPathFilters(state, levels);
+  const current = buildPathFilters(groupingLevels(state, levels), pointKeys);
+  return [...ancestors, ...current];
+}
+
 // --- Matriz: estado de expansão das linhas ---
 
 export interface MatrixExpansion {

@@ -22,6 +22,8 @@ import {
   expandOneLevel,
   toggleMatrixPath,
   MatrixExpansion,
+  buildHoverFilters,
+  buildPathFilters,
 } from '../drill';
 import { DataType, VisualDataConfig } from '../../types/bi';
 
@@ -209,6 +211,63 @@ describe('partes de data e rótulos', () => {
     const levels = resolveDrillLevels(dc({ xAxisField: 'Data', drillMode: 'drill' }), typeOf);
     expect(concatLevelLabels(levels.slice(0, 2), [2024, 1])).toBe('2024 Trim 1');
     expect(concatLevelLabels(levels.slice(0, 3), [2024, 1, 2])).toBe('2024 Trim 1 fevereiro');
+  });
+});
+
+describe('buildHoverFilters (seams F↔G): dica de página respeita o nível/caminho de drill', () => {
+  it('nível 0 (Ano): filtra pelo campo de data com datePart year, não pelo xAxisField cru', () => {
+    const levels = resolveDrillLevels(dc({ xAxisField: 'Data', drillMode: 'drill' }), typeOf);
+    const state = getDrillState(dc({ xAxisField: 'Data', drillMode: 'drill', currentDrillLevel: 0 }), levels);
+    expect(buildHoverFilters(state, levels, [2024])).toEqual([{ field: 'Data', datePart: 'year', value: 2024 }]);
+  });
+
+  it('"2024 Q1" no modo drill (nível trimestre): filtra ano=2024 E trimestre=1 (ancestral + ponto atual)', () => {
+    const levels = resolveDrillLevels(dc({ xAxisField: 'Data', drillMode: 'drill' }), typeOf);
+    const dcState = dc({ xAxisField: 'Data', drillMode: 'drill', currentDrillLevel: 1, drillPath: [2024] });
+    const state = getDrillState(dcState, levels);
+    expect(buildHoverFilters(state, levels, [1])).toEqual([
+      { field: 'Data', datePart: 'year', value: 2024 },
+      { field: 'Data', datePart: 'quarter', value: 1 },
+    ]);
+  });
+
+  it('"2024 Trim 1" no modo expand (rótulo concatenado): mesmo par ano+trimestre, sem ancestrais duplicados', () => {
+    const levels = resolveDrillLevels(dc({ xAxisField: 'Data', drillMode: 'drill' }), typeOf);
+    const dcState = dc({ xAxisField: 'Data', drillMode: 'expand', currentDrillLevel: 1, drillPath: [] });
+    const state = getDrillState(dcState, levels);
+    expect(buildHoverFilters(state, levels, [2024, 1])).toEqual([
+      { field: 'Data', datePart: 'year', value: 2024 },
+      { field: 'Data', datePart: 'quarter', value: 1 },
+    ]);
+  });
+
+  it('campo plano (sem hierarquia de data): filtra pelo campo do nível atual, sem datePart', () => {
+    const levels = resolveDrillLevels(dc({ xAxisField: 'Categoria', drillFields: ['Produto'] }), typeOf);
+    const state = getDrillState(dc({ xAxisField: 'Categoria', drillFields: ['Produto'], currentDrillLevel: 1, drillPath: ['B'] }), levels);
+    expect(buildHoverFilters(state, levels, ['b1'])).toEqual([
+      { field: 'Categoria', value: 'B' },
+      { field: 'Produto', value: 'b1' },
+    ]);
+  });
+
+  it('"próximo nível" ($all) no caminho acima não gera filtro para aquele ancestral', () => {
+    const levels = resolveDrillLevels(dc({ xAxisField: 'Data', drillMode: 'drill' }), typeOf);
+    const state = getDrillState(dc({ xAxisField: 'Data', drillMode: 'drill', currentDrillLevel: 1, drillPath: [DRILL_ALL] }), levels);
+    expect(buildHoverFilters(state, levels, [2])).toEqual([{ field: 'Data', datePart: 'quarter', value: 2 }]);
+  });
+});
+
+describe('buildPathFilters (seams F↔G): caminho completo da linha de uma matriz', () => {
+  it('matriz Regiao > Cidade > Loja: a linha "POA" (depth 1) filtra Regiao=Sul e Cidade=POA', () => {
+    const levels = [
+      { field: 'Regiao', caption: 'Regiao' },
+      { field: 'Cidade', caption: 'Cidade' },
+      { field: 'Loja', caption: 'Loja' },
+    ];
+    expect(buildPathFilters(levels, ['Sul', 'POA'])).toEqual([
+      { field: 'Regiao', value: 'Sul' },
+      { field: 'Cidade', value: 'POA' },
+    ]);
   });
 });
 
