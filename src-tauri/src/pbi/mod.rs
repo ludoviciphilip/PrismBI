@@ -113,6 +113,11 @@ pub struct PbiConditionalFormatMeta {
     pub data_bar_positive: Option<String>,
     #[serde(default)]
     pub data_bar_negative: Option<String>,
+    /// v0.10 Frente H: conjunto de ícones (`'arrows' | 'traffic' | 'flags'`)
+    /// quando `target == "icon"`, inferido do nome do ícone PBIR
+    /// (`icon.value.expr.Conditional`, ver `parse_pbir_icon_conditional`).
+    #[serde(default)]
+    pub icon_set: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +156,31 @@ pub struct PbiVisualMeta {
     /// v0.10 Frente B: formatação condicional (gradiente/regras/barras) lida de `objects`.
     #[serde(default)]
     pub conditional_formats: Vec<PbiConditionalFormatMeta>,
+    /// v0.10 Frente H (round-trip): segmentador modo 'between', lido de
+    /// `objects.general.properties.filter` (self-filter) quando é `Between`.
+    #[serde(default)]
+    pub slicer_between_start: Option<String>,
+    #[serde(default)]
+    pub slicer_between_end: Option<String>,
+    /// Segmentador 'relative-date', lido do mesmo self-filter quando é `DateSpan`.
+    #[serde(default)]
+    pub slicer_relative_anchor: Option<String>,
+    #[serde(default)]
+    pub slicer_relative_count: Option<f64>,
+    #[serde(default)]
+    pub slicer_relative_unit: Option<String>,
+    #[serde(default)]
+    pub slicer_relative_include_today: Option<bool>,
+    /// Caixa de busca do segmentador (`objects.searchBox[0].properties.show`).
+    #[serde(default)]
+    pub slicer_show_search: Option<bool>,
+    /// v0.10 Frente H: cor de fundo/borda do visual, lida de
+    /// `visualContainerObjects.background`/`border` (round-trip de
+    /// `VisualFormatConfig.backgroundColor`/`borderColor`).
+    #[serde(default)]
+    pub background_color: Option<String>,
+    #[serde(default)]
+    pub border_color: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -547,6 +577,15 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
                     sort_field: None,
                     sort_order: None,
                     conditional_formats: Vec::new(),
+                    slicer_between_start: None,
+                    slicer_between_end: None,
+                    slicer_relative_anchor: None,
+                    slicer_relative_count: None,
+                    slicer_relative_unit: None,
+                    slicer_relative_include_today: None,
+                    slicer_show_search: None,
+                    background_color: None,
+                    border_color: None,
                 });
             }
         }
