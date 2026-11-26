@@ -5,7 +5,7 @@
 # é antigo e deixa o canvas visivelmente mais lento em distros atuais.
 # Atualize pkgver/sha256sums com scripts/update-aur-pkgbuild.sh <versão>.
 pkgname=prismbi-bin
-pkgver=0.9.1
+pkgver=0.10.0
 pkgrel=1
 pkgdesc="Open-source Power BI alternative: native BI desktop app that opens .pbip/.pbix, with a Rust DAX engine, Power Query editor and DuckDB"
 arch=('x86_64')
@@ -18,7 +18,7 @@ options=('!strip' '!debug')
 _deb="PrismBI_${pkgver}_amd64.deb"
 source=("${_deb}::${url}/releases/download/v${pkgver}/${_deb}"
         "LICENSE.md::https://raw.githubusercontent.com/ludoviciphilip/PrismBI/v${pkgver}/LICENSE.md")
-sha256sums=('75a8d0afc458b07217007025420585d5530e5b1f3bf606da95e3ada302aeb2b9'
+sha256sums=('b1916b3e643f414bb53260dcd2b78e3d148236fb02f871d862263ac3d44791b5'
             'a1938d74a10b43dce8fbf024ae18a2c074b8fa734f58be74e91a49a5a6047758')
 noextract=("${_deb}")
 
