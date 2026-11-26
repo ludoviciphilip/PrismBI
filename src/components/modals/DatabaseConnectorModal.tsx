@@ -182,7 +182,8 @@ export const NativeDbConnectorPanel: React.FC<{ onImported?: () => void }> = ({ 
         <Database size={18} className="text-sky-600 dark:text-sky-400 mt-0.5 shrink-0" />
         <div className="text-xs text-sky-900 dark:text-sky-200">
           Conector nativo via DuckDB (ATTACH). Senhas nunca ficam em arquivos do projeto — são
-          guardadas no chaveiro nativo do Linux (Secret Service) e nunca retornam ao frontend.
+          guardadas no chaveiro nativo do sistema operacional (Secret Service no Linux,
+          Credential Manager no Windows) e nunca retornam ao frontend.
         </div>
       </div>
 

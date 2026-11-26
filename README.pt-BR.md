@@ -4,11 +4,11 @@
 
 # PrismBI
 
-**Business Intelligence nativo para Linux — leve, rápido e compatível com projetos Power BI (`.pbip` / `.pbix`)**
+**Business Intelligence nativo para Linux & Windows — leve, rápido e compatível com projetos Power BI (`.pbip` / `.pbix`)**
 
 🇺🇸 [Read in English](./README.md) • 🇧🇷 **Português (Brasil)**
 
-[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.9.0-f59e0b?style=flat-square)](./package.json)
+[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.9.1-f59e0b?style=flat-square)](./package.json)
 [![CI](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml)
 [![Release](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
@@ -22,7 +22,7 @@
 
 ---
 
-O **PrismBI** nasceu para resolver um dos maiores gargalos de quem usa Linux no dia a dia: analisar modelos semânticos, relatórios e dashboards com a mesma fluidez e familiaridade do **Power BI Desktop**, sem depender de máquinas virtuais Windows pesadas.
+O **PrismBI** nasceu para resolver um dos maiores gargalos de quem usa Power BI no Linux (e, desde a `v0.9.1`, também no Windows x64): analisar modelos semânticos, relatórios e dashboards com a mesma fluidez e familiaridade do **Power BI Desktop**, sem depender de máquinas virtuais pesadas nem de um tenant online.
 
 Construído com **Tauri v2 + Rust + DuckDB** no backend e **React + TypeScript + Apache ECharts** na interface, ele entrega inicialização rápida, baixo consumo de RAM e execução nativa em GTK/WebKitGTK.
 
@@ -69,15 +69,15 @@ Construído com **Tauri v2 + Rust + DuckDB** no backend e **React + TypeScript +
 ### 🗄️ Conectores Nativos de Banco de Dados (`v0.8.0`)
 - **PostgreSQL, MySQL/MariaDB, SQLite, arquivos `.duckdb` e Parquet particionado (local / HTTP / S3)** via extensões do DuckDB (`ATTACH … READ_ONLY`), sem gateway externo. PostgreSQL 16 e MariaDB 11 testados contra servidores reais no CI.
 - **Navegador de schemas e tabelas, pré-visualização e editor SQL** que roda dentro do banco conectado; tabelas carregadas de banco são recarregadas pelo **Atualizar Dados**.
-- **Credenciais no chaveiro do Linux** (Secret Service): nunca em arquivos `.insight`/`.pbip` nem no `localStorage` (a chave do Gemini também migra).
+- **Credenciais no chaveiro nativo do SO** (Secret Service no Linux, Credential Manager no Windows): nunca em arquivos `.insight`/`.pbip` nem no `localStorage` (a chave do Gemini também migra).
 
 ### 🔐 Segurança (`v0.8.0`)
 - **Atualizações assinadas:** o atualizador só instala pacotes cujo `SHA256SUMS.txt` tenha assinatura Ed25519 válida da chave embutida no app; downloads restritos às releases deste repositório. Instalações `.deb`/`.rpm` recebem o pacote certo; AUR/Flatpak são orientados ao gerenciador de pacotes.
 - **Content Security Policy** ativa no webview do Tauri.
 
-### 🛠️ Produtividade, Tela Inicial & Distribuição Linux
-- **Tela Inicial (`WelcomeScreen`) & Auto-Updater:** escolha começar um projeto em branco ou abrir `.pbip`, `.pbix`, `.insight` e sessões recentes ao iniciar, com **atualizador integrado no app** via GitHub Releases e validação SHA-256 (in-place para **AppImage** e download direto para `.deb`/`.rpm`).
-- **GitHub Actions CI/CD:** builds automáticas para Linux (**AppImage**, **`.deb`**, **`.rpm`**) além de manifestos em `packaging/` para **AUR (`prismbi-bin`)** e **Flatpak**.
+### 🛠️ Produtividade, Tela Inicial & Distribuição
+- **Tela Inicial (`WelcomeScreen`) & Auto-Updater:** escolha começar um projeto em branco ou abrir `.pbip`, `.pbix`, `.insight` e sessões recentes ao iniciar, com **atualizador integrado no app** via GitHub Releases e validação SHA-256 + assinatura Ed25519 (in-place para **AppImage**, download direto para `.deb`/`.rpm`, `msiexec /passive` para o **`.msi`** do Windows e download manual para o ZIP portátil do Windows).
+- **GitHub Actions CI/CD:** builds automáticas para Linux (**AppImage**, **`.deb`**, **`.rpm`**) e Windows x64 (**`.msi`** + **`.zip`** portátil), publicadas juntas sob um único `SHA256SUMS.txt` assinado, além de manifestos em `packaging/` para **AUR (`prismbi-bin`)** e **Flatpak**.
 - **Edição Profissional no Canvas:** **Undo / Redo** (`Ctrl+Z`, `Ctrl+Y` e botões na Ribbon), **seleção múltipla** (`Shift`/`Ctrl` + clique, arraste em grupo, nudge com setas, `Delete` e barra flutuante de alinhamento/distribuição) e **Smart Snap Guides** a 60fps.
 - **Visualização de Dados & Modelo:** inspeção tabular, gerenciador de relacionamentos com autodetecção e suporte a Tabelas Calendário.
 - **Medidas Rápidas & Biblioteca UDF:** assistente de medidas rápidas, ordenação de visuais ("Classificar por", cabeçalhos de tabela/matriz, segmentações) e editor DAX com IntelliSense.
@@ -90,7 +90,7 @@ Construído com **Tauri v2 + Rust + DuckDB** no backend e **React + TypeScript +
 
 | Camada | Tecnologia | Responsabilidade |
 | :--- | :--- | :--- |
-| **Desktop Shell** | Tauri v2 (GTK / WebKitGTK) | Janela nativa leve para Linux e diálogos de arquivos do sistema |
+| **Desktop Shell** | Tauri v2 (GTK/WebKitGTK no Linux, WebView2 no Windows) | Janela nativa leve e diálogos de arquivos do sistema |
 | **Core Backend** | Rust (`src-tauri/`) | Parsers `.pbip`/`.pbix`/TMDL/PBIR, carregador M e motor DAX nativo |
 | **Motor Colunar / SQL** | DuckDB (`bundled` + `parquet` + `json`) | Leitura nativa de `.xlsx`/`.csv`/`.parquet`/`.json`, armazenamento e SQL |
 | **Frontend & Canvas** | React 19 + TypeScript + Tailwind v4 + Zustand | Ribbon estilo Power BI, painéis de campos/filtros, canvas multi-página |
@@ -100,10 +100,25 @@ Construído com **Tauri v2 + Rust + DuckDB** no backend e **React + TypeScript +
 
 ## 🚀 Como Executar
 
-### Pré-requisitos (Linux)
+### Pacotes prontos
+Baixe o pacote mais recente direto das [GitHub Releases](https://github.com/ludoviciphilip/PrismBI/releases):
+- **Linux:** **AppImage**, **`.deb`** ou **`.rpm`**.
+- **Windows x64:** instalador **`.msi`** (recomendado — habilita o auto-updater integrado) ou **`.zip`** portátil (descompacte e rode `prismbi.exe`, sem instalação/privilégios de administrador; nesse caso as atualizações precisam ser baixadas manualmente).
+
+> **SmartScreen do Windows:** o binário ainda não é assinado digitalmente (ver [Lacunas Conhecidas](#lacunas-conhecidas) abaixo), então o Windows pode mostrar *"O Windows protegeu o computador"* na primeira execução; clique em **Mais informações → Executar assim mesmo**. Isso é esperado e não significa que o instalador seja inseguro — veja o `SHA256SUMS.txt` assinado publicado em cada release.
+
+### Compilando a partir do código-fonte
+
+#### Pré-requisitos (todas as plataformas)
 - **Node.js** + **pnpm**
 - **Rust** (`rustup` / `cargo`)
+
+#### Linux
 - Dependências de sistema do Tauri v2 (`webkit2gtk-4.1`, `libgtk-3-dev`, `librsvg2-dev`, etc. — consulte o [guia oficial do Tauri](https://v2.tauri.app/start/prerequisites/#linux)).
+
+#### Windows
+- **Microsoft Visual Studio C++ Build Tools** (workload "Desktop development with C++") e o **WebView2 Runtime** (já vem instalado no Windows 10/11 atuais; o instalador também embute um bootstrapper) — consulte o [guia oficial do Tauri](https://v2.tauri.app/start/prerequisites/#windows).
+- Para gerar o `.msi` você também precisa do **WiX Toolset** v3, que o `tauri-bundler` baixa automaticamente no primeiro `pnpm tauri build --bundles msi`.
 
 ### Desenvolvimento
 
@@ -112,10 +127,14 @@ pnpm install
 pnpm tauri dev
 ```
 
-### Build de Produção (AppImage / `.deb` / `.rpm` / binário)
+### Build de Produção
 
 ```bash
+# Linux: AppImage / .deb / .rpm / binário
 pnpm tauri build
+
+# Windows: instalador MSI
+pnpm tauri build --bundles msi
 ```
 
 ---
@@ -139,6 +158,11 @@ WEBKIT_DISABLE_DMABUF_RENDERER=1 pnpm tauri dev
 **AppImage e WebKitGTK do sistema:** o AppImage usa automaticamente o `webkit2gtk-4.1` do sistema quando ele é compatível (canvas bem mais fluido que o embutido, mais antigo). Para forçar o embutido: `PRISMBI_USE_BUNDLED_WEBKIT=1 ./PrismBI.AppImage`. No Arch, prefira o pacote AUR `prismbi-bin`, que sempre usa o WebKitGTK do sistema.
 
 ---
+
+## Lacunas Conhecidas
+
+- **Assinatura de código:** os binários Windows ainda não têm certificado EV/OV, então o SmartScreen avisa na primeira execução (ver acima). A segurança do updater em si (assinatura Ed25519 do `SHA256SUMS.txt`, verificação SHA-256, allowlist de URL) é independente disso e não é afetada.
+- Algumas coisas só uma pessoa com uma máquina Windows real pode validar: a experiência de instalação/upgrade do MSI, a fidelidade de renderização do WebView2, os diálogos nativos de arquivo e o prompt do Credential Manager do Windows no primeiro uso do chaveiro.
 
 ## 🗺️ Roadmap & Licença
 

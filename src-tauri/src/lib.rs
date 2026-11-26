@@ -7,7 +7,7 @@ pub mod updater;
 
 use connectors::{
     CredentialStore, ConnectionManager, ConnectorConfig, DbConnectionInfo, DbSchemaInfo,
-    DbTableInfo, LinuxKeyringStore, PreviewResult,
+    DbTableInfo, NativeKeyringStore, PreviewResult,
 };
 use connectors::manager::ImportSource;
 use dax::{build_filter_context, DaxModel, DaxModelSyncPayload, NativeFilterInput};
@@ -295,6 +295,7 @@ fn check_for_updates(
 
 #[tauri::command]
 fn download_and_install_update(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<updater::UpdateInstallResult, String> {
     let pending = state
@@ -305,7 +306,18 @@ fn download_and_install_update(
         .ok_or_else(|| {
             "Nenhuma atualização verificada pendente. Verifique atualizações novamente.".to_string()
         })?;
-    updater::download_and_install_update(&pending)
+    let result = updater::download_and_install_update(&pending)?;
+    // No Windows, o `.msi` precisa que o app saia para o instalador
+    // substituir os arquivos em uso; dá tempo do frontend mostrar a
+    // mensagem antes de fechar.
+    if cfg!(windows) && result.installed && result.needs_restart {
+        let handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            handle.exit(0);
+        });
+    }
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------
@@ -475,7 +487,7 @@ pub fn run() {
             dax_model: Mutex::new(DaxModel::new()),
             pending_update: Mutex::new(None),
             connections: ConnectionManager::new(),
-            credentials: Box::new(LinuxKeyringStore::new()),
+            credentials: Box::new(NativeKeyringStore::new()),
         })
         .invoke_handler(tauri::generate_handler![
             get_engine_info,

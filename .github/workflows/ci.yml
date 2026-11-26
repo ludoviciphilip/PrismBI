@@ -81,3 +81,27 @@ jobs:
       - name: Verify Tauri binary compilation
         working-directory: src-tauri
         run: cargo check --bins
+
+  windows:
+    name: Backend Rust + Build (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Run Rust unit + DAX conformance tests
+        working-directory: src-tauri
+        run: cargo test --lib --test dax_corpus
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build Tauri release binary + MSI bundle
+        run: pnpm tauri build --bundles msi

@@ -319,11 +319,29 @@ fn datetime_functions_round2() {
 }
 
 #[test]
-fn datetime_localnow_executes_without_failing() {
+fn datetime_localnow_is_local_and_needs_no_duckdb_extension() {
     let db = DuckDbStore::new_in_memory().unwrap();
-    let q = query(text_source(&["x"], &[&[Some("1")]]), vec![custom("now", "DateTime.LocalNow()")]);
+    // Sem ICU: com autoload desligado, current_timestamp -> DATE falharia.
+    db.connection()
+        .lock()
+        .unwrap()
+        .execute_batch("SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;")
+        .unwrap();
+    let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let q = query(
+        text_source(&["x"], &[&[Some("1")]]),
+        vec![
+            custom("hoje", "DateTime.Date(DateTime.LocalNow())"),
+            custom("ano", "Date.IsInCurrentYear(DateTime.Date(DateTime.LocalNow()))"),
+        ],
+    );
     let p = preview(&db, &q, None);
     assert!(p.res.failed_step.is_none(), "{:?}", p.res.failed_step);
+    let hoje = p.rows[0][p.cols.iter().position(|c| c == "hoje").unwrap()].clone();
+    // Perto da meia-noite o relógio pode virar entre as duas leituras.
+    let after = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+    assert!(hoje == json!(today) || hoje == json!(after), "{hoje} vs {today}");
+    assert_eq!(p.rows[0][p.cols.iter().position(|c| c == "ano").unwrap()], json!(true));
 }
 
 #[test]
