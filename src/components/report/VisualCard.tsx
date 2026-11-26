@@ -39,6 +39,8 @@ import {
   patchForOrder,
   patchForHeaderClick,
 } from './visualSortOptions';
+import { getFieldFormat, cellStyleFromFormat, buildBarSeriesData, resolverFromRows, resolverFromSeries, activeFormats } from './conditionalFormat/apply';
+import { FormattedCell } from './conditionalFormat/FormattedCell';
 
 export interface SnapGuide {
   orientation: 'v' | 'h';
@@ -629,7 +631,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             name: s.name,
             type: 'bar',
             stack: visual.type === 'stacked-column' ? 'total' : undefined,
-            data: s.data,
+            data: buildBarSeriesData(activeFormats(visual), s.name, s.data),
             itemStyle: { borderRadius: [4, 4, 0, 0] },
             label: {
               show: visual.formatConfig.showDataLabels ?? false,
@@ -687,7 +689,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             name: s.name,
             type: 'bar',
             stack: visual.type === 'stacked-bar' ? 'total' : undefined,
-            data: s.data,
+            data: buildBarSeriesData(activeFormats(visual), s.name, s.data),
             itemStyle: { borderRadius: [0, 4, 4, 0] },
             label: {
               show: visual.formatConfig.showDataLabels ?? false,
@@ -1539,9 +1541,14 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                 : 'text-slate-800 dark:text-slate-100'
               : 'text-slate-800 dark:text-slate-100';
 
+            const cardCondFormat = isValBlank ? {} : getFieldFormat(activeFormats(visual), yField, val, [val]);
+
             return (
               <div className="flex flex-col items-center justify-center h-full text-center p-2">
-                <span className={`text-3xl font-extrabold tracking-tight ${signColorClass}`}>
+                <span
+                  className={`text-3xl font-extrabold tracking-tight ${cardCondFormat.color ? '' : signColorClass}`}
+                  style={cellStyleFromFormat(cardCondFormat)}
+                >
                   {displayText}
                 </span>
                 <span className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-1">
@@ -1562,6 +1569,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               >
                 {queryResult.categories.map((label, idx) => {
                   const rawVal = Number(queryResult.series[0]?.data[idx] ?? 0) || 0;
+                  const multiCardFormat = getFieldFormat(activeFormats(visual), label, rawVal, [rawVal]);
                   const targetMeasure = measures.find(m => m.name.toLowerCase() === label.toLowerCase());
                   const isPct = targetMeasure?.format === 'percentage' || label.includes('%');
                   const isCurr = targetMeasure?.format === 'currency' || isCurrencyField(label);
@@ -1591,11 +1599,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                     <div
                       key={label}
                       className="p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/50 flex flex-col justify-center min-w-0"
+                      style={multiCardFormat.background ? { backgroundColor: multiCardFormat.background } : undefined}
                     >
                       <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 truncate" title={label}>
                         {label}
                       </span>
-                      <span className={`text-lg font-extrabold mt-0.5 truncate ${signColorClass}`}>
+                      <span
+                        className={`text-lg font-extrabold mt-0.5 truncate ${multiCardFormat.color ? '' : signColorClass}`}
+                        style={multiCardFormat.color ? { color: multiCardFormat.color } : undefined}
+                      >
                         {formatted}
                       </span>
                     </div>
@@ -1830,14 +1842,19 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                 <span>{cat}</span>
                               </div>
                             </td>
-                            {series.map(s => (
-                              <td
-                                key={s.name}
-                                className="px-2.5 py-1 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap"
-                              >
-                                {fmtCell(Number(s.data[rIdx]) || 0, s.name)}
-                              </td>
-                            ))}
+                            {series.map(s => {
+                              const cellVal = Number(s.data[rIdx]) || 0;
+                              const cellFormat = getFieldFormat(activeFormats(visual), s.name, cellVal, s.data, resolverFromSeries(series, rIdx));
+                              return (
+                                <FormattedCell
+                                  key={s.name}
+                                  format={cellFormat}
+                                  className="px-2.5 py-1 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap"
+                                >
+                                  {fmtCell(cellVal, s.name)}
+                                </FormattedCell>
+                              );
+                            })}
                             {series.length > 1 && (
                               <td className="px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap">
                                 {fmtCell(rowTotals[rIdx])}
@@ -1925,26 +1942,33 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                 {queryResult.rawRows.slice(0, 20).map((row, i) => {
                   const firstCol = Object.keys(row)[0] || 'Categoria';
                   const firstVal = row[firstCol];
+                  const tableFormats = activeFormats(visual);
                   return (
                     <tr key={i} className="hover:bg-amber-50/50 dark:hover:bg-slate-800/60 group/row">
-                      {Object.keys(row).slice(0, 6).map(col => (
-                        <td
-                          key={col}
-                          onClick={() => {
-                            const val = row[col];
-                            if (val !== undefined && val !== null) {
-                              setCrossFilter(visual.dataConfig.tableId, col, val);
-                              setDrillPop({ field: col, value: val });
-                            }
-                          }}
-                          className="px-2 py-1 text-slate-600 dark:text-slate-300 truncate max-w-[120px] cursor-pointer hover:text-amber-800 dark:hover:text-amber-400 hover:font-semibold"
-                          title={`Filtrar ou detalhar por ${col}: ${row[col]}`}
-                        >
-                          {typeof row[col] === 'number' && isCurrencyField(col)
-                            ? formatCurrency(row[col])
-                            : String(row[col] ?? '')}
-                        </td>
-                      ))}
+                      {Object.keys(row).slice(0, 6).map(col => {
+                        const colVal = row[col];
+                        const colVisible = queryResult.rawRows.map(r => Number(r[col])).filter(n => Number.isFinite(n));
+                        const cellFormat = getFieldFormat(tableFormats, col, colVal, colVisible, resolverFromRows(queryResult.rawRows, row));
+                        return (
+                          <FormattedCell
+                            key={col}
+                            format={cellFormat}
+                            onClick={() => {
+                              const val = row[col];
+                              if (val !== undefined && val !== null) {
+                                setCrossFilter(visual.dataConfig.tableId, col, val);
+                                setDrillPop({ field: col, value: val });
+                              }
+                            }}
+                            className="px-2 py-1 text-slate-600 dark:text-slate-300 truncate max-w-[120px] cursor-pointer hover:text-amber-800 dark:hover:text-amber-400 hover:font-semibold"
+                            title={`Filtrar ou detalhar por ${col}: ${row[col]}`}
+                          >
+                            {typeof row[col] === 'number' && isCurrencyField(col)
+                              ? formatCurrency(row[col])
+                              : String(row[col] ?? '')}
+                          </FormattedCell>
+                        );
+                      })}
                       <td className="px-1 py-0.5 text-center">
                         <button
                           onClick={(e) => {
