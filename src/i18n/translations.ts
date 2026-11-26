@@ -91,6 +91,8 @@ export const translations: Record<SupportedLanguage, Translations> = {
       limitations: 'Avisos e Limitações do Sistema',
     },
     panes: {
+      collapse: 'Recolher painel',
+      expand: 'Expandir painel',
       filters: {
         title: 'Filtros',
         onThisPage: 'Filtros nesta página',
@@ -254,6 +256,8 @@ export const translations: Record<SupportedLanguage, Translations> = {
       limitations: 'System Limitations & Notes',
     },
     panes: {
+      collapse: 'Collapse pane',
+      expand: 'Expand pane',
       filters: {
         title: 'Filters',
         onThisPage: 'Filters on this page',
@@ -417,6 +421,8 @@ export const translations: Record<SupportedLanguage, Translations> = {
       limitations: 'Avisos y Limitaciones del Sistema',
     },
     panes: {
+      collapse: 'Contraer panel',
+      expand: 'Expandir panel',
       filters: {
         title: 'Filtros',
         onThisPage: 'Filtros en esta página',

@@ -5,6 +5,8 @@ import { useBiStore } from '../../store/useBiStore';
 import { Filter, Table } from '../../types/bi';
 import { useTranslation } from '../../i18n';
 import { buildSortByLookup, sortValueList, ValueListSortMode } from '../../engine/visualSort';
+import { useUiPrefs } from '../../store/useUiPrefs';
+import { CollapsedPaneStrip, PaneCollapseButton } from './PaneCollapseShell';
 
 const MAX_LIST_VALUES = 200;
 
@@ -133,6 +135,21 @@ export const FiltersPane: React.FC = React.memo(() => {
   const [selectedColumn, setSelectedColumn] = useState('');
   const [operator, setOperator] = useState<Filter['operator']>('equals');
   const [filterVal, setFilterVal] = useState('');
+  const paneState = useUiPrefs(s => s.panes.filters);
+  const togglePaneCollapsed = useUiPrefs(s => s.togglePaneCollapsed);
+
+  if (paneState === 'collapsed') {
+    return (
+      <CollapsedPaneStrip
+        icon={FilterIcon}
+        iconClassName="w-4 h-4 text-amber-500"
+        title={t.panes.filters.title}
+        expandLabel={t.panes.expand}
+        onExpand={() => togglePaneCollapsed('filters')}
+        testId="filters-pane-collapsed"
+      />
+    );
+  }
 
   const currentTable = tables.find(t => t.id === selectedTableId || t.name === selectedTableId) || tables[0];
   const columns = currentTable?.columns || [];
@@ -178,6 +195,11 @@ export const FiltersPane: React.FC = React.memo(() => {
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
+          <PaneCollapseButton
+            collapseLabel={t.panes.collapse}
+            onCollapse={() => togglePaneCollapsed('filters')}
+            testId="filters-pane-collapse"
+          />
         </div>
       </div>
 

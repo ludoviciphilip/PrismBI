@@ -24,6 +24,8 @@ import { VisualType, Visual } from '../../types/bi';
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { useTranslation } from '../../i18n';
+import { useUiPrefs } from '../../store/useUiPrefs';
+import { CollapsedPaneStrip, PaneCollapseButton } from './PaneCollapseShell';
 
 const visualTypes: { type: VisualType; label: string; icon: any }[] = [
   { type: 'column', label: 'Colunas', icon: BarChart },
@@ -49,6 +51,8 @@ const visualTypes: { type: VisualType; label: string; icon: any }[] = [
 
 export const VisualizationsPane: React.FC = React.memo(() => {
   const { t } = useTranslation();
+  const paneState = useUiPrefs(s => s.panes.visualizations);
+  const togglePaneCollapsed = useUiPrefs(s => s.togglePaneCollapsed);
   const { pages, activePageId, selectedVisualId, updateVisual, tables, measures, relationships } = useBiStore(useShallow(s => ({
     pages: s.pages,
     activePageId: s.activePageId,
@@ -208,11 +212,29 @@ export const VisualizationsPane: React.FC = React.memo(() => {
     }
   }, [selectedVisual?.type]);
 
+  if (paneState === 'collapsed') {
+    return (
+      <CollapsedPaneStrip
+        icon={Layers}
+        iconClassName="w-4 h-4 text-slate-500 dark:text-slate-400"
+        title={t.panes.visualizations.title}
+        expandLabel={t.panes.expand}
+        onExpand={() => togglePaneCollapsed('visualizations')}
+        testId="visualizations-pane-collapsed"
+      />
+    );
+  }
+
   if (!selectedVisual) {
     return (
       <div className="w-64 border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col h-full text-xs text-slate-700 dark:text-slate-300">
         <div className="p-3 border-b border-slate-200 dark:border-slate-800 font-semibold text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-900/60 flex items-center justify-between">
           <span>{t.panes.visualizations.title}</span>
+          <PaneCollapseButton
+            collapseLabel={t.panes.collapse}
+            onCollapse={() => togglePaneCollapsed('visualizations')}
+            testId="visualizations-pane-collapse"
+          />
         </div>
         <div className="p-3 grid grid-cols-4 gap-1.5 border-b border-slate-200 dark:border-slate-800">
           {visualTypes.map(v => {
@@ -260,6 +282,11 @@ export const VisualizationsPane: React.FC = React.memo(() => {
             {t.panes.visualizations.formatVisual}
           </button>
         </div>
+        <PaneCollapseButton
+          collapseLabel={t.panes.collapse}
+          onCollapse={() => togglePaneCollapsed('visualizations')}
+          testId="visualizations-pane-collapse"
+        />
       </div>
 
       {/* Visual Type Picker Grid */}

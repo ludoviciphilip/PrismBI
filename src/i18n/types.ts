@@ -92,6 +92,8 @@ export interface Translations {
     limitations: string;
   };
   panes: {
+    collapse: string;
+    expand: string;
     filters: {
       title: string;
       onThisPage: string;
