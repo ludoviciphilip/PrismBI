@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PrismBI — Open-source Power BI alternative for Linux &amp; Windows</title>
+<meta name="description" content="PrismBI is a free, open-source Business Intelligence desktop app for Linux and Windows. Opens Power BI .pbip/.pbix projects, with a native Rust DAX engine, embedded DuckDB, and a visual Power Query editor." />
+<link rel="canonical" href="https://ludoviciphilip.github.io/PrismBI/" />
+<link rel="alternate" hreflang="en" href="https://ludoviciphilip.github.io/PrismBI/" />
+<link rel="alternate" hreflang="pt-BR" href="https://ludoviciphilip.github.io/PrismBI/pt-br/" />
+<link rel="alternate" hreflang="x-default" href="https://ludoviciphilip.github.io/PrismBI/" />
+
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png" />
+<link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png" />
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
+
+<meta property="og:type" content="website" />
+<meta property="og:title" content="PrismBI — Open-source Power BI alternative for Linux & Windows" />
+<meta property="og:description" content="Free, open-source BI desktop app that opens Power BI .pbip/.pbix projects — native Rust DAX engine, embedded DuckDB, visual Power Query editor." />
+<meta property="og:url" content="https://ludoviciphilip.github.io/PrismBI/" />
+<meta property="og:image" content="https://ludoviciphilip.github.io/PrismBI/assets/social-preview.png" />
+<meta property="og:image:width" content="1280" />
+<meta property="og:image:height" content="640" />
+<meta property="og:locale" content="en_US" />
+<meta property="og:locale:alternate" content="pt_BR" />
+
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="PrismBI — Open-source Power BI alternative for Linux & Windows" />
+<meta name="twitter:description" content="Free, open-source BI desktop app that opens Power BI .pbip/.pbix projects — native Rust DAX engine, embedded DuckDB, visual Power Query editor." />
+<meta name="twitter:image" content="https://ludoviciphilip.github.io/PrismBI/assets/social-preview.png" />
+
+<link rel="stylesheet" href="styles.css" />
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "PrismBI",
+  "description": "Open-source Business Intelligence desktop application for Linux and Windows. Opens Power BI .pbip/.pbix projects with a native Rust DAX engine, embedded DuckDB, and a visual Power Query editor.",
+  "url": "https://ludoviciphilip.github.io/PrismBI/",
+  "operatingSystem": "Linux, Windows",
+  "applicationCategory": "BusinessApplication",
+  "softwareVersion": "0.9.1",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "downloadUrl": "https://github.com/ludoviciphilip/PrismBI/releases/latest",
+  "license": "https://github.com/ludoviciphilip/PrismBI/blob/main/LICENSE.md",
+  "codeRepository": "https://github.com/ludoviciphilip/PrismBI"
+}
+</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap nav">
+    <a class="brand" href="#main">
+      <img src="assets/favicon-32.png" alt="" width="28" height="28" />
+      PrismBI
+    </a>
+    <nav class="primary" aria-label="Primary">
+      <ul>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#screenshots">Screenshots</a></li>
+        <li><a href="#download">Download</a></li>
+        <li><a href="#faq">FAQ</a></li>
+        <li><a href="https://github.com/ludoviciphilip/PrismBI">GitHub</a></li>
+      </ul>
+    </nav>
+    <div class="lang-toggle">
+      <span class="current" aria-current="true">EN</span>
+      <a href="pt-br/" lang="pt-BR" hreflang="pt-BR">PT-BR</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero">
+    <div class="wrap">
+      <h1>Open-source Power BI alternative for Linux &amp; Windows</h1>
+      <p class="lead">
+        PrismBI is a free, native desktop BI app. It opens your Power BI
+        <code>.pbip</code> / <code>.pbix</code> projects and runs them on a
+        Rust DAX engine with embedded DuckDB — no Windows VM, no cloud tenant.
+      </p>
+      <div class="badges">
+        <img src="https://img.shields.io/badge/version-0.9.1-f59e0b?style=flat-square" alt="Version 0.9.1" />
+        <img src="https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square" alt="Tauri v2" />
+        <img src="https://img.shields.io/badge/Rust-DAX_Engine-000000?style=flat-square" alt="Rust DAX engine" />
+        <img src="https://img.shields.io/badge/DuckDB-Embedded-FFF000?style=flat-square" alt="DuckDB embedded" />
+        <img src="https://img.shields.io/badge/License-Mutualist_v1.3-10b981?style=flat-square" alt="Mutualist License v1.3" />
+      </div>
+      <div class="cta-row">
+        <a class="btn primary" href="https://github.com/ludoviciphilip/PrismBI/releases/latest">Download latest release</a>
+        <a class="btn" href="https://github.com/ludoviciphilip/PrismBI">View on GitHub</a>
+      </div>
+      <p class="cta-note">Free and open source. AppImage / .deb / .rpm / AUR for Linux, MSI / portable ZIP for Windows x64.</p>
+    </div>
+  </section>
+
+  <section id="screenshots" class="alt">
+    <div class="wrap">
+      <h2>See it in action</h2>
+      <p class="section-sub">Real screenshots from the app — report canvas, semantic model view, and the DAX query console.</p>
+      <div class="shots">
+        <figure>
+          <img src="assets/report-dark.png" alt="PrismBI report view in dark mode, showing cards, a bar chart and a matrix" loading="lazy" width="1024" height="640" />
+          <figcaption>Report view — Dark mode</figcaption>
+        </figure>
+        <figure>
+          <img src="assets/report-light.png" alt="PrismBI report view in light mode with the same report layout" loading="lazy" width="1024" height="640" />
+          <figcaption>Report view — Light mode</figcaption>
+        </figure>
+        <figure>
+          <img src="assets/model-view.png" alt="PrismBI semantic model view showing a star schema with table relationships" loading="lazy" width="1024" height="640" />
+          <figcaption>Semantic model &amp; relationships</figcaption>
+        </figure>
+        <figure>
+          <img src="assets/dax-query.png" alt="PrismBI DAX query console with a DAX query and its result table" loading="lazy" width="1024" height="640" />
+          <figcaption>DAX query studio</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>Features</h2>
+      <p class="section-sub">Taken straight from the project README — nothing here is unverified.</p>
+      <div class="features">
+        <div class="feature">
+          <h3>Opens .pbip and .pbix</h3>
+          <p>Native Rust import of <code>.pbip</code> folders (TMDL semantic model + PBIR report) and <code>.pbix</code> files, including <code>DataModelSchema</code> and the Power Query (<code>M</code>) mashup.</p>
+        </div>
+        <div class="feature">
+          <h3>Native Rust DAX engine</h3>
+          <p>A typed Rust engine with 165+ DAX functions, measured at 364/368 (98.9%) conformance on an independently verified corpus checked on every CI build.</p>
+        </div>
+        <div class="feature">
+          <h3>Embedded DuckDB</h3>
+          <p>Fast native ingestion of Excel, CSV, Parquet, JSON and REST API sources, plus PostgreSQL, MySQL/MariaDB, SQLite and partitioned Parquet connectors — no external gateway.</p>
+        </div>
+        <div class="feature">
+          <h3>Visual Power Query editor</h3>
+          <p>A Power BI-style Queries pane with ~80 operations, editable applied steps, a formula bar and an Advanced Editor. M is genuinely parsed and generated, round-tripping on <code>.pbip</code> import/export.</p>
+        </div>
+        <div class="feature">
+          <h3>Interactive visuals</h3>
+          <p>Cards/KPIs, column/bar/line/area/combo/treemap/scatter/gauge charts (Apache ECharts), pie/donut, Power BI-style funnel &amp; waterfall, matrices, tables and slicers.</p>
+        </div>
+        <div class="feature">
+          <h3>Signed auto-updates</h3>
+          <p>The in-app updater only installs packages whose <code>SHA256SUMS.txt</code> carries a valid Ed25519 signature, with download URLs restricted to this repository's releases.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="download" class="alt">
+    <div class="wrap">
+      <h2>Download</h2>
+      <p class="section-sub">Pre-built packages for Linux and Windows x64. All assets are published together with a signed <code>SHA256SUMS.txt</code>.</p>
+      <div class="downloads">
+        <div class="dl-card">
+          <h3>Linux</h3>
+          <p>AppImage, .deb, .rpm</p>
+          <a class="btn primary" href="https://github.com/ludoviciphilip/PrismBI/releases/latest">Get the latest release</a>
+        </div>
+        <div class="dl-card">
+          <h3>Arch Linux (AUR)</h3>
+          <p><code>prismbi-bin</code> package, uses system WebKitGTK</p>
+          <a class="btn" href="https://aur.archlinux.org/packages/prismbi-bin">View on AUR</a>
+        </div>
+        <div class="dl-card">
+          <h3>Windows x64</h3>
+          <p>MSI installer (auto-updates) or portable ZIP</p>
+          <a class="btn primary" href="https://github.com/ludoviciphilip/PrismBI/releases/latest">Get the latest release</a>
+        </div>
+      </div>
+      <p class="section-sub" style="margin-bottom:10px;">Install from the AUR with your favorite helper:</p>
+      <div class="code-block"><code>yay -S prismbi-bin
+# or
+paru -S prismbi-bin</code></div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="wrap">
+      <h2>Frequently asked questions</h2>
+      <div class="faq">
+        <details>
+          <summary>Does PrismBI open .pbix files?</summary>
+          <p>Yes. PrismBI natively reads <code>.pbix</code> files (the <code>DataModelSchema</code>, UTF-16LE <code>Report/Layout</code>, and multi-query <code>DataMashup</code>) as well as <code>.pbip</code> folders (TMDL semantic model + PBIR report), with round-trip export preserving Power Query (M) scripts and most visual/theme settings. See the <a href="https://github.com/ludoviciphilip/PrismBI/blob/main/docs/COMPATIBILITY.md">Compatibility Matrix</a> for exact coverage.</p>
+        </details>
+        <details>
+          <summary>Is PrismBI affiliated with Microsoft or Power BI?</summary>
+          <p>No. PrismBI is an independent, community project and is not affiliated with, endorsed by, or sponsored by Microsoft Corporation. Power BI is a trademark of Microsoft Corporation, used here only to describe file-format compatibility.</p>
+        </details>
+        <details>
+          <summary>Does it work offline, without a Microsoft account or tenant?</summary>
+          <p>Yes. PrismBI is a native desktop app (Tauri v2 + Rust + DuckDB). It reads local files and connects directly to databases you configure — it does not require a Microsoft 365 tenant, an online workspace, or an internet connection to open and analyze a model.</p>
+        </details>
+        <details>
+          <summary>Is PrismBI free?</summary>
+          <p>Yes. PrismBI is free and open source, distributed under <a href="https://github.com/ludoviciphilip/PrismBI/blob/main/LICENSE.md">The Mutualist License v1.3</a>. The source code is public on <a href="https://github.com/ludoviciphilip/PrismBI">GitHub</a>.</p>
+        </details>
+        <details>
+          <summary>What platforms are supported?</summary>
+          <p>Linux (AppImage, .deb, .rpm, and an AUR package for Arch) and Windows x64 (MSI installer or a portable ZIP), as of v0.9.1.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="disclaimer">
+    <p>PrismBI is an independent project, not affiliated with or endorsed by Microsoft. Power BI is a trademark of Microsoft Corporation. "PrismBI" and its logo are used here to identify this open-source project only.</p>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p>
+      <a href="https://github.com/ludoviciphilip/PrismBI">github.com/ludoviciphilip/PrismBI</a> ·
+      <a href="https://github.com/ludoviciphilip/PrismBI/blob/main/LICENSE.md">Mutualist License v1.3</a> ·
+      <a href="https://github.com/ludoviciphilip/PrismBI/issues">Issues</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://ludoviciphilip.github.io/PrismBI/sitemap.xml
