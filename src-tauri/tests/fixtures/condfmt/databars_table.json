@@ -1,0 +1,25 @@
+{
+  "name": "vis_table_databars",
+  "position": { "x": 10, "y": 10, "width": 500, "height": 300 },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": { "projections": [{ "queryRef": "f_Vendas.Saldo" }] }
+      }
+    },
+    "objects": {
+      "values": [
+        {
+          "properties": {
+            "dataBars": {
+              "positiveColor": { "solid": { "color": { "expr": { "Literal": { "Value": "'#3B82F6'" } } } } },
+              "negativeColor": { "solid": { "color": { "expr": { "Literal": { "Value": "'#EF4444'" } } } } }
+            }
+          },
+          "selector": { "metadata": "f_Vendas.Saldo" }
+        }
+      ]
+    }
+  }
+}

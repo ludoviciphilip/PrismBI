@@ -1,7 +1,8 @@
 use crate::engine::DuckDbStore;
 use crate::pbi::{
     m_loader, map_pbi_visual_type, parse_legacy_report_json, parse_tmsl_model_json, split_query_ref,
-    tmdl, PbiFilterMeta, PbiPageMeta, PbiPowerQueryScript, PbiProjectSummary, PbiVisualMeta,
+    tmdl, PbiCondFormatRuleMeta, PbiCondFormatStopMeta, PbiConditionalFormatMeta, PbiFilterMeta,
+    PbiPageMeta, PbiPowerQueryScript, PbiProjectSummary, PbiVisualMeta,
 };
 use serde_json::Value as JsonValue;
 use std::fs;
@@ -417,6 +418,7 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
     let filters = extract_pbir_filters(vj);
     let (sort_field, sort_order) =
         extract_pbir_sort_definition(visual_obj, category_field.as_deref(), &value_fields);
+    let conditional_formats = extract_pbir_conditional_formats(visual_obj, category_field.as_deref(), &value_fields);
 
     let id = vj
         .get("name")
@@ -464,6 +466,7 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
         filters,
         sort_field,
         sort_order,
+        conditional_formats,
     })
 }
 
@@ -539,6 +542,239 @@ fn extract_pbir_visual_title(visual_obj: &JsonValue) -> Option<String> {
         }
     }
     None
+}
+
+/// Formatação condicional (v0.10 Frente B): lê `objects.values` (card de
+/// formatação por coluna de tabela/matriz) e `objects.dataPoint` (gráficos),
+/// mapeando `backColor`/`fontColor` com `FillRule` (`linearGradient2`/`3`)
+/// ou `Conditional` (regras, primeira que casa vence) e `dataBars`. Formatos
+/// não reconhecidos (ex.: medida-como-cor, ícones por `Conditional` em
+/// `icon.value`) são ignorados com segurança — ver relatório da Frente B.
+fn extract_pbir_conditional_formats(
+    visual_obj: &JsonValue,
+    category_field: Option<&str>,
+    value_fields: &[String],
+) -> Vec<PbiConditionalFormatMeta> {
+    let mut out = Vec::new();
+    let objects = match visual_obj.get("objects").and_then(|o| o.as_object()) {
+        Some(o) => o,
+        None => return out,
+    };
+
+    let default_field = value_fields
+        .first()
+        .cloned()
+        .or_else(|| category_field.map(str::to_string));
+
+    for card_name in ["values", "dataPoint"] {
+        let Some(entries) = objects.get(card_name).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for entry in entries {
+            let apply_to = entry
+                .get("selector")
+                .and_then(|s| s.get("metadata"))
+                .and_then(|m| m.as_str())
+                .map(|m| normalize_pbir_query_ref(m).1)
+                .or_else(|| default_field.clone());
+            let Some(apply_to) = apply_to else { continue };
+            let Some(props) = entry.get("properties").and_then(|p| p.as_object()) else {
+                continue;
+            };
+
+            if let Some(color_prop) = props.get("backColor") {
+                if let Some(cf) = parse_pbir_color_property(color_prop, "background", &apply_to) {
+                    out.push(cf);
+                }
+            }
+            if let Some(color_prop) = props.get("fontColor") {
+                if let Some(cf) = parse_pbir_color_property(color_prop, "fontColor", &apply_to) {
+                    out.push(cf);
+                }
+            }
+            if let Some(data_bars) = props.get("dataBars") {
+                if let Some(cf) = parse_pbir_data_bars(data_bars, &apply_to) {
+                    out.push(cf);
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// Lê o literal de cor de um nó PBIR (`solid.color.expr.Literal.Value`),
+/// devolvendo o hex sem aspas (ex.: `"'#FF0000'"` -> `"#FF0000"`).
+fn extract_pbir_solid_color_literal(node: &JsonValue) -> Option<String> {
+    let raw = node
+        .get("solid")
+        .and_then(|s| s.get("color"))
+        .and_then(|c| c.get("expr"))
+        .and_then(|e| e.get("Literal"))
+        .and_then(|l| l.get("Value"))
+        .and_then(|v| v.as_str())?;
+    let clean = strip_pbir_literal(raw);
+    if clean.is_empty() {
+        None
+    } else {
+        Some(clean)
+    }
+}
+
+fn extract_pbir_number_literal(node: &JsonValue) -> Option<f64> {
+    let raw = node.get("Literal").and_then(|l| l.get("Value")).and_then(|v| v.as_str())?;
+    strip_pbir_literal(raw).parse::<f64>().ok()
+}
+
+/// `backColor`/`fontColor` pode ser cor fixa (não é condicional — ignorado),
+/// `FillRule` (gradiente) ou `Conditional` (regras).
+fn parse_pbir_color_property(node: &JsonValue, target: &str, apply_to: &str) -> Option<PbiConditionalFormatMeta> {
+    let expr = node.get("solid").and_then(|s| s.get("color")).and_then(|c| c.get("expr"))?;
+
+    if let Some(fill_rule) = expr.get("FillRule") {
+        return parse_pbir_fill_rule(fill_rule, target, apply_to);
+    }
+    if let Some(conditional) = expr.get("Conditional") {
+        return parse_pbir_conditional_cases(conditional, target, apply_to);
+    }
+    // Literal simples (cor fixa, sem variação por valor): não é formatação
+    // condicional, então é ignorado aqui com segurança.
+    None
+}
+
+fn parse_pbir_stop(node: &JsonValue) -> Option<PbiCondFormatStopMeta> {
+    let color = node
+        .get("color")
+        .and_then(|c| c.get("expr"))
+        .and_then(|e| e.get("Literal"))
+        .and_then(|l| l.get("Value"))
+        .and_then(|v| v.as_str())
+        .map(strip_pbir_literal)?;
+    let value = node.get("value").and_then(extract_pbir_number_literal);
+    let kind = if value.is_some() { "number".to_string() } else { "lowest".to_string() };
+    Some(PbiCondFormatStopMeta { kind, value, color })
+}
+
+fn parse_pbir_fill_rule(fill_rule: &JsonValue, target: &str, apply_to: &str) -> Option<PbiConditionalFormatMeta> {
+    if let Some(g2) = fill_rule.get("linearGradient2") {
+        let mut min = parse_pbir_stop(g2.get("min")?)?;
+        let mut max = parse_pbir_stop(g2.get("max")?)?;
+        if min.value.is_none() {
+            min.kind = "lowest".to_string();
+        }
+        if max.value.is_none() {
+            max.kind = "highest".to_string();
+        }
+        return Some(PbiConditionalFormatMeta {
+            target: target.to_string(),
+            apply_to: apply_to.to_string(),
+            mode: "gradient".to_string(),
+            rules: Vec::new(),
+            gradient_min: Some(min),
+            gradient_mid: None,
+            gradient_max: Some(max),
+            data_bar_positive: None,
+            data_bar_negative: None,
+        });
+    }
+    if let Some(g3) = fill_rule.get("linearGradient3") {
+        let mut min = parse_pbir_stop(g3.get("min")?)?;
+        let mid = parse_pbir_stop(g3.get("mid")?)?;
+        let mut max = parse_pbir_stop(g3.get("max")?)?;
+        if min.value.is_none() {
+            min.kind = "lowest".to_string();
+        }
+        if max.value.is_none() {
+            max.kind = "highest".to_string();
+        }
+        return Some(PbiConditionalFormatMeta {
+            target: target.to_string(),
+            apply_to: apply_to.to_string(),
+            mode: "gradient".to_string(),
+            rules: Vec::new(),
+            gradient_min: Some(min),
+            gradient_mid: Some(mid),
+            gradient_max: Some(max),
+            data_bar_positive: None,
+            data_bar_negative: None,
+        });
+    }
+    // Outras formas de FillRule (ex.: linearGradient com apenas uma parada,
+    // ou formas específicas de outra versão do schema) não são reconhecidas.
+    None
+}
+
+/// `ComparisonKind`: 0=Equal, 1=GreaterThan, 2=GreaterThanOrEqual,
+/// 3=LessThanOrEqual, 4=LessThan (conforme a referência de schema PBIR usada
+/// nesta importação). Cases são avaliados na ordem; a primeira que casa
+/// vence, como no motor (`src/engine/conditionalFormat.ts`).
+fn comparison_kind_to_operator(kind: i64) -> Option<&'static str> {
+    match kind {
+        0 => Some("=="),
+        1 => Some(">"),
+        2 => Some(">="),
+        3 => Some("<="),
+        4 => Some("<"),
+        _ => None,
+    }
+}
+
+fn parse_pbir_conditional_cases(conditional: &JsonValue, target: &str, apply_to: &str) -> Option<PbiConditionalFormatMeta> {
+    let cases = conditional.get("Cases").and_then(|c| c.as_array())?;
+    let mut rules = Vec::new();
+    for case in cases {
+        let comparison = case.get("Condition").and_then(|c| c.get("Comparison"))?;
+        let kind = comparison.get("ComparisonKind").and_then(|k| k.as_i64())?;
+        let operator = comparison_kind_to_operator(kind)?;
+        let threshold = comparison
+            .get("Right")
+            .and_then(extract_pbir_number_literal)?;
+        let color = case
+            .get("Value")
+            .and_then(|v| v.get("Literal"))
+            .and_then(|l| l.get("Value"))
+            .and_then(|v| v.as_str())
+            .map(strip_pbir_literal)?;
+        rules.push(PbiCondFormatRuleMeta {
+            operator: operator.to_string(),
+            value: threshold,
+            value2: None,
+            color,
+        });
+    }
+    if rules.is_empty() {
+        return None;
+    }
+    Some(PbiConditionalFormatMeta {
+        target: target.to_string(),
+        apply_to: apply_to.to_string(),
+        mode: "rules".to_string(),
+        rules,
+        gradient_min: None,
+        gradient_mid: None,
+        gradient_max: None,
+        data_bar_positive: None,
+        data_bar_negative: None,
+    })
+}
+
+fn parse_pbir_data_bars(node: &JsonValue, apply_to: &str) -> Option<PbiConditionalFormatMeta> {
+    let positive = node.get("positiveColor").and_then(extract_pbir_solid_color_literal);
+    let negative = node.get("negativeColor").and_then(extract_pbir_solid_color_literal);
+    if positive.is_none() && negative.is_none() {
+        return None;
+    }
+    Some(PbiConditionalFormatMeta {
+        target: "dataBar".to_string(),
+        apply_to: apply_to.to_string(),
+        mode: "rules".to_string(),
+        rules: Vec::new(),
+        gradient_min: None,
+        gradient_mid: None,
+        gradient_max: None,
+        data_bar_positive: positive,
+        data_bar_negative: negative,
+    })
 }
 
 fn extract_pbir_column_count(visual_obj: &JsonValue) -> Option<u32> {
@@ -931,5 +1167,86 @@ mod tests {
         let btn_meta = parse_pbir_visual_json(&btn_vj, "p1", 2).expect("actionButton");
         assert_eq!(btn_meta.visual_type, "action-button");
         assert_eq!(btn_meta.action_type.as_deref(), Some("back"));
+    }
+
+    fn load_condfmt_fixture(name: &str) -> JsonValue {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/condfmt").join(name);
+        let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("fixture {:?}: {}", path, e));
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    #[test]
+    fn test_pbir_conditional_format_gradient2_from_fixture() {
+        let vj = load_condfmt_fixture("gradient2_table.json");
+        let meta = parse_pbir_visual_json(&vj, "p1", 0).expect("tableEx com gradiente");
+        assert_eq!(meta.conditional_formats.len(), 1);
+        let cf = &meta.conditional_formats[0];
+        assert_eq!(cf.target, "background");
+        assert_eq!(cf.apply_to, "Receita");
+        assert_eq!(cf.mode, "gradient");
+        let min = cf.gradient_min.as_ref().unwrap();
+        let max = cf.gradient_max.as_ref().unwrap();
+        assert_eq!(min.kind, "lowest");
+        assert_eq!(min.color, "#FF0000");
+        assert_eq!(max.kind, "highest");
+        assert_eq!(max.color, "#00FF00");
+        assert!(cf.gradient_mid.is_none());
+    }
+
+    #[test]
+    fn test_pbir_conditional_format_rules_from_fixture_first_match_wins_order() {
+        let vj = load_condfmt_fixture("rules_card.json");
+        let meta = parse_pbir_visual_json(&vj, "p1", 0).expect("cardVisual com regras");
+        assert_eq!(meta.conditional_formats.len(), 1);
+        let cf = &meta.conditional_formats[0];
+        assert_eq!(cf.target, "fontColor");
+        assert_eq!(cf.apply_to, "Margem");
+        assert_eq!(cf.mode, "rules");
+        assert_eq!(cf.rules.len(), 2);
+        // ComparisonKind 1 = GreaterThan -> ">"; ordem preservada (1a regra testada primeiro)
+        assert_eq!(cf.rules[0].operator, ">");
+        assert_eq!(cf.rules[0].value, 1000.0);
+        assert_eq!(cf.rules[0].color, "#16A34A");
+        // ComparisonKind 4 = LessThan -> "<"
+        assert_eq!(cf.rules[1].operator, "<");
+        assert_eq!(cf.rules[1].value, 0.0);
+        assert_eq!(cf.rules[1].color, "#DC2626");
+    }
+
+    #[test]
+    fn test_pbir_conditional_format_data_bars_from_fixture() {
+        let vj = load_condfmt_fixture("databars_table.json");
+        let meta = parse_pbir_visual_json(&vj, "p1", 0).expect("tableEx com barras de dados");
+        assert_eq!(meta.conditional_formats.len(), 1);
+        let cf = &meta.conditional_formats[0];
+        assert_eq!(cf.target, "dataBar");
+        assert_eq!(cf.apply_to, "Saldo");
+        assert_eq!(cf.data_bar_positive.as_deref(), Some("#3B82F6"));
+        assert_eq!(cf.data_bar_negative.as_deref(), Some("#EF4444"));
+    }
+
+    #[test]
+    fn test_pbir_conditional_format_plain_literal_color_is_ignored_safely() {
+        // backColor fixo (sem FillRule/Conditional) não é "condicional" — não deve gerar ConditionalFormat.
+        let vj: JsonValue = serde_json::json!({
+            "name": "vis_plain",
+            "position": { "x": 0, "y": 0, "width": 200, "height": 100 },
+            "visual": {
+                "visualType": "tableEx",
+                "query": { "queryState": { "Values": { "projections": [{ "queryRef": "f_Vendas.Receita" }] } } },
+                "objects": {
+                    "values": [
+                        {
+                            "properties": {
+                                "backColor": { "solid": { "color": { "expr": { "Literal": { "Value": "'#CCCCCC'" } } } } }
+                            },
+                            "selector": { "metadata": "f_Vendas.Receita" }
+                        }
+                    ]
+                }
+            }
+        });
+        let meta = parse_pbir_visual_json(&vj, "p1", 0).expect("tableEx com cor fixa");
+        assert!(meta.conditional_formats.is_empty());
     }
 }

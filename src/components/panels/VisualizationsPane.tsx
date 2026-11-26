@@ -26,6 +26,7 @@ import { useBiStore } from '../../store/useBiStore';
 import { useTranslation } from '../../i18n';
 import { useUiPrefs } from '../../store/useUiPrefs';
 import { CollapsedPaneStrip, PaneCollapseButton } from './PaneCollapseShell';
+import { ConditionalFormatList } from '../report/conditionalFormat/ConditionalFormatList';
 
 const visualTypes: { type: VisualType; label: string; icon: any }[] = [
   { type: 'column', label: 'Colunas', icon: BarChart },
@@ -85,6 +86,18 @@ export const VisualizationsPane: React.FC = React.memo(() => {
     });
     return tables.filter(t => t.id !== selectedTable.id && (relTableIds.has(t.id) || relTableIds.has(t.name)));
   }, [selectedTable, relationships, tables]);
+
+  const conditionalFormatFields = useMemo(() => {
+    if (!selectedVisual) return [];
+    const fields = new Set<string>();
+    (selectedVisual.dataConfig.yAxisFields || []).forEach(f => fields.add(f));
+    if (selectedVisual.dataConfig.xAxisField) fields.add(selectedVisual.dataConfig.xAxisField);
+    if (selectedVisual.dataConfig.legendField) fields.add(selectedVisual.dataConfig.legendField);
+    if ((selectedVisual.type === 'table' || selectedVisual.type === 'matrix') && selectedTable) {
+      selectedTable.columns.forEach(c => fields.add(c.name));
+    }
+    return [...fields];
+  }, [selectedVisual, selectedTable]);
 
   const fieldLabels = useMemo(() => {
     if (!selectedVisual) {
@@ -753,6 +766,21 @@ export const VisualizationsPane: React.FC = React.memo(() => {
                 className="w-16 bg-slate-50 border border-slate-300 rounded px-1.5 py-0.5 text-center text-xs"
               />
             </div>
+          </div>
+
+          {/* Formatação condicional */}
+          <div className="space-y-2 border-t border-slate-100 dark:border-slate-800 pt-2">
+            <label className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 block">Formatação condicional</label>
+            <ConditionalFormatList
+              visual={selectedVisual}
+              availableFields={conditionalFormatFields}
+              measureFields={measures.filter(m => m.tableName === selectedTable?.name || m.tableId === selectedTable?.id).map(m => m.name)}
+              onChange={(formats) =>
+                updateVisual(selectedVisual.id, {
+                  formatConfig: { ...selectedVisual.formatConfig, conditionalFormats: formats },
+                })
+              }
+            />
           </div>
         </div>
       )}
