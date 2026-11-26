@@ -58,6 +58,10 @@ export const Ribbon: React.FC<{
   setShowVisualsPane: (v: boolean) => void;
   showFieldsPane: boolean;
   setShowFieldsPane: (v: boolean) => void;
+  showBookmarksPane: boolean;
+  setShowBookmarksPane: (v: boolean) => void;
+  showSelectionPane: boolean;
+  setShowSelectionPane: (v: boolean) => void;
 }> = ({
   showFiltersPane,
   setShowFiltersPane,
@@ -65,6 +69,10 @@ export const Ribbon: React.FC<{
   setShowVisualsPane,
   showFieldsPane,
   setShowFieldsPane,
+  showBookmarksPane,
+  setShowBookmarksPane,
+  showSelectionPane,
+  setShowSelectionPane,
 }) => {
   const [activeRibbonTab, setActiveRibbonTab] = useState<'inicio' | 'inserir' | 'modelagem' | 'exibir' | 'ajuda'>('inicio');
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
@@ -913,6 +921,26 @@ export const Ribbon: React.FC<{
                 }`}
               >
                 <span className="text-[10px]">{t.panes.fields.title}</span>
+              </button>
+              <button
+                onClick={() => setShowBookmarksPane(!showBookmarksPane)}
+                data-testid="ribbon-toggle-bookmarks"
+                className={`flex flex-col items-center p-1.5 rounded text-slate-700 dark:text-slate-200 cursor-pointer ${
+                  showBookmarksPane ? 'bg-amber-100 dark:bg-amber-950/60 dark:text-amber-300 font-bold' : 'hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+                title="Indicadores"
+              >
+                <span className="text-[10px]">Indicadores</span>
+              </button>
+              <button
+                onClick={() => setShowSelectionPane(!showSelectionPane)}
+                data-testid="ribbon-toggle-selection"
+                className={`flex flex-col items-center p-1.5 rounded text-slate-700 dark:text-slate-200 cursor-pointer ${
+                  showSelectionPane ? 'bg-amber-100 dark:bg-amber-950/60 dark:text-amber-300 font-bold' : 'hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+                title="Seleção"
+              >
+                <span className="text-[10px]">Seleção</span>
               </button>
             </div>
 
