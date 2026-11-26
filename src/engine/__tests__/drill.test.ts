@@ -43,7 +43,7 @@ describe('resolveDrillLevels', () => {
   });
 
   it('coluna de data sem drillFields ganha Ano → Trimestre → Mês → Dia automática', () => {
-    const lv = resolveDrillLevels(dc({ xAxisField: 'dCal.Data' }), typeOf);
+    const lv = resolveDrillLevels(dc({ xAxisField: 'dCal.Data', drillMode: 'drill' }), typeOf);
     expect(lv.map(l => [l.field, l.datePart, l.caption])).toEqual([
       ['dCal.Data', 'year', 'Ano'],
       ['dCal.Data', 'quarter', 'Trimestre'],
@@ -52,9 +52,15 @@ describe('resolveDrillLevels', () => {
     ]);
   });
 
-  it('drillFields: [] explícito desliga a hierarquia de data (projetos antigos migrados)', () => {
-    expect(resolveDrillLevels(dc({ xAxisField: 'Data', drillFields: [] }), typeOf)).toHaveLength(1);
-    expect(resolveDrillLevels(dc({ xAxisField: 'Data', drillFields: [] }), typeOf)[0].datePart).toBeUndefined();
+  it('drillFields: [] explícito desliga a hierarquia de data', () => {
+    expect(resolveDrillLevels(dc({ xAxisField: 'Data', drillFields: [], drillMode: 'drill' }), typeOf)).toHaveLength(1);
+    expect(resolveDrillLevels(dc({ xAxisField: 'Data', drillFields: [], drillMode: 'drill' }), typeOf)[0].datePart).toBeUndefined();
+  });
+
+  it('visual salvo antes do v0.10 (sem drillMode) mantém o eixo de data cru, como abria antes', () => {
+    const lv = resolveDrillLevels(dc({ xAxisField: 'Data' }), typeOf);
+    expect(lv).toHaveLength(1);
+    expect(lv[0].datePart).toBeUndefined();
   });
 
   it('coluna não-data sem drillFields = um nível só; sem eixo = nenhum', () => {
@@ -72,8 +78,8 @@ describe('resolveMatrixRowLevels', () => {
     const lv = resolveMatrixRowLevels(dc({ xAxisField: 'Categoria', drillFields: ['Produto'] }), typeOf);
     expect(lv.map(l => l.field)).toEqual(['Categoria', 'Produto']);
   });
-  it('linha de data única ganha a hierarquia automática', () => {
-    expect(resolveMatrixRowLevels(dc({ xAxisField: 'Data' }), typeOf).map(l => l.datePart)).toEqual([
+  it('linha de data única ganha a hierarquia automática (visual v0.10+)', () => {
+    expect(resolveMatrixRowLevels(dc({ xAxisField: 'Data', drillMode: 'drill' }), typeOf).map(l => l.datePart)).toEqual([
       'year',
       'quarter',
       'month',
@@ -83,7 +89,7 @@ describe('resolveMatrixRowLevels', () => {
 });
 
 describe('estado e transições de drill', () => {
-  const levels = resolveDrillLevels(dc({ xAxisField: 'Data' }), typeOf);
+  const levels = resolveDrillLevels(dc({ xAxisField: 'Data', drillMode: 'drill' }), typeOf);
 
   it('estado padrão = nível 0, modo drill, caminho vazio; clamp de nível inválido', () => {
     expect(getDrillState(dc(), levels)).toEqual({ level: 0, mode: 'drill', path: [] });
@@ -147,7 +153,7 @@ describe('estado e transições de drill', () => {
 
 describe('buildDrillPathFilters', () => {
   it('monta um filtro por nível acima do atual, com a parte da data', () => {
-    const levels = resolveDrillLevels(dc({ xAxisField: 'Data' }), typeOf);
+    const levels = resolveDrillLevels(dc({ xAxisField: 'Data', drillMode: 'drill' }), typeOf);
     const st = getDrillState(dc({ currentDrillLevel: 2, drillPath: [2024, 3] }), levels);
     expect(buildDrillPathFilters(st, levels)).toEqual([
       { field: 'Data', datePart: 'year', value: 2024 },
@@ -196,7 +202,7 @@ describe('partes de data e rótulos', () => {
   });
 
   it('concatLevelLabels: "expandir todos os níveis" ex. "2024 Trim 1"', () => {
-    const levels = resolveDrillLevels(dc({ xAxisField: 'Data' }), typeOf);
+    const levels = resolveDrillLevels(dc({ xAxisField: 'Data', drillMode: 'drill' }), typeOf);
     expect(concatLevelLabels(levels.slice(0, 2), [2024, 1])).toBe('2024 Trim 1');
     expect(concatLevelLabels(levels.slice(0, 3), [2024, 1, 2])).toBe('2024 Trim 1 fevereiro');
   });

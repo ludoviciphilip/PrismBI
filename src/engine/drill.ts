@@ -4,9 +4,10 @@
  * Conceitos (paridade com o Power BI Desktop):
  * - Hierarquia ("níveis"): para gráficos, `[xAxisField, ...drillFields]`; se o eixo
  *   for uma coluna de data e `drillFields` estiver ausente, a hierarquia automática
- *   Ano → Trimestre → Mês → Dia sobre a mesma coluna. `drillFields: []` explícito
- *   desliga a hierarquia (é assim que projetos antigos são migrados, para abrirem
- *   iguais). Na matriz, `matrixRowFields` (N níveis).
+ *   Ano → Trimestre → Mês → Dia sobre a mesma coluna. A hierarquia automática só vale
+ *   para visuais com `drillMode` gravado (criados no v0.10+ ou importados do PBIR):
+ *   visuais salvos antes continuam com o eixo de data cru, abrindo exatamente iguais.
+ *   `drillFields: []` explícito desliga a hierarquia. Na matriz, `matrixRowFields`.
  * - Estado: `currentDrillLevel` (índice do nível), `drillMode` ('drill' | 'expand')
  *   e `drillPath` (valor escolhido em cada nível acima do atual; `DRILL_ALL` = "ir
  *   para o próximo nível" sem filtrar por um ponto).
@@ -81,7 +82,7 @@ export function resolveDrillLevels(dc: VisualDataConfig, typeOf: ColumnTypeLooku
   if (dc.drillFields && dc.drillFields.length > 0) {
     return [plainLevel(x), ...dc.drillFields.filter(Boolean).map(plainLevel)];
   }
-  if (dc.drillFields === undefined && typeOf(x) === 'date') return dateHierarchy(x);
+  if (dc.drillFields === undefined && dc.drillMode !== undefined && typeOf(x) === 'date') return dateHierarchy(x);
   return [plainLevel(x)];
 }
 

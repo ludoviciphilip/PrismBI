@@ -114,7 +114,7 @@ const chartVisual = (over: Partial<Visual['dataConfig']> = {}, type: Visual['typ
   y: 0,
   w: 480,
   h: 300,
-  dataConfig: { tableId: 'fp', xAxisField: 'Data', yAxisFields: ['Total'], aggregation: 'NONE', ...over },
+  dataConfig: { tableId: 'fp', xAxisField: 'Data', yAxisFields: ['Total'], aggregation: 'NONE', drillMode: 'drill', ...over },
   formatConfig: { showTitle: true },
 });
 
@@ -202,7 +202,13 @@ describe('Drill em gráficos: controles do cabeçalho (hover) e hierarquia de da
     expect(next.title).toMatch(/nível mais baixo/);
   });
 
-  it('projeto antigo com drillFields: [] numa data não ganha hierarquia', () => {
+  it('visual salvo antes do v0.10 (sem drillMode) num eixo de data não ganha hierarquia', () => {
+    seed(chartVisual({ drillMode: undefined }));
+    render(<LiveCard id="v1" />);
+    expect(cats()).toEqual(['2023-11-05', '2024-01-10', '2024-02-20', '2024-04-01', '2024-12-31']);
+    hover();
+    expect(screen.queryByTestId('drill-controls')).toBeNull();
+    cleanup();
     seed(chartVisual({ drillFields: [] }));
     render(<LiveCard id="v1" />);
     hover();

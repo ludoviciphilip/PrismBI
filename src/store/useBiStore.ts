@@ -2019,6 +2019,7 @@ export const useBiStore = create<BiState>((set, get) => {
           xAxisField: catCol,
           yAxisFields: [numCol],
           aggregation: 'SUM',
+          drillMode: 'drill', // v0.10 Frente G: habilita a hierarquia de data automática
         },
         formatConfig: {
           showTitle: true,
