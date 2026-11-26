@@ -26,13 +26,16 @@ deb="PrismBI_${ver}_amd64.deb"
 sum="$(awk -v f="$deb" '$2==f || $2=="*"f {print $1}' "$tmp/SHA256SUMS.txt")"
 [ ${#sum} -eq 64 ] || { echo "sha256 de $deb não encontrado" >&2; exit 1; }
 
-python3 - "$pkgbuild" "$ver" "$sum" <<'PY'
+lic="$(curl -fsSL "https://raw.githubusercontent.com/ludoviciphilip/PrismBI/v${ver}/LICENSE.md" | sha256sum | cut -d' ' -f1)"
+
+python3 - "$pkgbuild" "$ver" "$sum" "$lic" <<'PY'
 import re, sys
-p, ver, s = sys.argv[1:]
+p, ver, s, lic = sys.argv[1:]
 t = open(p).read()
 t = re.sub(r'^pkgver=.*$', f'pkgver={ver}', t, flags=re.M)
 t = re.sub(r'^pkgrel=.*$', 'pkgrel=1', t, flags=re.M)
 t = re.sub(r"sha256sums=\('[^']*'", f"sha256sums=('{s}'", t)
+t = re.sub(r"(sha256sums=\('[0-9a-f]{64}'\s*\n\s*)'[^']*'", rf"\g<1>'{lic}'", t)
 open(p, 'w').write(t)
 PY
 echo "PKGBUILD -> $ver ($sum), assinatura verificada"
