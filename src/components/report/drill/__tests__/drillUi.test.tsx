@@ -503,3 +503,27 @@ describe('Seams F↔G: a dica de página respeita o nível/caminho de drill (nã
     expect(cats()).toEqual(['a2', 'b1']);
   });
 });
+
+describe('i18n (item 6): controles de drill usam src/i18n, não PT-BR fixo', () => {
+  afterEach(() => useBiStore.getState().setLanguage('pt-BR'));
+
+  it('em en-US, os rótulos e o aria-label do grupo mudam para o inglês', () => {
+    seed(chartVisual());
+    useBiStore.getState().setLanguage('en-US');
+    render(<LiveCard id="v1" />);
+    hover();
+    expect(screen.getByTestId('drill-controls').getAttribute('aria-label')).toBe('Drill controls');
+    const up = screen.getByRole('button', { name: 'Drill up' }) as HTMLButtonElement;
+    expect(up.title).toMatch(/topmost level/);
+    expect(screen.getByRole('button', { name: 'Go to next level' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Expand all levels' })).toBeTruthy();
+  });
+
+  it('em pt-BR (padrão), os rótulos continuam exatamente como antes', () => {
+    seed(chartVisual());
+    render(<LiveCard id="v1" />);
+    hover();
+    expect(screen.getByTestId('drill-controls').getAttribute('aria-label')).toBe('Controles de drill');
+    expect(screen.getByRole('button', { name: 'Fazer drill up' })).toBeTruthy();
+  });
+});

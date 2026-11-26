@@ -142,6 +142,40 @@ export interface Translations {
     drillthrough: string;
     openCalcModal: string;
   };
+  /** v0.10 Rodada 2 (Frente G, seams i18n): controles de drill-down no cabeçalho do visual e menu de contexto. */
+  drill: {
+    controlsGroupLabel: string;
+    drillUp: string;
+    drillUpHint: string;
+    drillUpAtTop: string;
+    drillDownMode: string;
+    drillDownModeOnHint: string;
+    drillDownModeOffHint: string;
+    nextLevel: string;
+    nextLevelHint: string;
+    expandAllLevels: string;
+    expandAllLevelsHint: string;
+    atLowestLevel: string;
+    matrixControlsGroupLabel: string;
+    expandOneLevel: string;
+    expandOneLevelHint: string;
+    expandOneLevelDoneHint: string;
+    expandAll: string;
+    expandAllHint: string;
+    expandAllDoneHint: string;
+    collapseAll: string;
+    collapseAllHint: string;
+    collapseAllDoneHint: string;
+    pointMenuLabel: string;
+    drillDownAction: string;
+    drillDownActionHint: string;
+    drillUpActionHint: string;
+    showAsTable: string;
+    showAsTableHint: string;
+    drillthroughAction: string;
+    drillthroughActionHint: string;
+    drillthroughUnavailableHint: string;
+  };
   slicer: {
     searchPlaceholder: string;
     selectAll: string;

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { ArrowUp, CircleArrowDown, ChevronsDown, GitFork, ChevronsUpDown, ChevronsDownUp, ListTree } from 'lucide-react';
+import type { Translations } from '../../../i18n';
 
 /**
  * Botões de drill no cabeçalho do visual (visíveis no hover), no mesmo padrão
@@ -37,6 +38,11 @@ const DrillButton: React.FC<DrillButtonProps> = ({ label, title, disabled, press
   </button>
 );
 
+/** Substitui `{level}` por `value` numa string i18n (ver `drill.drillUpHint`/`nextLevelHint`). */
+function withLevel(template: string, value: string): string {
+  return template.replace('{level}', value);
+}
+
 export interface ChartDrillControlsProps {
   levelCaption: string;
   nextCaption?: string;
@@ -47,28 +53,30 @@ export interface ChartDrillControlsProps {
   onToggleDrill: () => void;
   onNextLevel: () => void;
   onExpandAll: () => void;
+  t: Translations;
 }
 
 export const ChartDrillControls: React.FC<ChartDrillControlsProps> = p => {
-  const lastHint = 'Já está no nível mais baixo da hierarquia';
+  const d = p.t.drill;
+  const lastHint = d.atLowestLevel;
   return (
-    <div role="group" aria-label="Controles de drill" data-testid="drill-controls" className="flex items-center gap-0.5 shrink-0 mr-0.5 pr-1 border-r border-slate-200 dark:border-slate-700">
+    <div role="group" aria-label={d.controlsGroupLabel} data-testid="drill-controls" className="flex items-center gap-0.5 shrink-0 mr-0.5 pr-1 border-r border-slate-200 dark:border-slate-700">
       <DrillButton
-        label="Fazer drill up"
-        title={p.canUp ? `Fazer drill up (nível atual: ${p.levelCaption})` : 'Fazer drill up: já está no nível mais alto'}
+        label={d.drillUp}
+        title={p.canUp ? withLevel(d.drillUpHint, p.levelCaption) : d.drillUpAtTop}
         disabled={!p.canUp}
         onClick={p.onUp}
       >
         <ArrowUp className="w-3.5 h-3.5" />
       </DrillButton>
       <DrillButton
-        label="Modo drill down"
+        label={d.drillDownMode}
         title={
           !p.canDown
-            ? `Modo drill down: ${lastHint.toLowerCase()}`
+            ? `${d.drillDownMode}: ${lastHint.toLowerCase()}`
             : p.drillOn
-              ? 'Modo drill down ligado: clique num ponto para descer (clique aqui para desligar)'
-              : 'Ativar modo drill down: clique num ponto para descer filtrando por ele'
+              ? d.drillDownModeOnHint
+              : d.drillDownModeOffHint
         }
         disabled={!p.canDown}
         pressed={p.drillOn && p.canDown}
@@ -77,16 +85,16 @@ export const ChartDrillControls: React.FC<ChartDrillControlsProps> = p => {
         <CircleArrowDown className="w-3.5 h-3.5" />
       </DrillButton>
       <DrillButton
-        label="Ir para o próximo nível"
-        title={p.canDown ? `Ir para o próximo nível na hierarquia (${p.nextCaption ?? ''})` : `Ir para o próximo nível: ${lastHint.toLowerCase()}`}
+        label={d.nextLevel}
+        title={p.canDown ? withLevel(d.nextLevelHint, p.nextCaption ?? '') : `${d.nextLevel}: ${lastHint.toLowerCase()}`}
         disabled={!p.canDown}
         onClick={p.onNextLevel}
       >
         <ChevronsDown className="w-3.5 h-3.5" />
       </DrillButton>
       <DrillButton
-        label="Expandir todos os níveis"
-        title={p.canDown ? 'Expandir todos um nível abaixo na hierarquia (rótulos concatenados)' : `Expandir todos os níveis: ${lastHint.toLowerCase()}`}
+        label={d.expandAllLevels}
+        title={p.canDown ? d.expandAllLevelsHint : `${d.expandAllLevels}: ${lastHint.toLowerCase()}`}
         disabled={!p.canDown}
         onClick={p.onExpandAll}
       >
@@ -102,36 +110,40 @@ export interface MatrixDrillControlsProps {
   onExpandAll: () => void;
   onCollapseAll: () => void;
   onExpandOneLevel: () => void;
+  t: Translations;
 }
 
-export const MatrixDrillControls: React.FC<MatrixDrillControlsProps> = p => (
-  <div role="group" aria-label="Controles da hierarquia da matriz" data-testid="matrix-drill-controls" className="flex items-center gap-0.5 shrink-0 mr-0.5 pr-1 border-r border-slate-200 dark:border-slate-700">
-    <DrillButton
-      label="Expandir um nível"
-      title={p.canExpand ? 'Expandir um nível: desce todas as linhas visíveis mais um nível' : 'Expandir um nível: todos os níveis já estão expandidos'}
-      disabled={!p.canExpand}
-      onClick={p.onExpandOneLevel}
-    >
-      <ListTree className="w-3.5 h-3.5" />
-    </DrillButton>
-    <DrillButton
-      label="Expandir tudo"
-      title={p.canExpand ? 'Expandir tudo: abre todos os níveis da hierarquia' : 'Expandir tudo: já está tudo expandido'}
-      disabled={!p.canExpand}
-      onClick={p.onExpandAll}
-    >
-      <ChevronsUpDown className="w-3.5 h-3.5" />
-    </DrillButton>
-    <DrillButton
-      label="Recolher tudo"
-      title={p.canCollapse ? 'Recolher tudo: volta ao primeiro nível' : 'Recolher tudo: já está tudo recolhido'}
-      disabled={!p.canCollapse}
-      onClick={p.onCollapseAll}
-    >
-      <ChevronsDownUp className="w-3.5 h-3.5" />
-    </DrillButton>
-  </div>
-);
+export const MatrixDrillControls: React.FC<MatrixDrillControlsProps> = p => {
+  const d = p.t.drill;
+  return (
+    <div role="group" aria-label={d.matrixControlsGroupLabel} data-testid="matrix-drill-controls" className="flex items-center gap-0.5 shrink-0 mr-0.5 pr-1 border-r border-slate-200 dark:border-slate-700">
+      <DrillButton
+        label={d.expandOneLevel}
+        title={p.canExpand ? d.expandOneLevelHint : d.expandOneLevelDoneHint}
+        disabled={!p.canExpand}
+        onClick={p.onExpandOneLevel}
+      >
+        <ListTree className="w-3.5 h-3.5" />
+      </DrillButton>
+      <DrillButton
+        label={d.expandAll}
+        title={p.canExpand ? d.expandAllHint : d.expandAllDoneHint}
+        disabled={!p.canExpand}
+        onClick={p.onExpandAll}
+      >
+        <ChevronsUpDown className="w-3.5 h-3.5" />
+      </DrillButton>
+      <DrillButton
+        label={d.collapseAll}
+        title={p.canCollapse ? d.collapseAllHint : d.collapseAllDoneHint}
+        disabled={!p.canCollapse}
+        onClick={p.onCollapseAll}
+      >
+        <ChevronsDownUp className="w-3.5 h-3.5" />
+      </DrillButton>
+    </div>
+  );
+};
 
 export interface DrillMenuItem {
   label: string;
@@ -143,11 +155,12 @@ export interface DrillMenuItem {
 export const DRILL_MENU_WIDTH = 208;
 
 /** Menu de contexto (botão direito num ponto do gráfico). Posição fixa, presa à janela. */
-export const DrillContextMenu: React.FC<{ x: number; y: number; items: DrillMenuItem[]; onClose: () => void }> = ({
+export const DrillContextMenu: React.FC<{ x: number; y: number; items: DrillMenuItem[]; onClose: () => void; menuLabel: string }> = ({
   x,
   y,
   items,
   onClose,
+  menuLabel,
 }) => {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -176,7 +189,7 @@ export const DrillContextMenu: React.FC<{ x: number; y: number; items: DrillMenu
     <div
       ref={ref}
       role="menu"
-      aria-label="Menu do ponto"
+      aria-label={menuLabel}
       data-testid="drill-context-menu"
       onClick={e => e.stopPropagation()}
       onMouseDown={e => e.stopPropagation()}

@@ -3,6 +3,7 @@ import { DataType, Filter, Table, Visual } from '../../../types/bi';
 import { useBiStore } from '../../../store/useBiStore';
 import { globalDataEngine } from '../../../engine/dataEngine';
 import { queryVisualNative } from '../../../bridge/tauriBridge';
+import { useTranslation } from '../../../i18n';
 import { applyVisualSort, fieldMatches, VisualSortSpec } from '../../../engine/visualSort';
 import {
   COLLAPSED_MATRIX,
@@ -112,6 +113,7 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
   const dataVersion = useBiStore(s => s.dataVersion);
   const updateVisual = useBiStore(s => s.updateVisual);
   const setCrossFilter = useBiStore(s => s.setCrossFilter);
+  const { t } = useTranslation();
   const dc = visual.dataConfig;
   const typeOf = useMemo(() => makeColumnTypeLookup(tables, dc.tableId), [tables, dc.tableId]);
 
@@ -243,22 +245,22 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
   const menuItems: DrillMenuItem[] = menu
     ? [
         {
-          label: 'Fazer drill down',
+          label: t.drill.drillDownAction,
           disabled: !canDown,
-          title: canDown ? `Descer para ${chartLevels[state.level + 1]?.caption ?? ''} filtrando por este ponto` : 'Já está no nível mais baixo da hierarquia',
+          title: canDown ? t.drill.drillDownActionHint.replace('{level}', chartLevels[state.level + 1]?.caption ?? '') : t.drill.atLowestLevel,
           onSelect: () => applyPatch(drillDownOnPointPatch(dc, chartLevels, menu.keys)),
         },
         {
-          label: 'Fazer drill up',
+          label: t.drill.drillUp,
           disabled: !canUp,
-          title: canUp ? 'Subir um nível na hierarquia' : 'Já está no nível mais alto',
+          title: canUp ? t.drill.drillUpActionHint : t.drill.drillUpAtTop,
           onSelect: () => applyPatch(drillUpPatch(dc, chartLevels)),
         },
-        { label: 'Mostrar como tabela', title: 'Mostrar os dados do visual como tabela', onSelect: () => optsRef.current.onShowTable() },
+        { label: t.drill.showAsTable, title: t.drill.showAsTableHint, onSelect: () => optsRef.current.onShowTable() },
         {
-          label: 'Drill-through',
+          label: t.drill.drillthroughAction,
           disabled: !plainLevel,
-          title: plainLevel ? 'Detalhar este ponto em outra página' : 'Drill-through indisponível em níveis de data ou rótulos concatenados',
+          title: plainLevel ? t.drill.drillthroughActionHint : t.drill.drillthroughUnavailableHint,
           onSelect: () => plainLevel && optsRef.current.onDrillthrough(plainLevel.field, menu.keys[0]),
         },
       ]
@@ -309,6 +311,7 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
         onToggleDrill={() => setDrillOn(v => !v)}
         onNextLevel={() => applyPatch(goToNextLevelPatch(dc, chartLevels))}
         onExpandAll={() => applyPatch(expandAllLevelsPatch(dc, chartLevels))}
+        t={t}
       />
     );
   } else if (hovered && matrixActive) {
@@ -319,6 +322,7 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
         onExpandOneLevel={() => setExpansion(e => expandOneLevel(e, matrixLevels.length))}
         onExpandAll={() => setExpansion(expandAllMatrix(matrixLevels.length))}
         onCollapseAll={() => setExpansion(COLLAPSED_MATRIX)}
+        t={t}
       />
     );
   }
@@ -346,7 +350,7 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
       onFocusCapture: () => setHovered(true),
     },
     header,
-    overlay: menu ? <DrillContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} /> : null,
+    overlay: menu ? <DrillContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} menuLabel={t.drill.pointMenuLabel} /> : null,
     handlePointClick,
     handleContextMenu,
     resolveHoverDrillFilters,
