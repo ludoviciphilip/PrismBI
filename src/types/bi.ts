@@ -226,6 +226,14 @@ export interface VisualDataConfig {
   limit?: number;
   drillFields?: string[];
   currentDrillLevel?: number;
+  // --- Bloco G (v0.10, Frente "Drill-down") ---
+  /** 'drill' (padrão): mostra só o nível atual filtrado por `drillPath`; 'expand': agrupa os níveis 0..atual com rótulos concatenados ("2024 Trim 1"). */
+  drillMode?: 'drill' | 'expand';
+  /** Valores escolhidos nos níveis acima do atual (um por nível). `{ $all: true }` = "ir para o próximo nível" sem filtrar. */
+  drillPath?: unknown[];
+  /** Matriz: campos das linhas (N níveis). O primeiro espelha `xAxisField`. */
+  matrixRowFields?: string[];
+  // --- fim Bloco G ---
   kpiTarget?: number;
   kpiComparisonField?: string;
   visualCalculations?: VisualCalculation[];
