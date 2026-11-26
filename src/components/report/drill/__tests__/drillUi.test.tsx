@@ -336,6 +336,49 @@ describe('Matriz com N níveis', () => {
     render(<LiveCard id="v1" />);
     expect(screen.queryByTestId('hierarchical-matrix')).toBeNull();
   });
+
+  it('hover numa linha (seams F↔G): a dica de página filtra pelo caminho INTEIRO da linha', () => {
+    vi.useFakeTimers();
+    const st = useBiStore.getState();
+    st.newProject('Drill UI');
+    st.setTables([pedidos, lojas]);
+    useBiStore.setState({ measures, filters: [] });
+    globalDataEngine.setSchema([pedidos, lojas], [], measures);
+    const pageId = useBiStore.getState().activePageId;
+    const mainVisual = matrixVisual();
+    (mainVisual as any).formatConfig = { showTitle: true, tooltip: { type: 'page', pageId: 'tt' } };
+    const tooltipVisual: Visual = {
+      id: 'v2',
+      type: 'bar',
+      title: 'Lojas',
+      x: 0,
+      y: 0,
+      w: 200,
+      h: 140,
+      dataConfig: { tableId: 'fv', xAxisField: 'Loja', yAxisFields: ['Clientes'], aggregation: 'NONE' },
+      formatConfig: { showTitle: true },
+    };
+    useBiStore.setState(s => ({
+      pages: [
+        { ...s.pages[0], id: pageId, visuals: [mainVisual] },
+        { id: 'tt', name: 'Dica', order: 2, visuals: [tooltipVisual], tooltipPage: { enabled: true, fields: ['Loja'] } },
+      ],
+    }));
+    render(<LiveCard id="v1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Expandir Sul' }));
+
+    const poaRow = Array.from(document.querySelectorAll('[data-testid="hierarchical-matrix"] tbody tr')).find(
+      tr => tr.querySelector('td span')?.textContent === 'POA'
+    )!;
+    act(() => fireEvent.mouseEnter(poaRow.querySelector('td')!));
+    act(() => vi.advanceTimersByTime(200));
+
+    const popover = screen.getByTestId('tooltip-page-popover');
+    expect(within(popover).getByTestId('echarts')).toBeTruthy();
+    // POA (Regiao=Sul, Cidade=POA) só tem as lojas L1 e L2, nunca as 4 da tabela toda.
+    expect(cats()).toEqual(['L1', 'L2']);
+    vi.useRealTimers();
+  });
 });
 
 describe('Frente H→G: formatação condicional nos totais/subtotais da matriz hierárquica', () => {
@@ -385,5 +428,64 @@ describe('Frente H→G: formatação condicional nos totais/subtotais da matriz 
     expect(valueCell('Norte').style.backgroundColor).not.toBe('rgb(0, 255, 0)');
     // Total geral (4) >= 3.
     expect(screen.getByTestId('matrix-total-Clientes').style.backgroundColor).toBe('rgb(0, 255, 0)');
+  });
+});
+
+describe('Seams F↔G: a dica de página respeita o nível/caminho de drill (não o xAxisField cru)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('ponto "Trim 1" (expandido, Ano+Trimestre) filtra a página de dica por ano=2024 e trimestre=1', () => {
+    vi.useFakeTimers();
+    const st = useBiStore.getState();
+    st.newProject('Drill UI');
+    st.setTables([pedidos, lojas]);
+    useBiStore.setState({ measures, filters: [] });
+    globalDataEngine.setSchema([pedidos, lojas], [], measures);
+    const pageId = useBiStore.getState().activePageId;
+    const mainVisual: Visual = {
+      id: 'v1',
+      type: 'bar',
+      title: 'Vendas por data',
+      x: 0,
+      y: 0,
+      w: 480,
+      h: 300,
+      dataConfig: { tableId: 'fp', xAxisField: 'Data', yAxisFields: ['Total'], aggregation: 'NONE', drillMode: 'drill' },
+      formatConfig: { showTitle: true, tooltip: { type: 'page', pageId: 'tt' } },
+    };
+    const tooltipVisual: Visual = {
+      id: 'v2',
+      type: 'column',
+      title: 'Por produto',
+      x: 0,
+      y: 0,
+      w: 200,
+      h: 140,
+      dataConfig: { tableId: 'fp', xAxisField: 'Produto', yAxisFields: ['Total'], aggregation: 'NONE' },
+      formatConfig: { showTitle: true },
+    };
+    useBiStore.setState(s => ({
+      pages: [
+        { ...s.pages[0], id: pageId, visuals: [mainVisual] },
+        { id: 'tt', name: 'Dica', order: 2, visuals: [tooltipVisual], tooltipPage: { enabled: true, fields: ['Data'] } },
+      ],
+    }));
+
+    render(<LiveCard id="v1" />);
+    hover();
+    // Expande todos os níveis (rótulo concatenado "2024 Trim 1")
+    fireEvent.click(screen.getByRole('button', { name: 'Expandir todos os níveis' }));
+    expect(cats()).toContain('2024 Trim 1');
+
+    act(() => chart.onEvents.mouseover({ name: '2024 Trim 1', event: { event: { clientX: 10, clientY: 10 } } }));
+    act(() => vi.advanceTimersByTime(200));
+
+    const popover = screen.getByTestId('tooltip-page-popover');
+    // Só Jan (a2=5) e Fev (b1=7) de 2024 caem em Q1: filtro certo = produtos a2/b1.
+    const prodCats = within(popover).queryAllByTestId('echarts');
+    expect(prodCats.length).toBeGreaterThan(0);
+    expect(cats()).toEqual(['a2', 'b1']);
   });
 });

@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Filter as BiFilter } from '../../../types/bi';
+import type { DrillFilterSpec } from '../../../engine/drill';
 import { HoverDebouncer } from './hoverDebouncer';
 
 export interface TooltipHoverState {
   pageId: string;
   filters: BiFilter[];
+  /** v0.10 Rodada 2 (seams F↔G): filtro temporário via o mecanismo de drill
+   * (ancestrais + nível atual / caminho da linha), para níveis drillados ou de
+   * hierarquia de data — nunca um `Filter` de coluna que não existe no modelo. */
+  drillFilters?: DrillFilterSpec[];
   anchor: { x: number; y: number };
 }
 

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Filter as BiFilter, Page } from '../../../types/bi';
+import type { DrillFilterSpec } from '../../../engine/drill';
 import { VisualCard } from '../VisualCard';
 import { ErrorBoundary } from '../../shared/ErrorBoundary';
 import { getEffectiveCanvasSize } from '../../../engine/shared/canvasPresets';
@@ -7,15 +8,17 @@ import { getEffectiveCanvasSize } from '../../../engine/shared/canvasPresets';
 interface TooltipPageRendererProps {
   page: Page;
   extraFilters: BiFilter[];
+  /** v0.10 Rodada 2 (seams F↔G): filtro via o mecanismo de drill (ver `TooltipHoverState`). */
+  extraDrillFilters?: DrillFilterSpec[];
 }
 
 /**
  * Renderiza em miniatura uma página marcada como dica de ferramenta,
  * reaproveitando o `VisualCard` normal (mesmo caminho de consulta nativa /
  * `build_filter_context`), só injetando os filtros temporários do ponto sob
- * o mouse via a prop `extraFilters` — nada é gravado no store.
+ * o mouse via as props `extraFilters`/`extraDrillFilters` — nada é gravado no store.
  */
-export const TooltipPageRenderer: React.FC<TooltipPageRendererProps> = ({ page, extraFilters }) => {
+export const TooltipPageRenderer: React.FC<TooltipPageRendererProps> = ({ page, extraFilters, extraDrillFilters }) => {
   const { width, height } = getEffectiveCanvasSize(page);
 
   return (
@@ -31,6 +34,7 @@ export const TooltipPageRenderer: React.FC<TooltipPageRendererProps> = ({ page, 
             isSelected={false}
             onSelect={() => {}}
             extraFilters={extraFilters}
+            extraDrillFilters={extraDrillFilters}
             isTooltipPreview
           />
         </ErrorBoundary>

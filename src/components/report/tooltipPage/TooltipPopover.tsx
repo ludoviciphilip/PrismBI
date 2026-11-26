@@ -1,6 +1,7 @@
 import React, { useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Filter as BiFilter, Page } from '../../../types/bi';
+import type { DrillFilterSpec } from '../../../engine/drill';
 import { getEffectiveCanvasSize } from '../../../engine/shared/canvasPresets';
 import { computePopoverPosition } from './position';
 import { TooltipPageRenderer } from './TooltipPageRenderer';
@@ -8,6 +9,8 @@ import { TooltipPageRenderer } from './TooltipPageRenderer';
 interface TooltipPopoverProps {
   page: Page;
   filters: BiFilter[];
+  /** v0.10 Rodada 2 (seams F↔G): filtro via o mecanismo de drill. */
+  drillFilters?: DrillFilterSpec[];
   anchor: { x: number; y: number };
 }
 
@@ -15,7 +18,7 @@ interface TooltipPopoverProps {
  * Popover flutuante (React portal em document.body) com a página de dica
  * renderizada em miniatura, reposicionado para nunca sair do viewport.
  */
-export const TooltipPopover: React.FC<TooltipPopoverProps> = ({ page, filters, anchor }) => {
+export const TooltipPopover: React.FC<TooltipPopoverProps> = ({ page, filters, drillFilters, anchor }) => {
   const { width, height } = getEffectiveCanvasSize(page);
   const [pos, setPos] = useState(() =>
     computePopoverPosition(anchor, { width, height }, { width: window.innerWidth, height: window.innerHeight })
@@ -31,7 +34,7 @@ export const TooltipPopover: React.FC<TooltipPopoverProps> = ({ page, filters, a
       className="fixed z-[999] shadow-2xl rounded-md border border-slate-300 dark:border-slate-700 overflow-hidden"
       style={{ left: pos.x, top: pos.y, width, height }}
     >
-      <TooltipPageRenderer page={page} extraFilters={filters} />
+      <TooltipPageRenderer page={page} extraFilters={filters} extraDrillFilters={drillFilters} />
     </div>,
     document.body
   );

@@ -7,9 +7,12 @@ import { applyVisualSort, fieldMatches, VisualSortSpec } from '../../../engine/v
 import {
   COLLAPSED_MATRIX,
   DRILLABLE_VISUAL_TYPES,
+  DrillFilterSpec,
   DrillLevel,
   MatrixExpansion,
   buildDrillPathFilters,
+  buildHoverFilters,
+  buildPathFilters,
   canDrillDown,
   canDrillUp,
   drillDownOnPointPatch,
@@ -56,19 +59,6 @@ export function makeColumnTypeLookup(tables: Table[], baseTableId: string) {
   };
 }
 
-export interface VisualDrillOptions {
-  /** O visual usa o motor nativo (Tauri) — mesmo critério do VisualCard. */
-  native: boolean;
-  onShowTable: () => void;
-  onDrillthrough: (field: string, value: unknown) => void;
-}
-
-interface ChartPoint {
-  name?: string;
-  data?: { name?: string };
-  event?: { event?: MouseEvent };
-}
-
 export interface VisualDrill {
   /** Resultado do eixo hierárquico (já ordenado); null = visual sem hierarquia (caminho antigo). */
   chartResult: { categories: string[]; series: { name: string; data: number[] }[] } | null;
@@ -78,8 +68,42 @@ export interface VisualDrill {
   /** Clique num ponto: true quando o drill tratou o clique (o VisualCard não faz o filtro cruzado antigo). */
   handlePointClick: (params: ChartPoint) => boolean;
   handleContextMenu: (params: ChartPoint) => void;
-  /** Matriz com 2+ níveis: renderiza a matriz hierárquica; null = matriz antiga (1 nível). */
-  renderMatrix: ((isCurrencyField: (f: string) => boolean) => React.ReactNode) | null;
+  /**
+   * v0.10 Rodada 2 (seams F↔G): filtro temporário completo (ancestrais do drill +
+   * nível atual) para a dica de página ao passar o mouse num ponto do gráfico pelo
+   * rótulo (`name`/`data.name` do ECharts). Retorna `[]` quando o visual não tem
+   * hierarquia de drill — o VisualCard então usa o `xAxisField` cru, como antes.
+   */
+  resolveHoverDrillFilters: (label: unknown) => DrillFilterSpec[];
+  /** Matriz com 2+ níveis: renderiza a matriz hierárquica; null = matriz antiga (1 nível).
+   * `onRowHover`/`onRowLeave` (seams F↔G) recebem o filtro do caminho INTEIRO da linha
+   * (todos os níveis acima, não só o primeiro) para a dica de página. */
+  renderMatrix:
+    | ((
+        isCurrencyField: (f: string) => boolean,
+        onRowHover?: (e: React.MouseEvent, filters: DrillFilterSpec[]) => void,
+        onRowLeave?: () => void
+      ) => React.ReactNode)
+    | null;
+}
+
+export interface VisualDrillOptions {
+  /** O visual usa o motor nativo (Tauri) — mesmo critério do VisualCard. */
+  native: boolean;
+  onShowTable: () => void;
+  onDrillthrough: (field: string, value: unknown) => void;
+  /**
+   * v0.10 Rodada 2 (seams F↔G): filtros extras (ex.: a dica de página de OUTRO
+   * visual, filtrando este pelo ponto sob o mouse) somados aos ancestrais do
+   * próprio drill. Nunca gravado no store — só restringe esta consulta.
+   */
+  extraDrillFilters?: DrillFilterSpec[];
+}
+
+interface ChartPoint {
+  name?: string;
+  data?: { name?: string };
+  event?: { event?: MouseEvent };
 }
 
 export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDrillOptions): VisualDrill {
@@ -106,24 +130,34 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
   );
 
   // ----- Gráficos (eixo com hierarquia) -----
+  const extraDrillFilters = opts.extraDrillFilters ?? [];
+  const hasExtraDrill = extraDrillFilters.length > 0;
   const { chartLevels, state, groupLv, drillFilters } = useMemo(() => {
     const lv: DrillLevel[] = DRILLABLE_VISUAL_TYPES.has(visual.type) ? resolveDrillLevels(dc, typeOf) : [];
     const st = getDrillState(dc, lv);
-    const active = lv.length > 1;
+    // v0.10 Rodada 2 (seams F↔G): a dica de página de OUTRO visual pode precisar
+    // restringir esta consulta mesmo quando este visual não tem hierarquia própria
+    // (ex.: um gráfico de mês simples, filtrado pelo ano/trimestre do ponto sob o mouse).
+    const active = lv.length > 0 && (lv.length > 1 || hasExtraDrill);
     return {
       chartLevels: lv,
       state: st,
       groupLv: active ? groupingLevels(st, lv) : [],
-      drillFilters: active ? buildDrillPathFilters(st, lv) : [],
+      drillFilters: active ? [...buildDrillPathFilters(st, lv), ...extraDrillFilters] : [],
     };
-  }, [visual.type, dc, typeOf]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visual.type, dc, typeOf, hasExtraDrill, JSON.stringify(extraDrillFilters)]);
+  // `chartActive` controla a UI de drill (cabeçalho, menu, canUp/canDown): só quando o
+  // visual TEM hierarquia própria. `queryActive` controla a consulta: também quando só
+  // há `extraDrillFilters` (dica de página de outro visual), sem mostrar controles de drill.
   const chartActive = chartLevels.length > 1;
-  const chartKey = chartActive
+  const queryActive = groupLv.length > 0;
+  const chartKey = queryActive
     ? JSON.stringify([dataVersion, tables.length, measuresCount, visual.id, visual.type, dc.tableId, dc.yAxisFields, dc.legendField, dc.aggregation, groupLv, drillFilters, filters])
     : '';
   const chartQuery = useEngineQuery(
     chartKey,
-    chartActive,
+    queryActive,
     opts.native,
     () => queryLevelsTs(globalDataEngine, { visual, filters, levels: groupLv, drillFilters }),
     () =>
@@ -136,7 +170,7 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
 
   const sortedChart = useMemo(() => {
     const raw = chartQuery.data;
-    if (!chartActive || !raw) return null;
+    if (!queryActive || !raw) return null;
     const base = globalDataEngine.getVisualSortSpec(visual);
     const single = groupLv.length === 1 ? groupLv[0] : null;
     const keepBaseKeys = Boolean(single && !single.datePart && fieldMatches(single.field, dc.xAxisField || ''));
@@ -152,7 +186,7 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
     const sorted = applyVisualSort({ categories: raw.categories, series: raw.series }, spec);
     const keyByLabel = new Map(raw.categories.map((c, i) => [c, raw.categoryKeys[i]]));
     return { ...sorted, keyByLabel };
-  }, [chartActive, chartQuery.data, visual, dc.sortField, dc.sortOrder, dc.limit, dc.xAxisField, dc.yAxisFields, groupLv]);
+  }, [queryActive, chartQuery.data, visual, dc.sortField, dc.sortOrder, dc.limit, dc.xAxisField, dc.yAxisFields, groupLv]);
 
   const canUp = canDrillUp(state);
   const canDown = chartActive && canDrillDown(state, chartLevels);
@@ -223,15 +257,18 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
     () => (visual.type === 'matrix' ? resolveMatrixRowLevels(dc, typeOf) : []),
     [visual.type, dc, typeOf]
   );
+  // `matrixActive` (UI: header de drill) só com hierarquia própria; a consulta roda
+  // também só com `extraDrillFilters` (dica de página, seams F↔G), igual ao gráfico.
   const matrixActive = matrixLevels.length > 1;
-  const matrixKey = matrixActive
-    ? JSON.stringify([dataVersion, tables.length, measuresCount, visual.id, dc.tableId, dc.yAxisFields, dc.legendField, dc.aggregation, matrixLevels, expansion, filters])
+  const matrixQueryActive = matrixLevels.length > 0 && (matrixActive || hasExtraDrill);
+  const matrixKey = matrixQueryActive
+    ? JSON.stringify([dataVersion, tables.length, measuresCount, visual.id, dc.tableId, dc.yAxisFields, dc.legendField, dc.aggregation, matrixLevels, expansion, filters, extraDrillFilters])
     : '';
   const matrixQuery = useEngineQuery(
     matrixKey,
-    matrixActive,
+    matrixQueryActive,
     opts.native,
-    () => queryMatrixTs(globalDataEngine, { visual, filters, levels: matrixLevels, expansion }),
+    () => queryMatrixTs(globalDataEngine, { visual, filters, levels: matrixLevels, expansion, drillFilters: extraDrillFilters }),
     () =>
       queryVisualNative({
         ...baseNativeRequest(visual, filters),
@@ -240,6 +277,7 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
         matrixExpandDepth: expansion.depth,
         matrixExpanded: expansion.expanded.map(id => JSON.parse(id) as unknown[]),
         matrixCollapsed: expansion.collapsed.map(id => JSON.parse(id) as unknown[]),
+        drillFilters: toNativeDrillFilters(extraDrillFilters),
       }).then(r => matrixFromNative(r, matrixLevels))
   );
 
@@ -278,6 +316,16 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
     [sortedChart]
   );
 
+  const resolveHoverDrillFilters = useCallback(
+    (label: unknown): DrillFilterSpec[] => {
+      if (!sortedChart) return [];
+      const keys = sortedChart.keyByLabel.get(label as string);
+      if (!keys) return [];
+      return buildHoverFilters(state, chartLevels.length ? chartLevels : groupLv, keys);
+    },
+    [sortedChart, state, chartLevels, groupLv]
+  );
+
   return {
     chartResult,
     hoverProps: {
@@ -289,8 +337,9 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
     overlay: menu ? <DrillContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} /> : null,
     handlePointClick,
     handleContextMenu,
-    renderMatrix: matrixActive
-      ? isCurrencyField => (
+    resolveHoverDrillFilters,
+    renderMatrix: matrixQueryActive
+      ? (isCurrencyField, onRowHover, onRowLeave) => (
           <HierarchicalMatrix
             visual={visual}
             levels={matrixLevels}
@@ -299,6 +348,10 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
             expansion={expansion}
             onExpansionChange={setExpansion}
             isCurrencyField={isCurrencyField}
+            onRowHover={
+              onRowHover ? (e, path) => onRowHover(e, buildPathFilters(matrixLevels, path)) : undefined
+            }
+            onRowLeave={onRowLeave}
           />
         )
       : null,

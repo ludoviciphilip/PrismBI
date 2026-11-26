@@ -18,6 +18,10 @@ export interface HierarchicalMatrixProps {
   expansion: MatrixExpansion;
   onExpansionChange: (next: MatrixExpansion) => void;
   isCurrencyField: (field: string) => boolean;
+  /** v0.10 Rodada 2 (seams F↔G): dica de página — recebe o caminho INTEIRO da
+   * linha sob o mouse (todos os níveis acima, não só o primeiro). */
+  onRowHover?: (e: React.MouseEvent, path: unknown[]) => void;
+  onRowLeave?: () => void;
 }
 
 interface FlatRow {
@@ -49,6 +53,8 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
   expansion,
   onExpansionChange,
   isCurrencyField,
+  onRowHover,
+  onRowLeave,
 }) => {
   const measures = useBiStore(s => s.measures);
   const updateVisual = useBiStore(s => s.updateVisual);
@@ -202,6 +208,8 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
                   onClick={() => {
                     if (level && !level.datePart) setCrossFilter(dc.tableId, level.field, node.key);
                   }}
+                  onMouseEnter={e => onRowHover?.(e, path)}
+                  onMouseLeave={() => onRowLeave?.()}
                   style={{ paddingLeft: 10 + depth * 18 }}
                   className={
                     isTop

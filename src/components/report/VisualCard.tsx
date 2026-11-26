@@ -45,6 +45,7 @@ import { getFieldFormat, cellStyleFromFormat, buildBarSeriesData, resolverFromRo
 import { FormattedCell } from './conditionalFormat/FormattedCell';
 import { resolveTooltipPage, buildTemporaryFilters, useTooltipHover, TooltipPopover } from './tooltipPage';
 import { useVisualDrill } from './drill';
+import type { DrillFilterSpec } from '../../engine/drill';
 
 export interface SnapGuide {
   orientation: 'v' | 'h';
@@ -60,6 +61,8 @@ interface VisualCardProps {
   isMobile?: boolean;
   /** Filtros temporários injetados pela miniatura de uma página de dica de ferramenta (nunca gravados no store). */
   extraFilters?: BiFilter[];
+  /** v0.10 Rodada 2 (seams F↔G): idem, via o mecanismo de drill (ancestrais + nível/caminho do ponto). */
+  extraDrillFilters?: DrillFilterSpec[];
   /** Renderização dentro do popover de dica de ferramenta: sem interação e sem dica própria (evita recursão). */
   isTooltipPreview?: boolean;
 }
@@ -87,7 +90,7 @@ function formatCompactDisplay(val: number, isCurr: boolean, currSymbol: string):
   return isCurr ? `${sign}${currSymbol} ${numStr}${suffix}` : `${sign}${numStr}${suffix}`;
 }
 
-export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSelected, isMultiSelected, onSelect, onSnapGuidesChange, isMobile, extraFilters, isTooltipPreview }) => {
+export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSelected, isMultiSelected, onSelect, onSnapGuidesChange, isMobile, extraFilters, extraDrillFilters, isTooltipPreview }) => {
   const cardRef = useRef<HTMLDivElement>(null);
   const didDragMoveRef = useRef(false);
   const storeFilters = useBiStore(s => s.filters);
@@ -427,6 +430,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     native: supportsNativeRustQuery,
     onShowTable: () => setShowRawTable(true),
     onDrillthrough: (field, value) => setDrillPop({ field, value }),
+    extraDrillFilters,
   });
 
   const nativeCacheKey = useMemo(() => {
@@ -591,9 +595,14 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     const categoryValue = typeof catRaw === 'string' || typeof catRaw === 'number' ? catRaw : undefined;
     // Legenda só é um filtro válido quando o visual de fato separa séries por ela.
     const legendValue = visual.dataConfig.legendField && queryResult.series.length > 1 ? params.seriesName : undefined;
+    // v0.10 Rodada 2 (seams F↔G): quando o visual tem hierarquia de drill, o filtro
+    // temporário usa o nível atual + todo o drillPath (`resolveHoverDrillFilters`),
+    // nunca o `xAxisField` cru — senão um ponto "2024 Trim 1" expandido filtraria
+    // errado pelo rótulo concatenado. Sem hierarquia, mantém o Filter simples de antes.
+    const hoverDrillFilters = drill.resolveHoverDrillFilters(catRaw);
     const tempFilters = buildTemporaryFilters(visual.dataConfig.tableId, {
-      categoryField: visual.dataConfig.xAxisField,
-      categoryValue,
+      categoryField: hoverDrillFilters.length > 0 ? undefined : visual.dataConfig.xAxisField,
+      categoryValue: hoverDrillFilters.length > 0 ? undefined : categoryValue,
       legendField: visual.dataConfig.legendField,
       legendValue,
     });
@@ -601,9 +610,10 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     showTooltipHover({
       pageId: resolvedTooltipPage.id,
       filters: tempFilters,
+      drillFilters: hoverDrillFilters,
       anchor: { x: nativeEvent?.clientX ?? 0, y: nativeEvent?.clientY ?? 0 },
     });
-  }, [resolvedTooltipPage, visual.dataConfig, queryResult.series.length, showTooltipHover]);
+  }, [resolvedTooltipPage, visual.dataConfig, queryResult.series.length, showTooltipHover, drill.resolveHoverDrillFilters]);
 
   const onChartMouseOut = useCallback(() => {
     hideTooltipHover();
@@ -636,6 +646,21 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     [resolvedTooltipPage, visual.dataConfig, showTooltipHover]
   );
   const onCellMouseLeave = useCallback(() => hideTooltipHover(), [hideTooltipHover]);
+  // v0.10 Rodada 2 (seams F↔G): a matriz hierárquica não tinha dica de página —
+  // o hover numa linha filtra pelo caminho INTEIRO (todos os níveis acima), via
+  // o mecanismo de drill (`drill.renderMatrix`'s onRowHover já traz os filtros prontos).
+  const onMatrixRowHover = useCallback(
+    (e: React.MouseEvent, drillFilters: DrillFilterSpec[]) => {
+      if (!resolvedTooltipPage) return;
+      showTooltipHover({
+        pageId: resolvedTooltipPage.id,
+        filters: [],
+        drillFilters,
+        anchor: { x: e.clientX, y: e.clientY },
+      });
+    },
+    [resolvedTooltipPage, showTooltipHover]
+  );
   const tooltipPopoverPage = tooltipPopover ? pages.find(p => p.id === tooltipPopover.pageId) : undefined;
 
   // Build ECharts Options based on visual.type
@@ -1754,7 +1779,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             );
           })()
         ) : visual.type === 'matrix' && drill.renderMatrix ? (
-          drill.renderMatrix(isCurrencyField)
+          drill.renderMatrix(isCurrencyField, onMatrixRowHover, onCellMouseLeave)
         ) : visual.type === 'matrix' ? (
           (() => {
             const { categories, series } = queryResult;
@@ -2146,7 +2171,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
       {/* Report Page Tooltip: popover flutuante com a página de dica em miniatura */}
       {tooltipPopover && tooltipPopoverPage && (
-        <TooltipPopover page={tooltipPopoverPage} filters={tooltipPopover.filters} anchor={tooltipPopover.anchor} />
+        <TooltipPopover page={tooltipPopoverPage} filters={tooltipPopover.filters} drillFilters={tooltipPopover.drillFilters} anchor={tooltipPopover.anchor} />
       )}
 
       {/* Resize Handle Indicator */}
