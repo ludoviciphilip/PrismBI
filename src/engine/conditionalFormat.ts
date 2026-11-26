@@ -297,6 +297,82 @@ export function computeFormatForValue(format: ConditionalFormat, value: unknown,
 }
 
 /**
+ * Converte a formatação condicional lida do PBIR (ver
+ * `PbiConditionalFormatMeta` em src/bridge/tauriBridge.ts, espelhando
+ * `PbiConditionalFormatMeta` em src-tauri/src/pbi/mod.rs) para
+ * `ConditionalFormat[]` do modelo PrismBI. Usado pelo importador (ex.:
+ * PowerBiImportModal.tsx) ao montar `VisualFormatConfig.conditionalFormats`.
+ */
+export function conditionalFormatsFromPbiMeta(
+  pbiFormats: Array<{
+    target: string;
+    applyTo: string;
+    mode: string;
+    rules?: Array<{ operator: string; value: number; value2?: number | null; color: string }>;
+    gradientMin?: { kind: string; value?: number | null; color: string } | null;
+    gradientMid?: { kind: string; value?: number | null; color: string } | null;
+    gradientMax?: { kind: string; value?: number | null; color: string } | null;
+    dataBarPositive?: string | null;
+    dataBarNegative?: string | null;
+  }> | undefined,
+  idPrefix: string
+): ConditionalFormat[] {
+  if (!pbiFormats || pbiFormats.length === 0) return [];
+  const out: ConditionalFormat[] = [];
+  pbiFormats.forEach((pf, idx) => {
+    const target = pf.target as ConditionalFormat['target'];
+    const id = `${idPrefix}_${idx}`;
+    if (target === 'dataBar') {
+      if (!pf.dataBarPositive && !pf.dataBarNegative) return;
+      out.push({
+        id,
+        target,
+        applyTo: pf.applyTo,
+        mode: 'rules',
+        dataBar: {
+          positiveColor: pf.dataBarPositive || '#3b82f6',
+          negativeColor: pf.dataBarNegative || '#ef4444',
+        },
+      });
+      return;
+    }
+    if (pf.mode === 'gradient' && pf.gradientMin && pf.gradientMax) {
+      out.push({
+        id,
+        target,
+        applyTo: pf.applyTo,
+        mode: 'gradient',
+        gradient: {
+          min: { kind: pf.gradientMin.kind as CondFormatStop['kind'], value: pf.gradientMin.value ?? undefined, color: pf.gradientMin.color },
+          mid: pf.gradientMid
+            ? { kind: pf.gradientMid.kind as CondFormatStop['kind'], value: pf.gradientMid.value ?? undefined, color: pf.gradientMid.color }
+            : undefined,
+          max: { kind: pf.gradientMax.kind as CondFormatStop['kind'], value: pf.gradientMax.value ?? undefined, color: pf.gradientMax.color },
+        },
+      });
+      return;
+    }
+    if (pf.mode === 'rules' && pf.rules && pf.rules.length > 0) {
+      out.push({
+        id,
+        target,
+        applyTo: pf.applyTo,
+        mode: 'rules',
+        rules: pf.rules.map(r => ({
+          operator: r.operator as ConditionalFormatRule['operator'],
+          value: r.value,
+          value2: r.value2 ?? undefined,
+          color: r.color,
+        })),
+      });
+    }
+    // Formatos sem rules nem gradiente reconhecidos (ex.: cor fixa) já são
+    // filtrados no lado Rust e não chegam aqui.
+  });
+  return out;
+}
+
+/**
  * Combina todos os `ConditionalFormat` aplicáveis a `field`, um por `target`
  * (o primeiro da lista que casar vence). `resolveValue` dá, para cada
  * formato, o valor usado para decidir a cor (resolve `basedOn` quando

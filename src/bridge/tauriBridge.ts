@@ -96,6 +96,32 @@ export interface PbiFilterMeta {
   values: string[];
 }
 
+export interface PbiCondFormatRuleMeta {
+  operator: string;
+  value: number;
+  value2?: number | null;
+  color: string;
+}
+
+export interface PbiCondFormatStopMeta {
+  kind: string;
+  value?: number | null;
+  color: string;
+}
+
+/** v0.10 Frente B: formatação condicional lida do PBIR (ver src-tauri/src/pbi/pbip.rs). */
+export interface PbiConditionalFormatMeta {
+  target: string;
+  applyTo: string;
+  mode: string;
+  rules?: PbiCondFormatRuleMeta[];
+  gradientMin?: PbiCondFormatStopMeta | null;
+  gradientMid?: PbiCondFormatStopMeta | null;
+  gradientMax?: PbiCondFormatStopMeta | null;
+  dataBarPositive?: string | null;
+  dataBarNegative?: string | null;
+}
+
 export interface PbiVisualMeta {
   id: string;
   visualType: string;
@@ -118,6 +144,8 @@ export interface PbiVisualMeta {
   /** From PBIR query.sortDefinition (first sort entry). */
   sortField?: string | null;
   sortOrder?: 'asc' | 'desc' | null;
+  /** v0.10 Frente B. */
+  conditionalFormats?: PbiConditionalFormatMeta[];
 }
 
 export interface PbiPageMeta {

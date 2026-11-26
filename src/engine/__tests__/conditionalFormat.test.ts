@@ -3,6 +3,7 @@ import {
   computeCellFormat,
   computeDataBarMetrics,
   computeFormatForValue,
+  conditionalFormatsFromPbiMeta,
   fieldValueColor,
   firstMatchingRule,
   gradientColor,
@@ -345,5 +346,80 @@ describe('computeCellFormat (combinação por target, primeiro formato de cada t
     ];
     const result = computeCellFormat(formats, 'Vendas', () => null, () => []);
     expect(result).toEqual({});
+  });
+});
+
+describe('conditionalFormatsFromPbiMeta (importação PBIR, v0.10 Frente B)', () => {
+  it('lista vazia/undefined -> []', () => {
+    expect(conditionalFormatsFromPbiMeta(undefined, 'p')).toEqual([]);
+    expect(conditionalFormatsFromPbiMeta([], 'p')).toEqual([]);
+  });
+
+  it('converte gradiente (min lowest, max highest)', () => {
+    const out = conditionalFormatsFromPbiMeta(
+      [
+        {
+          target: 'background',
+          applyTo: 'Receita',
+          mode: 'gradient',
+          gradientMin: { kind: 'lowest', color: '#FF0000' },
+          gradientMax: { kind: 'highest', color: '#00FF00' },
+        },
+      ],
+      'pbi_vis_1'
+    );
+    expect(out).toEqual([
+      {
+        id: 'pbi_vis_1_0',
+        target: 'background',
+        applyTo: 'Receita',
+        mode: 'gradient',
+        gradient: {
+          min: { kind: 'lowest', value: undefined, color: '#FF0000' },
+          mid: undefined,
+          max: { kind: 'highest', value: undefined, color: '#00FF00' },
+        },
+      },
+    ]);
+  });
+
+  it('converte regras (rules, ordem preservada)', () => {
+    const out = conditionalFormatsFromPbiMeta(
+      [
+        {
+          target: 'fontColor',
+          applyTo: 'Margem',
+          mode: 'rules',
+          rules: [
+            { operator: '>', value: 1000, color: '#16A34A' },
+            { operator: '<', value: 0, color: '#DC2626' },
+          ],
+        },
+      ],
+      'pbi_vis_1'
+    );
+    expect(out[0].rules).toEqual([
+      { operator: '>', value: 1000, value2: undefined, color: '#16A34A' },
+      { operator: '<', value: 0, value2: undefined, color: '#DC2626' },
+    ]);
+  });
+
+  it('converte barras de dados', () => {
+    const out = conditionalFormatsFromPbiMeta(
+      [{ target: 'dataBar', applyTo: 'Saldo', mode: 'rules', dataBarPositive: '#3B82F6', dataBarNegative: '#EF4444' }],
+      'pbi_vis_1'
+    );
+    expect(out[0]).toEqual({
+      id: 'pbi_vis_1_0',
+      target: 'dataBar',
+      applyTo: 'Saldo',
+      mode: 'rules',
+      dataBar: { positiveColor: '#3B82F6', negativeColor: '#EF4444' },
+    });
+  });
+
+  it('formato sem rules/gradiente/dataBar reconhecível é descartado com segurança', () => {
+    const out = conditionalFormatsFromPbiMeta([{ target: 'background', applyTo: 'X', mode: 'rules' }], 'p');
+    expect(out).toEqual([]);
   });
 });

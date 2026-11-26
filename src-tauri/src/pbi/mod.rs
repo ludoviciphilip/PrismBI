@@ -74,6 +74,49 @@ pub struct PbiFilterMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PbiCondFormatRuleMeta {
+    pub operator: String,
+    pub value: f64,
+    #[serde(default)]
+    pub value2: Option<f64>,
+    pub color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PbiCondFormatStopMeta {
+    pub kind: String,
+    #[serde(default)]
+    pub value: Option<f64>,
+    pub color: String,
+}
+
+/// Formatação condicional (v0.10 Frente B) extraída de `objects.values`/
+/// `objects.dataPoint` de um visual PBIR: gradiente (`FillRule`), regras
+/// (`Conditional`) ou barras de dados (`dataBars`). Espelha
+/// `ConditionalFormat` em src/types/bi.ts (ver `PbiVisualMeta.conditionalFormats`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PbiConditionalFormatMeta {
+    pub target: String, // "background" | "fontColor" | "dataBar"
+    pub apply_to: String,
+    pub mode: String, // "rules" | "gradient"
+    #[serde(default)]
+    pub rules: Vec<PbiCondFormatRuleMeta>,
+    #[serde(default)]
+    pub gradient_min: Option<PbiCondFormatStopMeta>,
+    #[serde(default)]
+    pub gradient_mid: Option<PbiCondFormatStopMeta>,
+    #[serde(default)]
+    pub gradient_max: Option<PbiCondFormatStopMeta>,
+    #[serde(default)]
+    pub data_bar_positive: Option<String>,
+    #[serde(default)]
+    pub data_bar_negative: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PbiVisualMeta {
     pub id: String,
     pub visual_type: String,
@@ -105,6 +148,9 @@ pub struct PbiVisualMeta {
     /// "asc" | "desc" (PrismBI `dataConfig.sortOrder`).
     #[serde(default)]
     pub sort_order: Option<String>,
+    /// v0.10 Frente B: formatação condicional (gradiente/regras/barras) lida de `objects`.
+    #[serde(default)]
+    pub conditional_formats: Vec<PbiConditionalFormatMeta>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -500,6 +546,7 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
                     filters: Vec::new(),
                     sort_field: None,
                     sort_order: None,
+                    conditional_formats: Vec::new(),
                 });
             }
         }

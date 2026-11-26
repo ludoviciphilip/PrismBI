@@ -22,6 +22,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { Filter, Measure, Page, Relationship, Table, Visual, VisualType } from '../../types/bi';
 import { CURRENT_ENGINE_VERSION } from '../../engine/migrations';
+import { conditionalFormatsFromPbiMeta } from '../../engine/conditionalFormat';
 
 interface PowerBiImportModalProps {
   isOpen: boolean;
@@ -265,6 +266,7 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({
                       ? v.actionType
                       : undefined,
                   actionTargetPageId: v.actionTarget || undefined,
+                  conditionalFormats: conditionalFormatsFromPbiMeta(v.conditionalFormats, v.id || `pbi_vis_${pIdx}_${vIdx}`),
                 },
               };
             }),
