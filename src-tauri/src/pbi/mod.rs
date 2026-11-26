@@ -130,6 +130,10 @@ pub struct PbiVisualMeta {
     pub category_field: Option<String>,
     pub legend_field: Option<String>,
     pub value_fields: Vec<String>,
+    /// v0.10 Frente G: projeções extras de Category/Rows (hierarquia de drill
+    /// nos gráficos, níveis seguintes das linhas na matriz).
+    #[serde(default)]
+    pub drill_fields: Vec<String>,
     #[serde(default)]
     pub column_count: Option<u32>,
     #[serde(default)]
@@ -481,6 +485,7 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
                 let mut category_field: Option<String> = None;
                 let mut legend_field: Option<String> = None;
                 let mut value_fields = Vec::new();
+                let mut drill_fields: Vec<String> = Vec::new();
 
                 if let Some(projs) = sv.get("projections").and_then(|p| p.as_object()) {
                     for (role, items) in projs {
@@ -501,6 +506,8 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
                             {
                                 if category_field.is_none() {
                                     category_field = Some(fld);
+                                } else if role_l != "values" && !drill_fields.contains(&fld) {
+                                    drill_fields.push(fld);
                                 }
                             } else if role_l == "series" || role_l == "columns" || role_l == "legend" {
                                 if legend_field.is_none() {
@@ -538,6 +545,7 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
                     category_field,
                     legend_field,
                     value_fields,
+                    drill_fields,
                     column_count: None,
                     slicer_mode: None,
                     action_type: None,
