@@ -74,6 +74,10 @@ describe('resolveMatrixRowLevels', () => {
     const lv = resolveMatrixRowLevels(dc({ xAxisField: 'A', matrixRowFields: ['A', 'B', 'C'], drillFields: ['Z'] }), typeOf);
     expect(lv.map(l => l.field)).toEqual(['A', 'B', 'C']);
   });
+  it('o 1º nível sempre espelha xAxisField (trocar o campo das linhas no painel não dessincroniza)', () => {
+    const lv = resolveMatrixRowLevels(dc({ xAxisField: 'Z', matrixRowFields: ['A', 'B', 'C'] }), typeOf);
+    expect(lv.map(l => l.field)).toEqual(['Z', 'B', 'C']);
+  });
   it('legado: xAxisField + drillFields[0] (matriz de 2 níveis do v0.4)', () => {
     const lv = resolveMatrixRowLevels(dc({ xAxisField: 'Categoria', drillFields: ['Produto'] }), typeOf);
     expect(lv.map(l => l.field)).toEqual(['Categoria', 'Produto']);

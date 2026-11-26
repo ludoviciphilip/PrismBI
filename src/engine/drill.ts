@@ -88,7 +88,9 @@ export function resolveDrillLevels(dc: VisualDataConfig, typeOf: ColumnTypeLooku
 
 /** Níveis das linhas da matriz (N níveis). */
 export function resolveMatrixRowLevels(dc: VisualDataConfig, typeOf: ColumnTypeLookup): DrillLevel[] {
-  const rows = (dc.matrixRowFields || []).filter(Boolean);
+  const stored = (dc.matrixRowFields || []).filter(Boolean);
+  // O 1º nível espelha xAxisField (o campo "Linhas" do painel); os seguintes vêm de matrixRowFields.
+  const rows = dc.xAxisField && stored.length > 0 ? [dc.xAxisField, ...stored.slice(1)] : stored;
   if (rows.length > 1) return rows.map(plainLevel);
   if (rows.length === 1) return resolveDrillLevels({ ...dc, xAxisField: rows[0] }, typeOf);
   return resolveDrillLevels(dc, typeOf);
