@@ -120,6 +120,8 @@ export interface PbiConditionalFormatMeta {
   gradientMax?: PbiCondFormatStopMeta | null;
   dataBarPositive?: string | null;
   dataBarNegative?: string | null;
+  /** v0.10 Frente H: conjunto de ícones ('arrows' | 'traffic' | 'flags') quando target === 'icon'. */
+  iconSet?: string | null;
 }
 
 export interface PbiVisualMeta {
@@ -146,6 +148,17 @@ export interface PbiVisualMeta {
   sortOrder?: 'asc' | 'desc' | null;
   /** v0.10 Frente B. */
   conditionalFormats?: PbiConditionalFormatMeta[];
+  /** v0.10 Frente H (round-trip do segmentador). */
+  slicerBetweenStart?: string | null;
+  slicerBetweenEnd?: string | null;
+  slicerRelativeAnchor?: string | null;
+  slicerRelativeCount?: number | null;
+  slicerRelativeUnit?: string | null;
+  slicerRelativeIncludeToday?: boolean | null;
+  slicerShowSearch?: boolean | null;
+  /** v0.10 Frente H (round-trip de VisualFormatConfig.backgroundColor/borderColor). */
+  backgroundColor?: string | null;
+  borderColor?: string | null;
 }
 
 export interface PbiPageMeta {
@@ -242,10 +255,56 @@ export interface ExportPbipPayload {
       /** Written as PBIR query.sortDefinition. */
       sortField?: string | null;
       sortOrder?: 'asc' | 'desc' | null;
+      /** v0.10 Frente H: formatação condicional, gravada em objects.values do visual.json. */
+      condFormats?: ExportPbipCondFormat[];
+      /** v0.10 Frente H (round-trip do segmentador). */
+      slicerBetweenStart?: string | null;
+      slicerBetweenEnd?: string | null;
+      slicerRelativeAnchor?: string | null;
+      slicerRelativeCount?: number | null;
+      slicerRelativeUnit?: string | null;
+      slicerRelativeIncludeToday?: boolean | null;
+      slicerShowSearch?: boolean | null;
     }[];
   }[];
   themeName?: string | null;
   themePalette?: string[] | null;
+  /** v0.10 Frente H: indicadores (bookmarks), gravados em definition/bookmarks/*.bookmark.json. */
+  bookmarks?: ExportPbipBookmark[];
+}
+
+/** Achatado de `ConditionalFormat` (src/types/bi.ts) para o que o PBIR
+ * consegue representar — ver `ExportCondFormatPayload` em pbip_writer.rs. */
+export interface ExportPbipCondFormat {
+  id: string;
+  target: string;
+  applyTo: string;
+  mode: string;
+  applyToTotals?: boolean | null;
+  rules?: { operator: string; value: number; value2?: number | null; color: string }[];
+  gradientMin?: { kind: string; value?: number | null; color: string } | null;
+  gradientMid?: { kind: string; value?: number | null; color: string } | null;
+  gradientMax?: { kind: string; value?: number | null; color: string } | null;
+  dataBarPositive?: string | null;
+  dataBarNegative?: string | null;
+  iconSet?: string | null;
+}
+
+/** Espelha só a interface `Bookmark` do contrato V010.md (bloco E); não
+ * depende do código da Frente E (`feat/v0.10-bookmarks`). */
+export interface ExportPbipBookmark {
+  id: string;
+  name: string;
+  activePageId: string;
+  filters?: ExportPbipFilter[];
+  order?: number | null;
+  groupId?: string | null;
+  captureData?: boolean | null;
+  captureDisplay?: boolean | null;
+  captureCurrentPage?: boolean | null;
+  scope?: string[];
+  visualState?: unknown;
+  slicerSelections?: unknown;
 }
 
 export interface DaxModelSyncPayload {

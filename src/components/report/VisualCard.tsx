@@ -40,7 +40,7 @@ import {
   patchForOrder,
   patchForHeaderClick,
 } from './visualSortOptions';
-import { getFieldFormat, cellStyleFromFormat, buildBarSeriesData, resolverFromRows, resolverFromSeries, activeFormats } from './conditionalFormat/apply';
+import { getFieldFormat, cellStyleFromFormat, buildBarSeriesData, resolverFromRows, resolverFromSeries, activeFormats, styleForTotalCell } from './conditionalFormat/apply';
 import { FormattedCell } from './conditionalFormat/FormattedCell';
 
 export interface SnapGuide {
@@ -1809,14 +1809,21 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                               );
                             })}
                             {series.length > 1 && (
-                              <td className="px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap">
+                              <td
+                                className="px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap"
+                                style={styleForTotalCell(activeFormats(visual), primaryY, rowTotals[rIdx], rowTotals)}
+                              >
                                 {fmtCell(rowTotals[rIdx])}
                               </td>
                             )}
                           </tr>
-                          {isExpanded && childData && childData.categories.map((childCat, cIdx) => {
-                            const childRowTotal = childData.series.reduce((sum, cs) => sum + (Number(cs.data[cIdx]) || 0), 0);
-                            return (
+                          {isExpanded && childData && (() => {
+                            const childRowTotals = childData.categories.map((_, ci) =>
+                              childData.series.reduce((sum, cs) => sum + (Number(cs.data[ci]) || 0), 0)
+                            );
+                            return childData.categories.map((childCat, cIdx) => {
+                              const childRowTotal = childRowTotals[cIdx];
+                              return (
                               <tr key={`${cat}::${childCat}`} className="bg-slate-50/70 dark:bg-slate-800/30">
                                 <td className="pl-7 pr-2.5 py-1 text-[11px] text-slate-600 dark:text-slate-300 border-r border-slate-200 dark:border-slate-800 whitespace-nowrap">
                                   {childCat}
@@ -1833,13 +1840,17 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                   );
                                 })}
                                 {series.length > 1 && (
-                                  <td className="px-2.5 py-1 text-right font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 border-l border-slate-200 dark:border-slate-800 whitespace-nowrap">
+                                  <td
+                                    className="px-2.5 py-1 text-right font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 border-l border-slate-200 dark:border-slate-800 whitespace-nowrap"
+                                    style={styleForTotalCell(activeFormats(visual), primaryY, childRowTotal, childRowTotals)}
+                                  >
                                     {fmtCell(childRowTotal)}
                                   </td>
                                 )}
                               </tr>
-                            );
-                          })}
+                              );
+                            });
+                          })()}
                         </React.Fragment>
                       );
                     })}
@@ -1853,12 +1864,16 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                         <td
                           key={series[cIdx]?.name || cIdx}
                           className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-900 dark:text-amber-300 border-t-2 border-slate-300 dark:border-slate-700 whitespace-nowrap"
+                          style={styleForTotalCell(activeFormats(visual), series[cIdx]?.name || '', tot, colTotals)}
                         >
                           {fmtCell(tot, series[cIdx]?.name)}
                         </td>
                       ))}
                       {series.length > 1 && (
-                        <td className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-950 dark:text-amber-400 border-t-2 border-l border-slate-300 dark:border-slate-700 whitespace-nowrap">
+                        <td
+                          className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-950 dark:text-amber-400 border-t-2 border-l border-slate-300 dark:border-slate-700 whitespace-nowrap"
+                          style={styleForTotalCell(activeFormats(visual), primaryY, grandTotal, [grandTotal])}
+                        >
                           {fmtCell(grandTotal)}
                         </td>
                       )}

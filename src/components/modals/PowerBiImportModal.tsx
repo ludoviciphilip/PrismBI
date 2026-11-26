@@ -243,8 +243,22 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({
                   ...(vType === 'slicer'
                     ? {
                         slicerConfig: {
-                          mode: v.slicerMode === 'tiles' ? 'tiles' : 'dropdown',
+                          mode: v.slicerMode === 'tiles' ? 'tiles' : (v.slicerBetweenStart != null && v.slicerBetweenEnd != null) ? 'between' : v.slicerRelativeAnchor ? 'relative-date' : 'dropdown',
                           selectedValues: [],
+                          ...(v.slicerBetweenStart != null && v.slicerBetweenEnd != null
+                            ? { between: { start: v.slicerBetweenStart, end: v.slicerBetweenEnd } }
+                            : {}),
+                          ...(v.slicerRelativeAnchor && v.slicerRelativeCount != null && v.slicerRelativeUnit
+                            ? {
+                                relative: {
+                                  anchor: v.slicerRelativeAnchor as 'last' | 'this' | 'next',
+                                  count: v.slicerRelativeCount,
+                                  unit: v.slicerRelativeUnit as 'days' | 'weeks' | 'months' | 'quarters' | 'years',
+                                  includeToday: v.slicerRelativeIncludeToday ?? undefined,
+                                },
+                              }
+                            : {}),
+                          ...(v.slicerShowSearch != null ? { showSearch: v.slicerShowSearch } : {}),
                         },
                       }
                     : {}),
@@ -254,8 +268,8 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({
                   title: v.title,
                   showDataLabels: vType === 'pie' || vType === 'donut' || vType === 'funnel',
                   showLegend: true,
-                  backgroundColor: '#ffffff',
-                  borderColor: '#e2e8f0',
+                  backgroundColor: v.backgroundColor || '#ffffff',
+                  borderColor: v.borderColor || '#e2e8f0',
                   borderRadius: 8,
                   cardColumns: v.columnCount || undefined,
                   displayUnits: 'none',

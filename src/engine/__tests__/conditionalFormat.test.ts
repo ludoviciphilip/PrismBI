@@ -4,6 +4,7 @@ import {
   computeDataBarMetrics,
   computeFormatForValue,
   conditionalFormatsFromPbiMeta,
+  conditionalFormatsToExportPayload,
   fieldValueColor,
   firstMatchingRule,
   gradientColor,
@@ -421,5 +422,89 @@ describe('conditionalFormatsFromPbiMeta (importação PBIR, v0.10 Frente B)', ()
   it('formato sem rules/gradiente/dataBar reconhecível é descartado com segurança', () => {
     const out = conditionalFormatsFromPbiMeta([{ target: 'background', applyTo: 'X', mode: 'rules' }], 'p');
     expect(out).toEqual([]);
+  });
+
+  it('converte ícones (target "icon") com iconSet e rules', () => {
+    const out = conditionalFormatsFromPbiMeta(
+      [{ target: 'icon', applyTo: 'Variacao', mode: 'rules', rules: [{ operator: '>', value: 0, color: '' }], iconSet: 'traffic' }],
+      'pbi_vis_1'
+    );
+    expect(out).toEqual([
+      {
+        id: 'pbi_vis_1_0',
+        target: 'icon',
+        applyTo: 'Variacao',
+        mode: 'rules',
+        icons: { set: 'traffic', rules: [{ operator: '>', value: 0, value2: undefined, color: '' }] },
+      },
+    ]);
+  });
+
+  it('ícones sem iconSet caem no padrão "arrows"', () => {
+    const out = conditionalFormatsFromPbiMeta(
+      [{ target: 'icon', applyTo: 'X', mode: 'rules', rules: [{ operator: '>', value: 0, color: '' }] }],
+      'p'
+    );
+    expect(out[0].icons?.set).toBe('arrows');
+  });
+});
+
+describe('conditionalFormatsToExportPayload (round-trip .pbip, Frente H)', () => {
+  it('achata gradiente, regras, barras e ícones para o formato do writer Rust', () => {
+    const formats: ConditionalFormat[] = [
+      {
+        id: 'cf1',
+        target: 'background',
+        applyTo: 'Receita',
+        mode: 'gradient',
+        applyToTotals: true,
+        gradient: { min: { kind: 'lowest', color: '#FF0000' }, max: { kind: 'highest', color: '#00FF00' } },
+      },
+      {
+        id: 'cf2',
+        target: 'icon',
+        applyTo: 'Variacao',
+        mode: 'rules',
+        icons: { set: 'traffic', rules: [{ operator: '>', value: 0, color: '' }] },
+      },
+      {
+        id: 'cf3',
+        target: 'dataBar',
+        applyTo: 'Saldo',
+        mode: 'rules',
+        dataBar: { positiveColor: '#3B82F6', negativeColor: '#EF4444' },
+      },
+    ];
+    const out = conditionalFormatsToExportPayload(formats);
+    expect(out).toHaveLength(3);
+    expect(out[0]).toMatchObject({ id: 'cf1', target: 'background', applyToTotals: true });
+    expect(out[0].gradientMin).toEqual({ kind: 'lowest', color: '#FF0000' });
+    expect(out[1]).toMatchObject({ target: 'icon', iconSet: 'traffic' });
+    expect(out[1].rules).toEqual([{ operator: '>', value: 0, value2: undefined, color: '' }]);
+    expect(out[2]).toMatchObject({ target: 'dataBar', dataBarPositive: '#3B82F6', dataBarNegative: '#EF4444' });
+  });
+
+  it('import -> export é estável (round-trip de icones e gradiente)', () => {
+    const imported = conditionalFormatsFromPbiMeta(
+      [
+        { target: 'icon', applyTo: 'Var', mode: 'rules', rules: [{ operator: '<', value: 0, color: '' }], iconSet: 'flags' },
+        {
+          target: 'background',
+          applyTo: 'Receita',
+          mode: 'gradient',
+          gradientMin: { kind: 'lowest', color: '#111111' },
+          gradientMax: { kind: 'highest', color: '#222222' },
+        },
+      ],
+      'p'
+    );
+    const exported = conditionalFormatsToExportPayload(imported);
+    expect(exported.find(f => f.target === 'icon')?.iconSet).toBe('flags');
+    expect(exported.find(f => f.target === 'background')?.gradientMin).toEqual({ kind: 'lowest', color: '#111111' });
+  });
+
+  it('retorna [] para undefined/[]', () => {
+    expect(conditionalFormatsToExportPayload(undefined)).toEqual([]);
+    expect(conditionalFormatsToExportPayload([])).toEqual([]);
   });
 });
