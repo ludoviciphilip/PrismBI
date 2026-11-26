@@ -31,6 +31,7 @@ import { useTranslation } from '../../i18n';
 import { getEffectiveCanvasSize } from '../../engine/shared/canvasPresets';
 import { applyVisualSort, fieldMatches, sortCategoryLabels } from '../../engine/visualSort';
 import { VisualSortMenu } from './VisualSortMenu';
+import { SlicerBody } from './slicer';
 import {
   sortMenuKind,
   getSortableFields,
@@ -84,6 +85,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
   const tables = useBiStore(s => s.tables);
   const measures = useBiStore(s => s.measures);
   const setCrossFilter = useBiStore(s => s.setCrossFilter);
+  const updateSlicerSelection = useBiStore(s => s.setSlicerSelection);
   const updateVisual = useBiStore(s => s.updateVisual);
   const moveVisualsDelta = useBiStore(s => s.moveVisualsDelta);
   const deleteVisual = useBiStore(s => s.deleteVisual);
@@ -1613,17 +1615,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             const targetTableObj = tables.find(
               t => t.id === hintTbl || t.name === hintTbl || t.id === visual.dataConfig.tableId || t.name === visual.dataConfig.tableId
             );
-            const slicerTableId = targetTableObj?.id || hintTbl;
             const slicerCol = hintCol;
-            const activeSlicerFilter = filters.find(
-              f =>
-                (f.tableId === slicerTableId ||
-                  f.tableId === visual.dataConfig.tableId ||
-                  (targetTableObj && f.tableId === targetTableObj.name)) &&
-                (f.column.toLowerCase() === slicerCol.toLowerCase() || f.column.toLowerCase() === rawSlicerCol.toLowerCase())
-            );
-            const activeVal = activeSlicerFilter ? String(activeSlicerFilter.value) : 'TODOS';
-            const isTiles = visual.dataConfig.slicerConfig?.mode === 'tiles';
+            const slicerColumn = targetTableObj?.columns.find(c => c.name.toLowerCase() === slicerCol.toLowerCase());
+            const mode = visual.dataConfig.slicerConfig?.mode || 'dropdown';
+            const hasSelection =
+              mode === 'between'
+                ? Boolean(visual.dataConfig.slicerConfig?.between?.start || visual.dataConfig.slicerConfig?.between?.end)
+                : mode === 'relative-date'
+                  ? false
+                  : (visual.dataConfig.slicerConfig?.selectedValues?.length || 0) > 0;
 
             return (
               <div className="flex flex-col h-full justify-center p-2 space-y-2 overflow-auto">
@@ -1631,63 +1631,16 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                   <label className="text-xs font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1">
                     <Filter className="w-3 h-3 text-amber-500" /> {t.visualCard.selectField} {slicerCol}:
                   </label>
-                  {activeVal !== 'TODOS' && (
+                  {hasSelection && (
                     <button
-                      onClick={() => setCrossFilter(slicerTableId, slicerCol, '')}
+                      onClick={() => updateSlicerSelection(visual.id, { selectedValues: [], between: {} })}
                       className="text-[10px] text-amber-600 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-300 font-semibold cursor-pointer"
                     >
                       {t.common.clear}
                     </button>
                   )}
                 </div>
-                {isTiles ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setCrossFilter(slicerTableId, slicerCol, '')}
-                      className={`px-2 py-1 rounded text-[11px] font-semibold border transition-colors cursor-pointer ${
-                        activeVal === 'TODOS'
-                          ? 'bg-amber-500 text-slate-950 border-amber-500'
-                          : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-amber-400'
-                      }`}
-                    >
-                      {t.visualCard.allRecords}
-                    </button>
-                    {queryResult.categories.map(c => {
-                      const selected = activeVal === c;
-                      return (
-                        <button
-                          key={c}
-                          type="button"
-                          onClick={() => setCrossFilter(slicerTableId, slicerCol, selected ? '' : c)}
-                          className={`px-2 py-1 rounded text-[11px] font-medium border transition-colors cursor-pointer ${
-                            selected
-                              ? 'bg-amber-500 text-slate-950 border-amber-500 font-bold'
-                              : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-amber-400'
-                          }`}
-                        >
-                          {c}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <select
-                    value={activeVal}
-                    className="w-full text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded px-2 py-1.5 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500 font-medium"
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setCrossFilter(slicerTableId, slicerCol, val === 'TODOS' ? '' : val);
-                    }}
-                  >
-                    <option value="TODOS">{t.visualCard.allRecords}</option>
-                    {queryResult.categories.map(c => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                )}
+                <SlicerBody visual={visual} table={targetTableObj} column={slicerColumn} categories={queryResult.categories} />
               </div>
             );
           })()

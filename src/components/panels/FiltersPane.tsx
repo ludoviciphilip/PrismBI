@@ -5,6 +5,7 @@ import { useBiStore } from '../../store/useBiStore';
 import { Filter, Table } from '../../types/bi';
 import { useTranslation } from '../../i18n';
 import { buildSortByLookup, sortValueList, ValueListSortMode } from '../../engine/visualSort';
+import { describeSlicerDateFilter } from '../report/slicer';
 
 const MAX_LIST_VALUES = 200;
 
@@ -120,12 +121,13 @@ export const FilterValueList: React.FC<{
 };
 
 export const FiltersPane: React.FC = React.memo(() => {
-  const { filters, removeFilter, clearFilters, tables, addFilter } = useBiStore(useShallow(s => ({
+  const { filters, removeFilter, clearFilters, tables, addFilter, pages } = useBiStore(useShallow(s => ({
     filters: s.filters,
     removeFilter: s.removeFilter,
     clearFilters: s.clearFilters,
     tables: s.tables,
     addFilter: s.addFilter,
+    pages: s.pages,
   })));
   const { t } = useTranslation();
   const [showAddFilter, setShowAddFilter] = useState(false);
@@ -287,7 +289,8 @@ export const FiltersPane: React.FC = React.memo(() => {
                 </span>
               </div>
               <div className="text-[11px] font-bold text-amber-800 dark:text-amber-400 bg-amber-100/70 dark:bg-amber-950/70 px-1.5 py-0.5 rounded truncate">
-                {Array.isArray(filter.value) ? filter.value.join(', ') : String(filter.value)}
+                {describeSlicerDateFilter(pages, filter.visualId) ??
+                  (Array.isArray(filter.value) ? filter.value.join(', ') : String(filter.value))}
               </div>
               {isBasicFilter(filter) && (
                 <FilterValueList

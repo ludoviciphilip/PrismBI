@@ -24,6 +24,7 @@ import { VisualType, Visual } from '../../types/bi';
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { useTranslation } from '../../i18n';
+import { SlicerSyncPanel } from '../report/slicer';
 
 const visualTypes: { type: VisualType; label: string; icon: any }[] = [
   { type: 'column', label: 'Colunas', icon: BarChart },
@@ -664,7 +665,7 @@ export const VisualizationsPane: React.FC = React.memo(() => {
                         ...selectedVisual.dataConfig,
                         slicerConfig: {
                           ...selectedVisual.dataConfig.slicerConfig,
-                          mode: e.target.value as 'dropdown' | 'tiles',
+                          mode: e.target.value as NonNullable<Visual['dataConfig']['slicerConfig']>['mode'],
                         },
                       },
                     })
@@ -672,9 +673,51 @@ export const VisualizationsPane: React.FC = React.memo(() => {
                   className="bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-slate-700 dark:text-slate-200"
                 >
                   <option value="dropdown">Suspenso (Dropdown)</option>
+                  <option value="list">Lista</option>
                   <option value="tiles">Blocos / Botões (Tiles)</option>
+                  <option value="between">{t.slicer.between}</option>
+                  <option value="relative-date">{t.slicer.relativeDate}</option>
                 </select>
               </div>
+            )}
+
+            {selectedVisual.type === 'slicer' &&
+              ['list', 'dropdown', 'tiles'].includes(selectedVisual.dataConfig.slicerConfig?.mode || 'dropdown') && (
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-medium text-slate-700 dark:text-slate-200">{t.slicer.showSearchBox}</span>
+                  <input
+                    type="checkbox"
+                    checked={selectedVisual.dataConfig.slicerConfig?.showSearch ?? false}
+                    onChange={(e) =>
+                      updateVisual(selectedVisual.id, {
+                        dataConfig: {
+                          ...selectedVisual.dataConfig,
+                          slicerConfig: { ...selectedVisual.dataConfig.slicerConfig, mode: selectedVisual.dataConfig.slicerConfig?.mode || 'dropdown', showSearch: e.target.checked },
+                        },
+                      })
+                    }
+                    className="rounded border-slate-300 text-amber-500 focus:ring-amber-400"
+                  />
+                </div>
+              )}
+
+            {selectedVisual.type === 'slicer' && (
+              <SlicerSyncPanel
+                visual={selectedVisual}
+                pages={pages}
+                onChange={(patch) =>
+                  updateVisual(selectedVisual.id, {
+                    dataConfig: {
+                      ...selectedVisual.dataConfig,
+                      slicerConfig: {
+                        ...selectedVisual.dataConfig.slicerConfig,
+                        mode: selectedVisual.dataConfig.slicerConfig?.mode || 'dropdown',
+                        ...patch,
+                      },
+                    },
+                  })
+                }
+              />
             )}
           </div>
 
