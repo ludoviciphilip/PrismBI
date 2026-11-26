@@ -212,3 +212,58 @@ describe('queryLevelsTs: drill e hierarquia de data', () => {
     expect(res.series[0].data).toEqual([2, 2]);
   });
 });
+
+describe('conversões do caminho nativo (contrato com query_planner.rs)', () => {
+  it('requisição: níveis e filtros de drill com datePart explícito (null para campo simples)', async () => {
+    const { toNativeLevels, toNativeDrillFilters, baseNativeRequest } = await import('../engineQuery');
+    expect(toNativeLevels([plain('Regiao'), datePart('year')])).toEqual([
+      { field: 'Regiao', datePart: null },
+      { field: 'Data', datePart: 'year' },
+    ]);
+    expect(toNativeDrillFilters([{ field: 'Data', datePart: 'year', value: 2024 }, { field: 'Regiao', value: 'Sul' }])).toEqual([
+      { field: 'Data', datePart: 'year', value: 2024 },
+      { field: 'Regiao', datePart: null, value: 'Sul' },
+    ]);
+    const f: Filter = { id: 'f', level: 'report', tableId: 'fv', column: 'Cliente', operator: 'in', value: ['c1'] };
+    expect(baseNativeRequest(visual({ xAxisField: 'Regiao', yAxisFields: ['Clientes'] }), [f]).filters).toEqual([
+      { tableId: 'fv', column: 'Cliente', values: ['c1'] },
+    ]);
+  });
+
+  it('resposta: rótulos refeitos a partir das chaves (partes de data em PT-BR)', async () => {
+    const { levelsFromNative, matrixFromNative } = await import('../engineQuery');
+    const lv = levelsFromNative(
+      { categories: ['2024 1'], categoryKeys: [[2024, 1]], series: [{ name: 'Total', data: [12] }], queryTimeMs: 1, engine: 'rust-native' },
+      [datePart('year'), datePart('quarter')]
+    );
+    expect(lv.categories).toEqual(['2024 Trim 1']);
+    const mx = matrixFromNative(
+      {
+        categories: ['2024'],
+        series: [{ name: 'Total', data: [16] }],
+        queryTimeMs: 1,
+        engine: 'rust-native',
+        matrix: {
+          rows: [
+            {
+              key: 2024,
+              label: '2024',
+              values: [16],
+              rowTotal: null,
+              hasChildren: true,
+              expanded: true,
+              children: [{ key: 3, label: '3', values: [16], rowTotal: null, hasChildren: false, expanded: false, children: [] }],
+            },
+          ],
+          columnTotals: [26],
+          grandTotal: null,
+        },
+      },
+      [datePart('year'), datePart('month')]
+    );
+    expect(mx.rows[0].label).toBe('2024');
+    expect(mx.rows[0].children[0].label).toBe('março');
+    expect(mx.columnTotals).toEqual([26]);
+    expect(mx.seriesNames).toEqual(['Total']);
+  });
+});

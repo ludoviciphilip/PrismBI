@@ -358,3 +358,31 @@ fn plain_field_drill_filter_and_legacy_requests_unchanged() {
     assert!(js.get("matrix").is_none());
     assert!(js.get("categoryKeys").is_none());
 }
+
+#[test]
+fn request_json_shape_sent_by_the_frontend_deserializes() {
+    // Forma exata montada por src/components/report/drill/engineQuery.ts
+    // (toNativeLevels / toNativeDrillFilters / matrixExpanded como arrays de chaves).
+    let model = stores_model();
+    let req: NativeVisualQueryRequest = serde_json::from_value(json!({
+        "visualId": "m1", "visualType": "matrix", "tableId": "fVendas",
+        "xAxisField": "Regiao", "yAxisFields": ["Clientes"], "aggregation": "NONE", "filters": [],
+        "matrixRows": [{ "field": "Regiao", "datePart": null }, { "field": "Cidade", "datePart": null }, { "field": "Loja", "datePart": null }],
+        "matrixExpandDepth": 0,
+        "matrixExpanded": [["Sul"]],
+        "matrixCollapsed": [],
+        "drillFilters": [{ "field": "Regiao", "datePart": null, "value": "Sul" }]
+    }))
+    .unwrap();
+    let res = execute_visual_query(&model, &req).unwrap();
+    let js = serde_json::to_value(&res).unwrap();
+    // Drill em Sul: só Sul; expandido (POA/Curitiba), subtotal 3, total geral = 3 (contexto com o drill).
+    assert_eq!(js["matrix"]["rows"][0]["label"], json!("Sul"));
+    assert_eq!(js["matrix"]["rows"][0]["values"], json!([3.0]));
+    assert_eq!(js["matrix"]["rows"][0]["hasChildren"], json!(true));
+    assert_eq!(js["matrix"]["rows"][0]["expanded"], json!(true));
+    assert_eq!(js["matrix"]["rows"][0]["children"].as_array().unwrap().len(), 2);
+    assert_eq!(js["matrix"]["columnTotals"], json!([3.0]));
+    assert!(js["matrix"]["rows"][0].get("rowTotal").is_some());
+    assert_eq!(js["categoryKeys"], json!([["Sul"]]));
+}
