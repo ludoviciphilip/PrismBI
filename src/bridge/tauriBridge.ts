@@ -135,6 +135,8 @@ export interface PbiVisualMeta {
   categoryField?: string | null;
   legendField?: string | null;
   valueFields: string[];
+  /** v0.10 Frente G: projeções extras de Category/Rows (hierarquia). */
+  drillFields?: string[];
   columnCount?: number | null;
   slicerMode?: string | null;
   actionType?: string | null;
