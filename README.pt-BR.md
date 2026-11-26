@@ -103,7 +103,7 @@ Construído com **Tauri v2 + Rust + DuckDB** no backend e **React + TypeScript +
 ### Pacotes prontos
 Baixe o pacote mais recente direto das [GitHub Releases](https://github.com/ludoviciphilip/PrismBI/releases):
 - **Linux:** **AppImage**, **`.deb`** ou **`.rpm`**.
-- **Windows x64:** instalador **`.msi`** (recomendado — habilita o auto-updater integrado) ou **`.zip`** portátil (descompacte e rode `prismbi.exe`, sem instalação/privilégios de administrador; nesse caso as atualizações precisam ser baixadas manualmente).
+- **Windows x64:** instalador **`.msi`** (recomendado — habilita o auto-updater integrado) ou **`.zip`** portátil (descompacte e rode `prismbi.exe`, sem instalação/privilégios de administrador; nesse caso as atualizações precisam ser baixadas manualmente). Desde a `v0.10.0` o instalador é um único MSI em pt-BR (`PrismBI_<versão>_x64_pt-BR.msi`) — o `tauri-bundler`/WiX gera um instalador por idioma configurado, e o app tem seu próprio i18n (seletor de idioma dentro do app), então o idioma do instalador importa pouco; um único build mantém a release e o auto-updater determinísticos (ver [Lacunas Conhecidas](#lacunas-conhecidas)).
 
 > **SmartScreen do Windows:** o binário ainda não é assinado digitalmente (ver [Lacunas Conhecidas](#lacunas-conhecidas) abaixo), então o Windows pode mostrar *"O Windows protegeu o computador"* na primeira execução; clique em **Mais informações → Executar assim mesmo**. Isso é esperado e não significa que o instalador seja inseguro — veja o `SHA256SUMS.txt` assinado publicado em cada release.
 
