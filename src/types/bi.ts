@@ -174,6 +174,11 @@ export interface ConditionalFormat {
   gradient?: { min: CondFormatStop; mid?: CondFormatStop; max: CondFormatStop };
   dataBar?: { positiveColor: string; negativeColor: string; showBarOnly?: boolean };
   icons?: { set: 'arrows' | 'traffic' | 'flags'; rules: ConditionalFormatRule[] };
+  /** v0.10 Frente H: "Aplicar a" da matriz — Somente valores (padrão/ausente)
+   * ou Valores e totais. Quando `true`, totais/subtotais também recebem a
+   * formatação, com min/max (gradiente) calculados sobre a própria escala
+   * dos totais — ver `styleForTotalCell` em conditionalFormat/apply.ts. */
+  applyToTotals?: boolean;
 }
 // --- fim Bloco B ---
 
