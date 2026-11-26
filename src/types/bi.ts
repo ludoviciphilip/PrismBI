@@ -194,8 +194,12 @@ export interface VisualFormatConfig {
   displayUnits?: 'none' | 'auto';
   colorBySign?: boolean;
   textContent?: string;
-  actionType?: 'back' | 'page-navigation';
+  actionType?: 'back' | 'page-navigation' | 'bookmark';
   actionTargetPageId?: string;
+  /** v0.10 (Indicadores): id do Bookmark aplicado por este botão quando actionType === 'bookmark'. */
+  actionBookmarkId?: string;
+  /** v0.10 (Indicadores/Seleção): visual oculto do canvas; alternado pelo painel "Seleção" ou por um indicador. */
+  hidden?: boolean;
   /** @deprecated legado (pré v0.10), migrado para `conditionalFormats` em src/engine/migrations/condfmt.ts */
   conditionalFormatting?: {
     field: string;
@@ -326,11 +330,31 @@ export interface Filter {
   value: any;
 }
 
+/** Per-visual display state captured by a Bookmark (capture.display), Power BI style. */
+export interface BookmarkVisualState {
+  hidden?: boolean;
+  drillLevel?: number;
+  sortField?: string;
+  sortOrder?: 'asc' | 'desc';
+}
+
 export interface Bookmark {
   id: string;
   name: string;
   activePageId: string;
   filters: Filter[];
+  /** Posição na lista do painel Indicadores (ordenação manual/arrastar). */
+  order?: number;
+  /** Nome do grupo de indicadores (indicadores com o mesmo valor pertencem ao mesmo grupo). */
+  groupId?: string;
+  /** O que este indicador captura/restaura, como "Dados / Exibição / Página atual" no Power BI. */
+  capture?: { data: boolean; display: boolean; currentPage: boolean };
+  /** Estado de exibição por visual (visibilidade, nível de drill, ordenação). */
+  visualState?: Record<string, BookmarkVisualState>;
+  /** visualId -> seleção do segmentador (selectedValues/between/relative de slicerConfig). */
+  slicerSelections?: Record<string, unknown>;
+  /** Visuais afetados: 'all' (todos) ou a lista de ids dos visuais selecionados na captura. */
+  scope?: 'all' | string[];
 }
 
 export interface BiTheme {
