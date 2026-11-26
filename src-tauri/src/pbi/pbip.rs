@@ -1174,7 +1174,7 @@ fn normalize_pbir_query_ref(qref: &str) -> (Option<String>, String) {
             "year" => "Ano",
             "month" => "Mês",
             "day" => "Dia",
-            "quarter" => "Semestre",
+            "quarter" => "Trimestre",
             _ => "Data",
         };
         return (tbl, mapped_col.to_string());

@@ -86,3 +86,28 @@ fn pbir_slicer_values_do_not_become_drill_fields() {
     let meta = parse_pbir_visual_json(&vj, "p1", 0).expect("visual");
     assert!(meta.drill_fields.is_empty());
 }
+
+/// Bug pré-existente (relatório da Frente G, "Riscos de merge"): o nível
+/// "quarter" da Date Hierarchy do Power BI era mapeado para a coluna
+/// "Semestre" em vez de "Trimestre".
+#[test]
+fn pbir_date_hierarchy_quarter_level_maps_to_trimestre_not_semestre() {
+    fn date_hierarchy_proj(level: &str) -> JsonValue {
+        let qref = format!("dCalendario.Data.Variation.Date Hierarchy.{level}");
+        json!({ "queryRef": qref })
+    }
+    let vj = json!({
+        "name": "col1",
+        "position": { "x": 0, "y": 0, "width": 400, "height": 300 },
+        "visual": {
+            "visualType": "clusteredColumnChart",
+            "query": { "queryState": {
+                "Category": { "projections": [date_hierarchy_proj("Year"), date_hierarchy_proj("Quarter")] },
+                "Y": { "projections": [measure_proj("Receita")] }
+            } }
+        }
+    });
+    let meta = parse_pbir_visual_json(&vj, "p1", 0).expect("visual");
+    assert_eq!(meta.category_field.as_deref(), Some("dCalendario.Ano"));
+    assert_eq!(meta.drill_fields, vec!["dCalendario.Trimestre".to_string()]);
+}
