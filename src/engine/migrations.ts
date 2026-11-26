@@ -2,6 +2,7 @@ import { ProjectState } from './storage';
 import { Table, Relationship, Measure, WhatIfParameter, RlsRole, CalculationGroup, PowerQueryStep, DataType, TableSourceConfig } from '../types/bi';
 import { EtlQuery, EtlStep, EtlType, Cond } from '../types/etl';
 import { fileEtlSource, inlineEtlSource } from '../services/etl/etlSource';
+import { migrateSlicerConfigs } from './migrations/slicers';
 
 export const CURRENT_ENGINE_VERSION = '2.2.0';
 
@@ -391,7 +392,7 @@ export function migrateProjectState(rawState: any): ProjectState {
     tables: synced.tables,
     relationships: normalizedRelationships,
     measures: synced.measures,
-    pages: Array.isArray(rawState.pages) ? rawState.pages : [],
+    pages: migrateSlicerConfigs(Array.isArray(rawState.pages) ? rawState.pages : []),
     activePageId: rawState.activePageId || rawState.pages?.[0]?.id || 'page_executivo',
     filters: Array.isArray(rawState.filters) ? rawState.filters : [],
     bookmarks: Array.isArray(rawState.bookmarks) ? rawState.bookmarks : [],
