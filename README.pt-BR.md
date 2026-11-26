@@ -4,7 +4,7 @@
 
 # PrismBI
 
-**Business Intelligence nativo para Linux & Windows — leve, rápido e compatível com projetos Power BI (`.pbip` / `.pbix`)**
+**Alternativa open-source ao Power BI para Linux & Windows — app desktop de BI nativo e leve que abre projetos Power BI (`.pbip` / `.pbix`), com motor DAX em Rust, Power Query visual e DuckDB**
 
 🇺🇸 [Read in English](./README.md) • 🇧🇷 **Português (Brasil)**
 
@@ -166,5 +166,6 @@ WEBKIT_DISABLE_DMABUF_RENDERER=1 pnpm tauri dev
 
 ## 🗺️ Roadmap & Licença
 
+- O PrismBI é um projeto independente, sem afiliação nem endosso da Microsoft. Power BI é marca registrada da Microsoft Corporation.
 - Veja as próximas entregas (`v0.8.0` a `v1.0.0`) em [ROADMAP.md](./ROADMAP.md).
 - Distribuído sob [The Mutualist License v1.3](./LICENSE.md) — originalmente inspirado na UI e engine DAX do [InsightHub](https://github.com/ludoviciphilip/Insight-Hub).

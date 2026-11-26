@@ -1,0 +1,16 @@
+name: ✨ Feature request / Sugestão
+description: Suggest a Power BI feature PrismBI should support / Sugira um recurso
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like? / O que você gostaria?
+      description: How does it work in Power BI Desktop, and how would you use it? / Como funciona no Power BI e como você usaria?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context / Contexto
+      description: Screenshots, DAX/M examples, links to Microsoft docs.

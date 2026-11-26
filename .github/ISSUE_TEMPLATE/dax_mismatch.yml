@@ -1,0 +1,23 @@
+name: 🧮 DAX result differs from Power BI / Resultado DAX diferente
+description: A measure returns a different value than in Power BI Desktop
+labels: [dax, bug]
+body:
+  - type: textarea
+    id: measure
+    attributes:
+      label: DAX expression
+      render: dax
+    validations:
+      required: true
+  - type: textarea
+    id: values
+    attributes:
+      label: Expected (Power BI) vs PrismBI
+      description: Filters/slicers active, the value in Power BI Desktop and the value in PrismBI.
+    validations:
+      required: true
+  - type: textarea
+    id: model
+    attributes:
+      label: Minimal model
+      description: Tables/columns/relationships needed to reproduce (a tiny .pbip or CSVs are ideal). Confirmed cases become entries in tests/dax-corpus.

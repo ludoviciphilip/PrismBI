@@ -1,0 +1,46 @@
+name: 🐞 Bug report / Relatar bug
+description: Something doesn't work as expected / Algo não funciona como esperado
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing PrismBI! / Obrigado por testar o PrismBI! Issues in English or Portuguese are welcome.
+  - type: input
+    id: version
+    attributes:
+      label: PrismBI version / Versão
+      placeholder: "0.9.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS / Package
+      options:
+        - Linux — AppImage
+        - Linux — .deb
+        - Linux — .rpm
+        - Linux — AUR (prismbi-bin)
+        - Windows — MSI
+        - Windows — portable ZIP
+        - Other / Outro
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distro / desktop / GPU
+      placeholder: "e.g. Arch + Hyprland (Wayland) + NVIDIA, Windows 11 23H2"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened? / O que aconteceu?
+      description: Steps to reproduce, expected vs actual. Screenshots help a lot. / Passos, esperado vs. obtido. Prints ajudam muito.
+    validations:
+      required: true
+  - type: textarea
+    id: file
+    attributes:
+      label: Project type / DAX / M involved
+      description: ".pbip, .pbix, .insight, CSV/Excel, database…; paste the DAX measure or M step if relevant (no confidential data)."
