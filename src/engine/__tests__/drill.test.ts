@@ -94,7 +94,7 @@ describe('estado e transições de drill', () => {
   it('drill down num ponto empilha o valor e desce um nível', () => {
     const p1 = drillDownOnPointPatch(dc(), levels, [2024]);
     expect(p1).toEqual({ currentDrillLevel: 1, drillPath: [2024], drillMode: 'drill' });
-    const p2 = drillDownOnPointPatch(dc(p1), levels, [1]);
+    const p2 = drillDownOnPointPatch(dc(p1!), levels, [1]);
     expect(p2).toEqual({ currentDrillLevel: 2, drillPath: [2024, 1], drillMode: 'drill' });
   });
 
