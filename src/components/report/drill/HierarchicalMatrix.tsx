@@ -264,6 +264,9 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
             );
           })}
         </tbody>
+        {/* Integração com a Frente H (feat/v0.10-condfmt2): quando `styleForTotalCell` existir em
+            conditionalFormat/apply.ts, aplicá-lo nas células de subtotal (linhas com depth < último nível
+            e coluna Total) e nos totais abaixo, como a Frente H fez na matriz antiga do VisualCard. */}
         <tfoot className="bg-slate-100 dark:bg-slate-800 font-bold">
           <tr>
             <td className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-slate-900 dark:text-amber-300 border-t-2 border-r border-slate-300 dark:border-slate-700">
