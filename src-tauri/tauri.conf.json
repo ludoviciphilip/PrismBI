@@ -37,7 +37,7 @@
     ],
     "windows": {
       "wix": {
-        "language": ["pt-BR", "en-US"],
+        "language": "pt-BR",
         "upgradeCode": "6f4d6c9a-9e3b-4b7a-9c2d-2a9f0b7c5d6e"
       },
       "webviewInstallMode": {

@@ -125,12 +125,19 @@ jobs:
         run: cargo test --lib --test dax_corpus
 
       - name: Build Tauri bundle (MSI)
+        # v0.10.0: bundle.windows.wix.language agora é só "pt-BR" (era
+        # ["pt-BR", "en-US"]), então este passo gera UM único
+        # PrismBI_<versão>_x64_pt-BR.msi, não mais dois instaladores por
+        # release. O app tem i18n próprio, então o idioma do instalador
+        # importa pouco; o updater (src-tauri/src/updater.rs) espera esse
+        # nome exato.
         run: pnpm tauri build --bundles msi
 
       - name: Collect Windows release artifacts (MSI + portable ZIP)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release-assets-windows | Out-Null
+          # Um único MSI (pt-BR) desde a v0.10.0: ver comentário no passo de build acima.
           Get-ChildItem -Recurse -Path src-tauri/target/release/bundle -Filter *.msi |
             Copy-Item -Destination release-assets-windows
 
