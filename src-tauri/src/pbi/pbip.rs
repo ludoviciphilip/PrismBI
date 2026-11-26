@@ -1,7 +1,8 @@
 use crate::engine::DuckDbStore;
 use crate::pbi::{
     m_loader, map_pbi_visual_type, parse_legacy_report_json, parse_tmsl_model_json, split_query_ref,
-    tmdl, PbiFilterMeta, PbiPageMeta, PbiPowerQueryScript, PbiProjectSummary, PbiVisualMeta,
+    tmdl, PbiCondFormatRuleMeta, PbiCondFormatStopMeta, PbiConditionalFormatMeta, PbiFilterMeta,
+    PbiPageMeta, PbiPowerQueryScript, PbiProjectSummary, PbiVisualMeta,
 };
 use serde_json::Value as JsonValue;
 use std::fs;
@@ -328,6 +329,7 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
     let mut category_field: Option<String> = None;
     let mut legend_field: Option<String> = None;
     let mut value_fields = Vec::new();
+    let mut drill_fields: Vec<String> = Vec::new();
 
     if let Some(qstate) = visual_obj
         .get("query")
@@ -367,12 +369,15 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
                     || role_l == "x"
                     || (is_slicer && role_l == "values")
                 {
+                    let qualified = match &tbl {
+                        Some(t) if !t.eq_ignore_ascii_case("medidas") => format!("{}.{}", t, fld),
+                        _ => fld,
+                    };
                     if category_field.is_none() {
-                        let qualified = match &tbl {
-                            Some(t) if !t.eq_ignore_ascii_case("medidas") => format!("{}.{}", t, fld),
-                            _ => fld,
-                        };
                         category_field = Some(qualified);
+                    } else if !is_slicer && !drill_fields.contains(&qualified) {
+                        // v0.10 Frente G: projeções seguintes = hierarquia de drill / linhas da matriz.
+                        drill_fields.push(qualified);
                     }
                 } else if role_l == "series" || role_l == "columns" || role_l == "legend" {
                     if legend_field.is_none() {
@@ -417,6 +422,17 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
     let filters = extract_pbir_filters(vj);
     let (sort_field, sort_order) =
         extract_pbir_sort_definition(visual_obj, category_field.as_deref(), &value_fields);
+    let conditional_formats = extract_pbir_conditional_formats(visual_obj, category_field.as_deref(), &value_fields);
+    let slicer_self_filter = if mapped_type == "slicer" {
+        extract_pbir_slicer_self_filter(visual_obj)
+    } else {
+        PbirSlicerSelfFilter::default()
+    };
+    let slicer_show_search = if mapped_type == "slicer" {
+        extract_pbir_slicer_show_search(visual_obj)
+    } else {
+        None
+    };
 
     let id = vj
         .get("name")
@@ -456,6 +472,7 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
         category_field,
         legend_field,
         value_fields,
+        drill_fields,
         column_count,
         slicer_mode,
         action_type,
@@ -464,6 +481,16 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
         filters,
         sort_field,
         sort_order,
+        conditional_formats,
+        slicer_between_start: slicer_self_filter.between_start,
+        slicer_between_end: slicer_self_filter.between_end,
+        slicer_relative_anchor: slicer_self_filter.relative_anchor,
+        slicer_relative_count: slicer_self_filter.relative_count,
+        slicer_relative_unit: slicer_self_filter.relative_unit,
+        slicer_relative_include_today: slicer_self_filter.relative_include_today,
+        slicer_show_search,
+        background_color: extract_pbir_container_color(visual_obj, vj, "background"),
+        border_color: extract_pbir_container_color(visual_obj, vj, "border"),
     })
 }
 
@@ -539,6 +566,426 @@ fn extract_pbir_visual_title(visual_obj: &JsonValue) -> Option<String> {
         }
     }
     None
+}
+
+/// Formatação condicional (v0.10 Frente B): lê `objects.values` (card de
+/// formatação por coluna de tabela/matriz) e `objects.dataPoint` (gráficos),
+/// mapeando `backColor`/`fontColor` com `FillRule` (`linearGradient2`/`3`)
+/// ou `Conditional` (regras, primeira que casa vence) e `dataBars`. Formatos
+/// não reconhecidos (ex.: medida-como-cor, ícones por `Conditional` em
+/// `icon.value`) são ignorados com segurança — ver relatório da Frente B.
+fn extract_pbir_conditional_formats(
+    visual_obj: &JsonValue,
+    category_field: Option<&str>,
+    value_fields: &[String],
+) -> Vec<PbiConditionalFormatMeta> {
+    let mut out = Vec::new();
+    let objects = match visual_obj.get("objects").and_then(|o| o.as_object()) {
+        Some(o) => o,
+        None => return out,
+    };
+
+    let default_field = value_fields
+        .first()
+        .cloned()
+        .or_else(|| category_field.map(str::to_string));
+
+    for card_name in ["values", "dataPoint"] {
+        let Some(entries) = objects.get(card_name).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for entry in entries {
+            let apply_to = entry
+                .get("selector")
+                .and_then(|s| s.get("metadata"))
+                .and_then(|m| m.as_str())
+                .map(|m| normalize_pbir_query_ref(m).1)
+                .or_else(|| default_field.clone());
+            let Some(apply_to) = apply_to else { continue };
+            let Some(props) = entry.get("properties").and_then(|p| p.as_object()) else {
+                continue;
+            };
+
+            if let Some(color_prop) = props.get("backColor") {
+                if let Some(cf) = parse_pbir_color_property(color_prop, "background", &apply_to) {
+                    out.push(cf);
+                }
+            }
+            if let Some(color_prop) = props.get("fontColor") {
+                if let Some(cf) = parse_pbir_color_property(color_prop, "fontColor", &apply_to) {
+                    out.push(cf);
+                }
+            }
+            if let Some(data_bars) = props.get("dataBars") {
+                if let Some(cf) = parse_pbir_data_bars(data_bars, &apply_to) {
+                    out.push(cf);
+                }
+            }
+            if let Some(icon_prop) = props.get("icon") {
+                if let Some(cf) = parse_pbir_icon_conditional(icon_prop, &apply_to) {
+                    out.push(cf);
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// Lê o literal de cor de um nó PBIR (`solid.color.expr.Literal.Value`),
+/// devolvendo o hex sem aspas (ex.: `"'#FF0000'"` -> `"#FF0000"`).
+fn extract_pbir_solid_color_literal(node: &JsonValue) -> Option<String> {
+    let raw = node
+        .get("solid")
+        .and_then(|s| s.get("color"))
+        .and_then(|c| c.get("expr"))
+        .and_then(|e| e.get("Literal"))
+        .and_then(|l| l.get("Value"))
+        .and_then(|v| v.as_str())?;
+    let clean = strip_pbir_literal(raw);
+    if clean.is_empty() {
+        None
+    } else {
+        Some(clean)
+    }
+}
+
+fn extract_pbir_number_literal(node: &JsonValue) -> Option<f64> {
+    let raw = node.get("Literal").and_then(|l| l.get("Value")).and_then(|v| v.as_str())?;
+    strip_pbir_literal(raw).parse::<f64>().ok()
+}
+
+/// `backColor`/`fontColor` pode ser cor fixa (não é condicional — ignorado),
+/// `FillRule` (gradiente) ou `Conditional` (regras).
+fn parse_pbir_color_property(node: &JsonValue, target: &str, apply_to: &str) -> Option<PbiConditionalFormatMeta> {
+    let expr = node.get("solid").and_then(|s| s.get("color")).and_then(|c| c.get("expr"))?;
+
+    if let Some(fill_rule) = expr.get("FillRule") {
+        return parse_pbir_fill_rule(fill_rule, target, apply_to);
+    }
+    if let Some(conditional) = expr.get("Conditional") {
+        return parse_pbir_conditional_cases(conditional, target, apply_to);
+    }
+    // Literal simples (cor fixa, sem variação por valor): não é formatação
+    // condicional, então é ignorado aqui com segurança.
+    None
+}
+
+fn parse_pbir_stop(node: &JsonValue) -> Option<PbiCondFormatStopMeta> {
+    let color = node
+        .get("color")
+        .and_then(|c| c.get("expr"))
+        .and_then(|e| e.get("Literal"))
+        .and_then(|l| l.get("Value"))
+        .and_then(|v| v.as_str())
+        .map(strip_pbir_literal)?;
+    let value = node.get("value").and_then(extract_pbir_number_literal);
+    let kind = if value.is_some() { "number".to_string() } else { "lowest".to_string() };
+    Some(PbiCondFormatStopMeta { kind, value, color })
+}
+
+fn parse_pbir_fill_rule(fill_rule: &JsonValue, target: &str, apply_to: &str) -> Option<PbiConditionalFormatMeta> {
+    if let Some(g2) = fill_rule.get("linearGradient2") {
+        let mut min = parse_pbir_stop(g2.get("min")?)?;
+        let mut max = parse_pbir_stop(g2.get("max")?)?;
+        if min.value.is_none() {
+            min.kind = "lowest".to_string();
+        }
+        if max.value.is_none() {
+            max.kind = "highest".to_string();
+        }
+        return Some(PbiConditionalFormatMeta {
+            target: target.to_string(),
+            apply_to: apply_to.to_string(),
+            mode: "gradient".to_string(),
+            rules: Vec::new(),
+            gradient_min: Some(min),
+            gradient_mid: None,
+            gradient_max: Some(max),
+            data_bar_positive: None,
+            data_bar_negative: None,
+            icon_set: None,
+        });
+    }
+    if let Some(g3) = fill_rule.get("linearGradient3") {
+        let mut min = parse_pbir_stop(g3.get("min")?)?;
+        let mid = parse_pbir_stop(g3.get("mid")?)?;
+        let mut max = parse_pbir_stop(g3.get("max")?)?;
+        if min.value.is_none() {
+            min.kind = "lowest".to_string();
+        }
+        if max.value.is_none() {
+            max.kind = "highest".to_string();
+        }
+        return Some(PbiConditionalFormatMeta {
+            target: target.to_string(),
+            apply_to: apply_to.to_string(),
+            mode: "gradient".to_string(),
+            rules: Vec::new(),
+            gradient_min: Some(min),
+            gradient_mid: Some(mid),
+            gradient_max: Some(max),
+            data_bar_positive: None,
+            data_bar_negative: None,
+            icon_set: None,
+        });
+    }
+    // Outras formas de FillRule (ex.: linearGradient com apenas uma parada,
+    // ou formas específicas de outra versão do schema) não são reconhecidas.
+    None
+}
+
+/// `ComparisonKind`: 0=Equal, 1=GreaterThan, 2=GreaterThanOrEqual,
+/// 3=LessThan, 4=LessThanOrEqual — conferido contra o schema oficial
+/// (`QueryComparisonKind` em
+/// developer.microsoft.com/json-schemas/fabric/item/report/definition/semanticQuery/1.4.0/schema.json).
+/// A Rodada 1 tinha 3 e 4 trocados (3=LessThanOrEqual, 4=LessThan); corrigido
+/// na Frente H — ver `test_comparison_kind_matches_pbir_schema`. Cases são
+/// avaliados na ordem; a primeira que casa vence, como no motor
+/// (`src/engine/conditionalFormat.ts`).
+fn comparison_kind_to_operator(kind: i64) -> Option<&'static str> {
+    match kind {
+        0 => Some("=="),
+        1 => Some(">"),
+        2 => Some(">="),
+        3 => Some("<"),
+        4 => Some("<="),
+        _ => None,
+    }
+}
+
+/// Inverso de `comparison_kind_to_operator`, usado pelo exportador para
+/// regravar `Conditional.Cases` no PBIR a partir de `ConditionalFormatRule`.
+pub fn operator_to_comparison_kind(op: &str) -> Option<i64> {
+    match op {
+        "==" => Some(0),
+        ">" => Some(1),
+        ">=" => Some(2),
+        "<" => Some(3),
+        "<=" => Some(4),
+        _ => None, // "between" não tem ComparisonKind único no PBIR (ver pbip_writer).
+    }
+}
+
+fn parse_pbir_conditional_cases(conditional: &JsonValue, target: &str, apply_to: &str) -> Option<PbiConditionalFormatMeta> {
+    let cases = conditional.get("Cases").and_then(|c| c.as_array())?;
+    let mut rules = Vec::new();
+    for case in cases {
+        let comparison = case.get("Condition").and_then(|c| c.get("Comparison"))?;
+        let kind = comparison.get("ComparisonKind").and_then(|k| k.as_i64())?;
+        let operator = comparison_kind_to_operator(kind)?;
+        let threshold = comparison
+            .get("Right")
+            .and_then(extract_pbir_number_literal)?;
+        let color = case
+            .get("Value")
+            .and_then(|v| v.get("Literal"))
+            .and_then(|l| l.get("Value"))
+            .and_then(|v| v.as_str())
+            .map(strip_pbir_literal)?;
+        rules.push(PbiCondFormatRuleMeta {
+            operator: operator.to_string(),
+            value: threshold,
+            value2: None,
+            color,
+        });
+    }
+    if rules.is_empty() {
+        return None;
+    }
+    Some(PbiConditionalFormatMeta {
+        target: target.to_string(),
+        apply_to: apply_to.to_string(),
+        mode: "rules".to_string(),
+        rules,
+        gradient_min: None,
+        gradient_mid: None,
+        gradient_max: None,
+        data_bar_positive: None,
+        data_bar_negative: None,
+        icon_set: None,
+    })
+}
+
+fn parse_pbir_data_bars(node: &JsonValue, apply_to: &str) -> Option<PbiConditionalFormatMeta> {
+    let positive = node.get("positiveColor").and_then(extract_pbir_solid_color_literal);
+    let negative = node.get("negativeColor").and_then(extract_pbir_solid_color_literal);
+    if positive.is_none() && negative.is_none() {
+        return None;
+    }
+    Some(PbiConditionalFormatMeta {
+        target: "dataBar".to_string(),
+        apply_to: apply_to.to_string(),
+        mode: "rules".to_string(),
+        rules: Vec::new(),
+        gradient_min: None,
+        gradient_mid: None,
+        gradient_max: None,
+        data_bar_positive: positive,
+        data_bar_negative: negative,
+        icon_set: None,
+    })
+}
+
+/// Infere o conjunto de ícones (`'arrows' | 'traffic' | 'flags'`) a partir
+/// do nome literal do ícone PBIR (ex.: `'ArrowsIcon0'`, `'TrafficIcon2'`,
+/// `'FlagsIcon1'`). O PrismBI escreve esses nomes no exportador
+/// (`pbip_writer::icon_literal_for_rule`); nomes reais do Power BI Desktop
+/// (ex.: `'SymbolMedium'`) não identificam o conjunto de forma confiável —
+/// nesse caso cai no padrão `'arrows'`.
+fn icon_set_from_literal(name: &str) -> &'static str {
+    let lower = name.to_lowercase();
+    if lower.contains("traffic") || lower.contains("circle") {
+        "traffic"
+    } else if lower.contains("flag") {
+        "flags"
+    } else {
+        "arrows"
+    }
+}
+
+/// Ícones por `Conditional` (v0.10 Frente H): `properties.icon.value.expr.Conditional`,
+/// com `Cases` no mesmo formato de `parse_pbir_conditional_cases`, mas o
+/// `Value.Literal.Value` de cada caso é o nome do ícone (string), não uma
+/// cor. O conjunto de ícones é inferido do primeiro nome reconhecido (ver
+/// `icon_set_from_literal`); a cor de cada regra fica vazia (o motor usa a
+/// cor padrão do conjunto por posição — `ICON_SETS` em
+/// `src/engine/conditionalFormat.ts`).
+fn parse_pbir_icon_conditional(icon_node: &JsonValue, apply_to: &str) -> Option<PbiConditionalFormatMeta> {
+    let conditional = icon_node.get("value").and_then(|v| v.get("expr")).and_then(|e| e.get("Conditional"))?;
+    let cases = conditional.get("Cases").and_then(|c| c.as_array())?;
+    let mut rules = Vec::new();
+    let mut icon_set: Option<&'static str> = None;
+    for case in cases {
+        let comparison = case.get("Condition").and_then(|c| c.get("Comparison"))?;
+        let kind = comparison.get("ComparisonKind").and_then(|k| k.as_i64())?;
+        let operator = comparison_kind_to_operator(kind)?;
+        let threshold = comparison.get("Right").and_then(extract_pbir_number_literal)?;
+        let icon_name = case
+            .get("Value")
+            .and_then(|v| v.get("Literal"))
+            .and_then(|l| l.get("Value"))
+            .and_then(|v| v.as_str())
+            .map(strip_pbir_literal)
+            .unwrap_or_default();
+        if icon_set.is_none() && !icon_name.is_empty() {
+            icon_set = Some(icon_set_from_literal(&icon_name));
+        }
+        rules.push(PbiCondFormatRuleMeta {
+            operator: operator.to_string(),
+            value: threshold,
+            value2: None,
+            color: String::new(),
+        });
+    }
+    if rules.is_empty() {
+        return None;
+    }
+    Some(PbiConditionalFormatMeta {
+        target: "icon".to_string(),
+        apply_to: apply_to.to_string(),
+        mode: "rules".to_string(),
+        rules,
+        gradient_min: None,
+        gradient_mid: None,
+        gradient_max: None,
+        data_bar_positive: None,
+        data_bar_negative: None,
+        icon_set: Some(icon_set.unwrap_or("arrows").to_string()),
+    })
+}
+
+/// Self-filter do segmentador (`objects.general.properties.filter`), onde o
+/// Power BI guarda a seleção padrão/intervalo do segmentador (ver
+/// "Slicer Default Selected Values" na documentação PBIR). A Frente H lê
+/// `Between` (modo `'between'`) e `DateSpan`/`DateAdd` (modo `'relative-date'`)
+/// aqui para fechar o round-trip; a caixa de busca (`showSearch`) é lida à
+/// parte em `extract_pbir_slicer_show_search`.
+#[derive(Default)]
+struct PbirSlicerSelfFilter {
+    between_start: Option<String>,
+    between_end: Option<String>,
+    relative_anchor: Option<String>,
+    relative_count: Option<f64>,
+    relative_unit: Option<String>,
+    relative_include_today: Option<bool>,
+}
+
+fn strip_literal_any(node: &JsonValue) -> Option<String> {
+    let raw = node.get("Literal").and_then(|l| l.get("Value")).and_then(|v| v.as_str())?;
+    Some(strip_pbir_literal(raw))
+}
+
+fn extract_pbir_slicer_self_filter(visual_obj: &JsonValue) -> PbirSlicerSelfFilter {
+    let condition = visual_obj
+        .get("objects")
+        .and_then(|o| o.get("general"))
+        .and_then(|g| g.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|e| e.get("properties"))
+        .and_then(|p| p.get("filter"))
+        .and_then(|f| f.get("filter"))
+        .and_then(|f| f.get("Where"))
+        .and_then(|w| w.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|w0| w0.get("Condition"));
+    let Some(condition) = condition else {
+        return PbirSlicerSelfFilter::default();
+    };
+    if let Some(between) = condition.get("Between") {
+        let start = between.get("LowerBound").and_then(strip_literal_any);
+        let end = between.get("UpperBound").and_then(strip_literal_any);
+        return PbirSlicerSelfFilter { between_start: start, between_end: end, ..Default::default() };
+    }
+    if let Some(date_span) = condition.get("DateSpan") {
+        let anchor = date_span.get("anchor").and_then(|v| v.as_str()).map(str::to_string);
+        let count = date_span.get("count").and_then(|v| v.as_f64());
+        let unit = date_span.get("unit").and_then(|v| v.as_str()).map(str::to_string);
+        let include_today = date_span.get("includeToday").and_then(|v| v.as_bool());
+        return PbirSlicerSelfFilter {
+            relative_anchor: anchor,
+            relative_count: count,
+            relative_unit: unit,
+            relative_include_today: include_today,
+            ..Default::default()
+        };
+    }
+    PbirSlicerSelfFilter::default()
+}
+
+/// Caixa de busca do segmentador: `objects.searchBox[0].properties.show`.
+/// Nome de objeto/propriedade por convenção (o card de formatação do
+/// segmentador nativo inclui `searchBox` segundo a referência PBIR
+/// consultada), não confirmado contra o schema oficial — documentado no
+/// relatório da Frente H. O round-trip funciona porque o exportador grava
+/// no mesmo lugar.
+fn extract_pbir_slicer_show_search(visual_obj: &JsonValue) -> Option<bool> {
+    let raw = visual_obj
+        .get("objects")
+        .and_then(|o| o.get("searchBox"))
+        .and_then(|arr| arr.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|e| e.get("properties"))
+        .and_then(|p| p.get("show"))
+        .and_then(|s| s.get("expr"))
+        .and_then(|e| e.get("Literal"))
+        .and_then(|l| l.get("Value"))
+        .and_then(|v| v.as_str())?;
+    Some(strip_pbir_literal(raw).eq_ignore_ascii_case("true"))
+}
+
+/// Cor de fundo/borda do visual: `visual.visualContainerObjects.<card>[0].properties.color`
+/// (card = `"background"` ou `"border"`), espelhando o que o exportador
+/// grava em `save_pbip_project` (Frente H).
+fn extract_pbir_container_color(visual_obj: &JsonValue, _vj: &JsonValue, card: &str) -> Option<String> {
+    visual_obj
+        .get("visualContainerObjects")
+        .and_then(|o| o.get(card))
+        .and_then(|arr| arr.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|e| e.get("properties"))
+        .and_then(|p| p.get("color"))
+        .and_then(extract_pbir_solid_color_literal)
 }
 
 fn extract_pbir_column_count(visual_obj: &JsonValue) -> Option<u32> {
@@ -727,7 +1174,7 @@ fn normalize_pbir_query_ref(qref: &str) -> (Option<String>, String) {
             "year" => "Ano",
             "month" => "Mês",
             "day" => "Dia",
-            "quarter" => "Semestre",
+            "quarter" => "Trimestre",
             _ => "Data",
         };
         return (tbl, mapped_col.to_string());
@@ -748,6 +1195,10 @@ fn extract_pbir_field_entity_prop(field: &JsonValue) -> Option<(Option<String>, 
     let prop = node.get("Property").and_then(|v| v.as_str())?.to_string();
     Some((entity, prop))
 }
+
+#[cfg(test)]
+#[path = "tests_drill_import.rs"]
+mod drill_import_tests;
 
 #[cfg(test)]
 mod tests {
@@ -931,5 +1382,120 @@ mod tests {
         let btn_meta = parse_pbir_visual_json(&btn_vj, "p1", 2).expect("actionButton");
         assert_eq!(btn_meta.visual_type, "action-button");
         assert_eq!(btn_meta.action_type.as_deref(), Some("back"));
+    }
+
+    fn load_condfmt_fixture(name: &str) -> JsonValue {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/condfmt").join(name);
+        let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("fixture {:?}: {}", path, e));
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    #[test]
+    fn test_pbir_conditional_format_gradient2_from_fixture() {
+        let vj = load_condfmt_fixture("gradient2_table.json");
+        let meta = parse_pbir_visual_json(&vj, "p1", 0).expect("tableEx com gradiente");
+        assert_eq!(meta.conditional_formats.len(), 1);
+        let cf = &meta.conditional_formats[0];
+        assert_eq!(cf.target, "background");
+        assert_eq!(cf.apply_to, "Receita");
+        assert_eq!(cf.mode, "gradient");
+        let min = cf.gradient_min.as_ref().unwrap();
+        let max = cf.gradient_max.as_ref().unwrap();
+        assert_eq!(min.kind, "lowest");
+        assert_eq!(min.color, "#FF0000");
+        assert_eq!(max.kind, "highest");
+        assert_eq!(max.color, "#00FF00");
+        assert!(cf.gradient_mid.is_none());
+    }
+
+    #[test]
+    fn test_pbir_conditional_format_rules_from_fixture_first_match_wins_order() {
+        let vj = load_condfmt_fixture("rules_card.json");
+        let meta = parse_pbir_visual_json(&vj, "p1", 0).expect("cardVisual com regras");
+        assert_eq!(meta.conditional_formats.len(), 1);
+        let cf = &meta.conditional_formats[0];
+        assert_eq!(cf.target, "fontColor");
+        assert_eq!(cf.apply_to, "Margem");
+        assert_eq!(cf.mode, "rules");
+        assert_eq!(cf.rules.len(), 2);
+        // ComparisonKind 1 = GreaterThan -> ">"; ordem preservada (1a regra testada primeiro)
+        assert_eq!(cf.rules[0].operator, ">");
+        assert_eq!(cf.rules[0].value, 1000.0);
+        assert_eq!(cf.rules[0].color, "#16A34A");
+        // ComparisonKind 4 = LessThanOrEqual -> "<="
+        assert_eq!(cf.rules[1].operator, "<=");
+        assert_eq!(cf.rules[1].value, 0.0);
+        assert_eq!(cf.rules[1].color, "#DC2626");
+    }
+
+    #[test]
+    fn test_comparison_kind_matches_pbir_schema() {
+        // QueryComparisonKind oficial (semanticQuery/1.4.0/schema.json):
+        // 0=Equal, 1=GreaterThan, 2=GreaterThanOrEqual, 3=LessThan, 4=LessThanOrEqual.
+        assert_eq!(comparison_kind_to_operator(0), Some("=="));
+        assert_eq!(comparison_kind_to_operator(1), Some(">"));
+        assert_eq!(comparison_kind_to_operator(2), Some(">="));
+        assert_eq!(comparison_kind_to_operator(3), Some("<"));
+        assert_eq!(comparison_kind_to_operator(4), Some("<="));
+        assert_eq!(comparison_kind_to_operator(99), None);
+        for (op, kind) in [("==", 0), (">", 1), (">=", 2), ("<", 3), ("<=", 4)] {
+            assert_eq!(operator_to_comparison_kind(op), Some(kind));
+        }
+        assert_eq!(operator_to_comparison_kind("between"), None);
+    }
+
+    #[test]
+    fn test_pbir_conditional_format_data_bars_from_fixture() {
+        let vj = load_condfmt_fixture("databars_table.json");
+        let meta = parse_pbir_visual_json(&vj, "p1", 0).expect("tableEx com barras de dados");
+        assert_eq!(meta.conditional_formats.len(), 1);
+        let cf = &meta.conditional_formats[0];
+        assert_eq!(cf.target, "dataBar");
+        assert_eq!(cf.apply_to, "Saldo");
+        assert_eq!(cf.data_bar_positive.as_deref(), Some("#3B82F6"));
+        assert_eq!(cf.data_bar_negative.as_deref(), Some("#EF4444"));
+    }
+
+    #[test]
+    fn test_pbir_conditional_format_icons_from_fixture() {
+        let vj = load_condfmt_fixture("icons_table.json");
+        let meta = parse_pbir_visual_json(&vj, "p1", 0).expect("tableEx com ícones");
+        assert_eq!(meta.conditional_formats.len(), 1);
+        let cf = &meta.conditional_formats[0];
+        assert_eq!(cf.target, "icon");
+        assert_eq!(cf.apply_to, "Variacao");
+        assert_eq!(cf.icon_set.as_deref(), Some("arrows"));
+        assert_eq!(cf.rules.len(), 2);
+        // ComparisonKind 1 = GreaterThan -> ">"
+        assert_eq!(cf.rules[0].operator, ">");
+        assert_eq!(cf.rules[0].value, 0.0);
+        // ComparisonKind 3 = LessThan -> "<"
+        assert_eq!(cf.rules[1].operator, "<");
+        assert_eq!(cf.rules[1].value, 0.0);
+    }
+
+    #[test]
+    fn test_pbir_conditional_format_plain_literal_color_is_ignored_safely() {
+        // backColor fixo (sem FillRule/Conditional) não é "condicional" — não deve gerar ConditionalFormat.
+        let vj: JsonValue = serde_json::json!({
+            "name": "vis_plain",
+            "position": { "x": 0, "y": 0, "width": 200, "height": 100 },
+            "visual": {
+                "visualType": "tableEx",
+                "query": { "queryState": { "Values": { "projections": [{ "queryRef": "f_Vendas.Receita" }] } } },
+                "objects": {
+                    "values": [
+                        {
+                            "properties": {
+                                "backColor": { "solid": { "color": { "expr": { "Literal": { "Value": "'#CCCCCC'" } } } } }
+                            },
+                            "selector": { "metadata": "f_Vendas.Receita" }
+                        }
+                    ]
+                }
+            }
+        });
+        let meta = parse_pbir_visual_json(&vj, "p1", 0).expect("tableEx com cor fixa");
+        assert!(meta.conditional_formats.is_empty());
     }
 }

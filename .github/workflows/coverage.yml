@@ -1,0 +1,61 @@
+name: Coverage (Rust)
+
+# Instrumented cargo-llvm-cov recompiles the whole crate (DuckDB included),
+# ~20+ minutes. Never run this on PRs: workflow_dispatch + a weekly schedule
+# only, matching docs/TEST_COVERAGE.md.
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 6 * * 1" # Monday 06:00 UTC
+
+jobs:
+  coverage:
+    name: cargo-llvm-cov (Linux)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: coverage
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Measure coverage (lib + DAX corpus)
+        working-directory: src-tauri
+        run: |
+          cargo llvm-cov --lib --test dax_corpus --lcov --output-path lcov.info
+          cargo llvm-cov report --summary-only > coverage-summary.txt
+          cat coverage-summary.txt
+
+      - name: Publish summary to the job log
+        working-directory: src-tauri
+        run: |
+          {
+            echo "## Rust test coverage (cargo-llvm-cov)"
+            echo
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+            echo
+            echo "Full per-file breakdown: see the \`lcov-report\` artifact and \`docs/TEST_COVERAGE.md\` on the branch."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload lcov report
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov-report
+          path: src-tauri/lcov.info
+          retention-days: 30

@@ -1,0 +1,35 @@
+{
+  "name": "vis_table_gradient",
+  "position": { "x": 10, "y": 10, "width": 500, "height": 300 },
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": { "projections": [{ "queryRef": "f_Vendas.Receita" }] }
+      }
+    },
+    "objects": {
+      "values": [
+        {
+          "properties": {
+            "backColor": {
+              "solid": {
+                "color": {
+                  "expr": {
+                    "FillRule": {
+                      "linearGradient2": {
+                        "min": { "color": { "expr": { "Literal": { "Value": "'#FF0000'" } } } },
+                        "max": { "color": { "expr": { "Literal": { "Value": "'#00FF00'" } } } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "selector": { "metadata": "f_Vendas.Receita" }
+        }
+      ]
+    }
+  }
+}

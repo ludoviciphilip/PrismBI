@@ -1161,4 +1161,86 @@ mod tests {
             Some("Frete")
         );
     }
+
+    // -----------------------------------------------------------------
+    // Coverage tests: pure helpers (no DuckDB connection needed). These
+    // are the file-name/identifier sanitizers used on every import path,
+    // so untrusted file names and spreadsheet cells are the priority.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn sanitize_identifier_strips_punctuation_and_handles_edge_cases() {
+        assert_eq!(sanitize_identifier("Vendas 2024.csv"), "Vendas_2024_csv");
+        assert_eq!(sanitize_identifier("  Clientes  "), "Clientes");
+        // Leading digit gets a "t_" prefix (DuckDB identifiers can't start with one).
+        assert_eq!(sanitize_identifier("2024_vendas"), "t_2024_vendas");
+        // Only punctuation/whitespace collapses to the fallback name.
+        assert_eq!(sanitize_identifier("   ...   "), "tabela");
+        assert_eq!(sanitize_identifier(""), "tabela");
+        // Non-ASCII letters are kept as-is (alphanumeric per Unicode).
+        assert_eq!(sanitize_identifier("Relatório"), "Relatório");
+        // SQL-injection-shaped input becomes a harmless identifier, not SQL:
+        // quotes/semicolons are dropped outright, and the trailing "--" is
+        // mapped to underscores that then get trimmed off the end.
+        assert_eq!(sanitize_identifier("x\"; DROP TABLE t; --"), "x_DROP_TABLE_t");
+    }
+
+    #[test]
+    fn quote_ident_doubles_embedded_quotes() {
+        assert_eq!(quote_ident("Vendas"), "\"Vendas\"");
+        assert_eq!(quote_ident("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn format_days_since_epoch_known_anchors() {
+        assert_eq!(format_days_since_epoch(0), "1970-01-01");
+        assert_eq!(format_days_since_epoch(1), "1970-01-02");
+        // 2024-02-29 is day 19782 since epoch (leap day).
+        assert_eq!(format_days_since_epoch(19782), "2024-02-29");
+        assert_eq!(format_days_since_epoch(-1), "1969-12-31");
+    }
+
+    #[test]
+    fn bump_and_get_table_version_is_case_insensitive_and_monotonic() {
+        let probe = "cov_probe_tbl_7f3a";
+        let before = get_table_version(probe);
+        let v1 = bump_table_version(probe);
+        assert_eq!(v1, before + 1);
+        // Case-insensitive: bumping a different-case name affects the same slot.
+        let v2 = bump_table_version(&probe.to_uppercase());
+        assert_eq!(v2, v1 + 1);
+        assert_eq!(get_table_version(probe), v2);
+        assert_eq!(get_table_version("cov_probe_tbl_never_bumped_9c2"), 0);
+    }
+
+    #[test]
+    fn calamine_cell_to_json_type_coercions() {
+        use calamine::Data;
+        // Numeric cell requested as boolean.
+        assert_eq!(calamine_cell_to_json(&Data::Int(0), "boolean"), JsonValue::Bool(false));
+        assert_eq!(calamine_cell_to_json(&Data::Int(5), "boolean"), JsonValue::Bool(true));
+        // Text cell with a comma decimal separator requested as number.
+        let v = calamine_cell_to_json(&Data::String("12,5".to_string()), "number");
+        assert_eq!(v.as_f64(), Some(12.5));
+        // Blank text is null regardless of requested type.
+        assert_eq!(calamine_cell_to_json(&Data::String("   ".to_string()), "text"), JsonValue::Null);
+        // Non-numeric text requested as number is null, not an error.
+        assert_eq!(
+            calamine_cell_to_json(&Data::String("abc".to_string()), "number"),
+            JsonValue::Null
+        );
+        // Portuguese boolean spellings.
+        assert_eq!(
+            calamine_cell_to_json(&Data::String("Sim".to_string()), "boolean"),
+            JsonValue::Bool(true)
+        );
+        assert_eq!(calamine_cell_to_json(&Data::Empty, "number"), JsonValue::Null);
+    }
+
+    #[test]
+    fn import_csv_rejects_missing_file_without_panicking() {
+        let store = DuckDbStore::new_in_memory().expect("init duckdb");
+        let result = store.import_csv(Path::new("/nonexistent/path/does-not-exist.csv"), None);
+        assert!(result.is_err());
+    }
 }

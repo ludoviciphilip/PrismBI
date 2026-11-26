@@ -9,6 +9,7 @@ import {
   Page,
   Visual,
   VisualType,
+  VisualDataConfig,
   Filter,
   Bookmark,
   DashboardTile,
@@ -26,6 +27,24 @@ import {
 } from '../types/bi';
 import { EtlQuery, EtlStep, EtlSource } from '../types/etl';
 import { etlApply, etlFromM, etlLoadRaw, setBrowserRawProvider } from '../services/etl/etlClient';
+import {
+  buildSlicerFilterValue,
+  findSyncSiblings,
+  pageInSyncScope,
+  resolveSlicerField,
+  slicerFilterId,
+} from '../components/report/slicer/slicerFilter';
+import { captureBookmark, applyBookmark as applyBookmarkPure } from '../components/report/bookmarks/capture';
+import {
+  createBookmarkEntry,
+  renameBookmarkEntry,
+  deleteBookmarkEntry,
+  duplicateBookmarkEntry,
+  reorderBookmarkEntry,
+  setBookmarkGroup,
+  ungroupBookmarkEntries,
+  updateBookmarkSettings as updateBookmarkSettingsPure,
+} from './bookmarks';
 
 export interface ApplyAllQueriesResult {
   applied: { tableId: string; name: string; rowCount: number; truncated: boolean; measuresOnly?: boolean }[];
@@ -227,6 +246,8 @@ interface BiState {
   duplicatePage: (id: string) => void;
   deletePage: (id: string) => void;
   setPageCanvasSize: (pageId: string, canvasSize: CanvasSizeConfig, applyToAllPages?: boolean) => void;
+  /** v0.10 Rodada 2 (frente F): liga/desliga a página como dica de ferramenta e seus campos. */
+  setPageTooltipConfig: (pageId: string, tooltipPage: NonNullable<Page['tooltipPage']>) => void;
   setSelectedVisualId: (id: string | null) => void;
   setSelectedVisualIds: (ids: string[]) => void;
   toggleVisualSelection: (id: string) => void;
@@ -251,6 +272,15 @@ interface BiState {
   removeFilter: (id: string) => void;
   clearFilters: () => void;
   setCrossFilter: (tableId: string, column: string, value: any) => void;
+  /** Sets a slicer visual's selection (list/between/relative), computes its Filter,
+   *  and — when the visual has a syncGroup — propagates the same selection to every
+   *  other slicer visual sharing that group on the pages allowed by its syncPages. */
+  setSlicerSelection: (
+    visualId: string,
+    selection: Partial<Pick<NonNullable<VisualDataConfig['slicerConfig']>, 'selectedValues' | 'between' | 'relative'>>
+  ) => void;
+  /** Re-resolves every 'relative-date' slicer's filter against "today" (called on project load). */
+  recalculateRelativeDateFilters: () => void;
 
   // Drill-through
   activeDrillthrough: ActiveDrillthrough | null;
@@ -259,9 +289,21 @@ interface BiState {
 
   // Bookmarks
   bookmarks: Bookmark[];
-  addBookmark: (name: string) => void;
+  /** Captura o estado atual num novo indicador (Power BI "Adicionar"). */
+  addBookmark: (name: string, opts?: { capture?: Bookmark['capture']; scope?: Bookmark['scope'] }) => void;
+  /** Recaptura o estado atual sobre um indicador existente (Power BI "Atualizar"), mantendo id/nome/ordem/grupo. */
+  refreshBookmark: (id: string) => void;
+  /** Aplica um indicador: página, filtros, seleções de segmentador e estado dos visuais conforme capture/scope.
+   *  Uma única entrada no histórico de Undo (se o histórico existir). */
   applyBookmark: (id: string) => void;
   deleteBookmark: (id: string) => void;
+  renameBookmark: (id: string, name: string) => void;
+  duplicateBookmark: (id: string) => void;
+  /** Arrastar para reordenar: move `id` para a posição de `overId`. */
+  reorderBookmark: (id: string, overId: string) => void;
+  groupBookmarks: (ids: string[], groupId: string) => void;
+  ungroupBookmarks: (ids: string[]) => void;
+  updateBookmarkSettings: (id: string, patch: Partial<Pick<Bookmark, 'capture' | 'scope'>>) => void;
 
   // Dashboards & Goals
   dashboardTiles: DashboardTile[];
@@ -1959,6 +2001,12 @@ export const useBiStore = create<BiState>((set, get) => {
       );
     },
 
+    setPageTooltipConfig: (pageId, tooltipPage) => {
+      pushPagesHistory(
+        get().pages.map(p => (p.id === pageId ? { ...p, tooltipPage } : p))
+      );
+    },
+
     setSelectedVisualId: (id) => set({ selectedVisualId: id, selectedVisualIds: id ? [id] : [] }),
     setSelectedVisualIds: (ids) => {
       const unique = Array.from(new Set(ids));
@@ -2002,6 +2050,7 @@ export const useBiStore = create<BiState>((set, get) => {
           xAxisField: catCol,
           yAxisFields: [numCol],
           aggregation: 'SUM',
+          drillMode: 'drill', // v0.10 Frente G: habilita a hierarquia de data automática
         },
         formatConfig: {
           showTitle: true,
@@ -2273,6 +2322,85 @@ export const useBiStore = create<BiState>((set, get) => {
       }
     },
 
+    setSlicerSelection: (visualId, selection) => {
+      const state = get();
+      let triggerVisual: Visual | null = null;
+      for (const p of state.pages) {
+        const v = p.visuals.find(x => x.id === visualId);
+        if (v) {
+          triggerVisual = v;
+          break;
+        }
+      }
+      if (!triggerVisual) return;
+
+      const targets = [{ visual: triggerVisual, selectionOverride: selection }];
+      const syncGroup = triggerVisual.dataConfig.slicerConfig?.syncGroup;
+      const syncPages = triggerVisual.dataConfig.slicerConfig?.syncPages;
+      if (syncGroup) {
+        for (const sib of findSyncSiblings(state.pages, syncGroup, triggerVisual.id)) {
+          if (pageInSyncScope(syncPages, sib.pageId)) {
+            targets.push({ visual: sib.visual, selectionOverride: selection });
+          }
+        }
+      }
+
+      const updatedById = new Map<string, Visual>();
+      for (const { visual, selectionOverride } of targets) {
+        const nextSlicerConfig = { ...visual.dataConfig.slicerConfig, ...selectionOverride } as NonNullable<
+          VisualDataConfig['slicerConfig']
+        >;
+        updatedById.set(visual.id, {
+          ...visual,
+          dataConfig: { ...visual.dataConfig, slicerConfig: nextSlicerConfig },
+        });
+      }
+
+      const nextPages = state.pages.map(p => ({
+        ...p,
+        visuals: p.visuals.map(v => updatedById.get(v.id) || v),
+      }));
+
+      let nextFilters = state.filters;
+      for (const visual of updatedById.values()) {
+        const fId = slicerFilterId(visual.id);
+        const { tableId, column } = resolveSlicerField(visual, state.tables);
+        const resolved = buildSlicerFilterValue(visual.dataConfig.slicerConfig!);
+        nextFilters = nextFilters.filter(f => f.id !== fId);
+        if (resolved) {
+          nextFilters = [
+            ...nextFilters,
+            { id: fId, level: 'visual', visualId: visual.id, tableId, column, operator: resolved.operator, value: resolved.value },
+          ];
+        }
+      }
+
+      pushPagesHistory(nextPages, { filters: nextFilters });
+    },
+
+    recalculateRelativeDateFilters: () => {
+      const state = get();
+      const today = new Date();
+      let nextFilters = state.filters;
+      for (const page of state.pages) {
+        for (const visual of page.visuals) {
+          const slicerConfig = visual.dataConfig.slicerConfig;
+          if (!slicerConfig?.relative) continue;
+          const fId = slicerFilterId(visual.id);
+          const resolved = buildSlicerFilterValue(slicerConfig, today);
+          nextFilters = nextFilters.filter(f => f.id !== fId);
+          if (resolved) {
+            const { tableId, column } = resolveSlicerField(visual, state.tables);
+            nextFilters = [
+              ...nextFilters,
+              { id: fId, level: 'visual', visualId: visual.id, tableId, column, operator: resolved.operator, value: resolved.value },
+            ];
+          }
+        }
+      }
+      if (nextFilters !== state.filters) set({ filters: nextFilters });
+    },
+
     // Drill-through State & Actions
     activeDrillthrough: null,
 
@@ -2338,31 +2466,82 @@ export const useBiStore = create<BiState>((set, get) => {
         name: 'Visão Geral Sem Filtros',
         activePageId: defaultPageId,
         filters: [],
+        order: 0,
+        capture: { data: true, display: true, currentPage: true },
+        scope: 'all',
       },
     ],
 
-    addBookmark: (name) => {
-      const newBm: Bookmark = {
-        id: 'bm_' + Math.random().toString(36).substr(2, 6),
-        name,
-        activePageId: get().activePageId,
-        filters: [...get().filters],
-      };
-      set({ bookmarks: [...get().bookmarks, newBm] });
+    addBookmark: (name, opts) => {
+      const state = get();
+      const activePage = state.pages.find(p => p.id === state.activePageId);
+      const selected = state.selectedVisualIds;
+      const scope: Bookmark['scope'] = opts?.scope ?? (selected.length > 0 ? [...selected] : 'all');
+      const captured = captureBookmark({
+        activePageId: state.activePageId,
+        filters: state.filters,
+        visuals: activePage?.visuals ?? [],
+        capture: opts?.capture,
+        scope,
+      });
+      const entry = createBookmarkEntry(name, captured, state.bookmarks);
+      set({ bookmarks: [...state.bookmarks, entry] });
+    },
+
+    refreshBookmark: (id) => {
+      const state = get();
+      const existing = state.bookmarks.find(b => b.id === id);
+      if (!existing) return;
+      const activePage = state.pages.find(p => p.id === state.activePageId);
+      const captured = captureBookmark({
+        activePageId: state.activePageId,
+        filters: state.filters,
+        visuals: activePage?.visuals ?? [],
+        capture: existing.capture,
+        scope: existing.scope,
+      });
+      set({ bookmarks: state.bookmarks.map(b => (b.id === id ? { ...b, ...captured } : b)) });
     },
 
     applyBookmark: (id) => {
-      const bm = get().bookmarks.find(b => b.id === id);
-      if (bm) {
-        set({
-          activePageId: bm.activePageId,
-          filters: [...bm.filters],
-        });
-      }
+      const state = get();
+      const bm = state.bookmarks.find(b => b.id === id);
+      if (!bm) return;
+      const patch = applyBookmarkPure(bm, { pages: state.pages, filters: state.filters, activePageId: state.activePageId });
+      // Single Undo entry: pages (visibility/drill/sort/slicer selections) and
+      // filters/activePageId land in ONE set() call via pushPagesHistory's `extra`.
+      pushPagesHistory(patch.pages ?? state.pages, {
+        ...(patch.filters !== undefined ? { filters: patch.filters } : {}),
+        ...(patch.activePageId !== undefined ? { activePageId: patch.activePageId } : {}),
+      });
     },
 
     deleteBookmark: (id) => {
-      set({ bookmarks: get().bookmarks.filter(b => b.id !== id) });
+      set({ bookmarks: deleteBookmarkEntry(get().bookmarks, id) });
+    },
+
+    renameBookmark: (id, name) => {
+      set({ bookmarks: renameBookmarkEntry(get().bookmarks, id, name) });
+    },
+
+    duplicateBookmark: (id) => {
+      set({ bookmarks: duplicateBookmarkEntry(get().bookmarks, id) });
+    },
+
+    reorderBookmark: (id, overId) => {
+      set({ bookmarks: reorderBookmarkEntry(get().bookmarks, id, overId) });
+    },
+
+    groupBookmarks: (ids, groupId) => {
+      set({ bookmarks: setBookmarkGroup(get().bookmarks, ids, groupId) });
+    },
+
+    ungroupBookmarks: (ids) => {
+      set({ bookmarks: ungroupBookmarkEntries(get().bookmarks, ids) });
+    },
+
+    updateBookmarkSettings: (id, patch) => {
+      set({ bookmarks: updateBookmarkSettingsPure(get().bookmarks, id, patch) });
     },
 
     // Dashboard & Goals
@@ -3082,6 +3261,7 @@ export const useBiStore = create<BiState>((set, get) => {
       }));
       globalDataEngine.setSchema(state.tables || [], state.relationships || [], state.measures || []);
       (state.tables || []).forEach(t => globalDuckDb.registerTable(t));
+      get().recalculateRelativeDateFilters();
       pushModelToRustAsync(state.tables || [], state.relationships || [], state.measures || [], () =>
         set(s => ({ dataVersion: s.dataVersion + 1 }))
       );

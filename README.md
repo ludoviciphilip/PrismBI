@@ -8,7 +8,7 @@
 
 🇺🇸 **English** • 🇧🇷 [Ler em Português](./README.pt-BR.md)
 
-[![Version](https://img.shields.io/badge/version-0.9.1-f59e0b?style=flat-square)](./package.json)
+[![Version](https://img.shields.io/badge/version-0.10.0-f59e0b?style=flat-square)](./package.json)
 [![CI](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml)
 [![Release](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
@@ -103,7 +103,7 @@ Powered by **Tauri v2 + Rust + DuckDB** on the backend and **React + TypeScript 
 ### Pre-built Packages
 Download the latest package directly from [GitHub Releases](https://github.com/ludoviciphilip/PrismBI/releases):
 - **Linux:** **AppImage**, **`.deb`**, or **`.rpm`**.
-- **Windows x64:** the **`.msi`** installer (recommended — enables the in-app auto-updater) or a **portable `.zip`** (unzip and run `prismbi.exe`, no installation/admin rights required, updates must be downloaded manually).
+- **Windows x64:** the **`.msi`** installer (recommended — enables the in-app auto-updater) or a **portable `.zip`** (unzip and run `prismbi.exe`, no installation/admin rights required, updates must be downloaded manually). Since `v0.10.0` the installer is a single `pt-BR` MSI (`PrismBI_<version>_x64_pt-BR.msi`) — `tauri-bundler`/WiX builds one installer per configured language, and the app has its own in-app i18n (language switcher), so the installer's language hardly matters; one build keeps the release and the auto-updater deterministic (see [Known Gaps](#known-gaps)).
 
 > **Windows SmartScreen:** the binary isn't code-signed yet (see [Known Gaps](#known-gaps) below), so Windows may show *"Windows protected your PC"* on first run. Click **More info → Run anyway** to proceed. This is expected and does not mean the installer is unsafe — see the signed `SHA256SUMS.txt` published with every release.
 

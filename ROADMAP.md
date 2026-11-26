@@ -87,14 +87,16 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 
 ---
 
-## `v0.10.0` — Fidelidade Avançada de Relatórios & Interatividade Profissional
-- [ ] **Formatação Condicional** em Tabelas, Matrizes, Cartões e Barras (regras, gradientes por medida DAX e barras de dados).
-- [ ] **Bookmarks (Indicadores)** e botões de ação vinculados a Bookmarks para alternar estado de visuais, filtros e páginas com 1 clique.
-- [ ] **Report Page Tooltips** (páginas configuradas como tooltip dinâmico ao passar o cursor nos gráficos).
-- [ ] **Slicers Avançados:** filtro de intervalo de datas (*Between* / *Relative Date*), busca interna nos itens e **Sincronização de Slicers** entre páginas.
-- [ ] **Drill-Down hierárquico em gráficos** (ex.: Ano → Trimestre → Mês → Dia) e suporte a **3+ níveis expansíveis na Matriz**.
-- [ ] **Painéis recolhíveis** (Filtros, Visualizações, Dados): recolher/expandir cada painel para maximizar o canvas em telas pequenas, com o estado lembrado por usuário (pedido no teste em notebook, `v0.9.1`).
-- [ ] **Windows:** um único `.msi` com pt-BR e en-US (hoje saem dois e o updater pega o primeiro), teste de atualização via `msiexec` e assinatura de código (fim do aviso do SmartScreen).
+## `v0.10.0` — Fidelidade Avançada de Relatórios & Interatividade Profissional (Concluído)
+- [x] **Formatação Condicional** em Tabelas, Matrizes, Cartões e Barras (regras, gradientes por medida DAX e barras de dados).
+- [x] **Bookmarks (Indicadores)** e botões de ação vinculados a Bookmarks para alternar estado de visuais, filtros e páginas com 1 clique.
+- [x] **Report Page Tooltips** (páginas configuradas como tooltip dinâmico ao passar o cursor nos gráficos).
+- [x] **Slicers Avançados:** filtro de intervalo de datas (*Between* / *Relative Date*), busca interna nos itens e **Sincronização de Slicers** entre páginas.
+- [x] **Drill-Down hierárquico em gráficos** (ex.: Ano → Trimestre → Mês → Dia) e suporte a **3+ níveis expansíveis na Matriz**.
+- [x] **Painéis recolhíveis** (Filtros, Visualizações, Dados): recolher/expandir cada painel para maximizar o canvas em telas pequenas, com o estado lembrado por usuário (pedido no teste em notebook, `v0.9.1`).
+- [x] **Windows:** um único `.msi` (pt-BR; o WiX não gera MSI multilíngue) e escolha determinística do instalador no updater.
+- [x] **FilterContext 2.0 no motor Rust:** filtros de tupla, `ALLSELECTED` real, `KEEPFILTERS` sobre tabelas e membro em branco (corpus 383/383).
+- [ ] Pendente para a `v0.11.0`: níveis nas colunas da matriz, filtro cruzado a partir de níveis de data drillados, teste de atualização via `msiexec` e assinatura de código no Windows.
 
 ---
 

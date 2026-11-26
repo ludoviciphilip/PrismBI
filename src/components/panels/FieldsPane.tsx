@@ -22,9 +22,13 @@ import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { Column, Measure } from '../../types/bi';
 import { useTranslation } from '../../i18n';
+import { useUiPrefs } from '../../store/useUiPrefs';
+import { CollapsedPaneStrip, PaneCollapseButton } from './PaneCollapseShell';
 
 export const FieldsPane: React.FC = React.memo(() => {
   const { t } = useTranslation();
+  const paneState = useUiPrefs(s => s.panes.fields);
+  const togglePaneCollapsed = useUiPrefs(s => s.togglePaneCollapsed);
   const {
     tables,
     measures,
@@ -165,6 +169,19 @@ export const FieldsPane: React.FC = React.memo(() => {
     }
   };
 
+  if (paneState === 'collapsed') {
+    return (
+      <CollapsedPaneStrip
+        icon={Database}
+        iconClassName="w-4 h-4 text-slate-500 dark:text-slate-400"
+        title={t.panes.fields.title}
+        expandLabel={t.panes.expand}
+        onExpand={() => togglePaneCollapsed('fields')}
+        testId="fields-pane-collapsed"
+      />
+    );
+  }
+
   return (
     <div className="w-64 border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col h-full text-xs select-none text-slate-800 dark:text-slate-200">
       {/* Header */}
@@ -190,6 +207,11 @@ export const FieldsPane: React.FC = React.memo(() => {
             <Plus className="w-3 h-3 text-amber-600 dark:text-amber-400" />
             <span>Rápida</span>
           </button>
+          <PaneCollapseButton
+            collapseLabel={t.panes.collapse}
+            onCollapse={() => togglePaneCollapsed('fields')}
+            testId="fields-pane-collapse"
+          />
         </div>
       </div>
 

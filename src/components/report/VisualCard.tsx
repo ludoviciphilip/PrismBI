@@ -20,6 +20,7 @@ import {
   ArrowUp,
   ArrowDown,
   ArrowUpDown,
+  Bookmark as BookmarkIcon,
 } from 'lucide-react';
 import { Visual, Filter as BiFilter } from '../../types/bi';
 import { useBiStore } from '../../store/useBiStore';
@@ -31,6 +32,7 @@ import { useTranslation } from '../../i18n';
 import { getEffectiveCanvasSize } from '../../engine/shared/canvasPresets';
 import { applyVisualSort, fieldMatches, sortCategoryLabels } from '../../engine/visualSort';
 import { VisualSortMenu } from './VisualSortMenu';
+import { SlicerBody } from './slicer';
 import {
   sortMenuKind,
   getSortableFields,
@@ -39,6 +41,11 @@ import {
   patchForOrder,
   patchForHeaderClick,
 } from './visualSortOptions';
+import { getFieldFormat, cellStyleFromFormat, buildBarSeriesData, resolverFromRows, resolverFromSeries, activeFormats, styleForTotalCell } from './conditionalFormat/apply';
+import { FormattedCell } from './conditionalFormat/FormattedCell';
+import { resolveTooltipPage, buildTemporaryFilters, useTooltipHover, TooltipPopover } from './tooltipPage';
+import { useVisualDrill } from './drill';
+import type { DrillFilterSpec } from '../../engine/drill';
 
 export interface SnapGuide {
   orientation: 'v' | 'h';
@@ -52,6 +59,12 @@ interface VisualCardProps {
   onSelect: (id: string, additive?: boolean) => void;
   onSnapGuidesChange?: (guides: SnapGuide[]) => void;
   isMobile?: boolean;
+  /** Filtros temporários injetados pela miniatura de uma página de dica de ferramenta (nunca gravados no store). */
+  extraFilters?: BiFilter[];
+  /** v0.10 Rodada 2 (seams F↔G): idem, via o mecanismo de drill (ancestrais + nível/caminho do ponto). */
+  extraDrillFilters?: DrillFilterSpec[];
+  /** Renderização dentro do popover de dica de ferramenta: sem interação e sem dica própria (evita recursão). */
+  isTooltipPreview?: boolean;
 }
 
 const nativeQueryCache = new Map<string, NativeVisualQueryResult>();
@@ -77,13 +90,21 @@ function formatCompactDisplay(val: number, isCurr: boolean, currSymbol: string):
   return isCurr ? `${sign}${currSymbol} ${numStr}${suffix}` : `${sign}${numStr}${suffix}`;
 }
 
-export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSelected, isMultiSelected, onSelect, onSnapGuidesChange, isMobile }) => {
+export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSelected, isMultiSelected, onSelect, onSnapGuidesChange, isMobile, extraFilters, extraDrillFilters, isTooltipPreview }) => {
   const cardRef = useRef<HTMLDivElement>(null);
   const didDragMoveRef = useRef(false);
-  const filters = useBiStore(s => s.filters);
+  const storeFilters = useBiStore(s => s.filters);
+  // Filtros temporários do popover de dica de ferramenta (categoria/legenda do ponto sob o mouse)
+  // se somam aos filtros normais só para esta instância, sem tocar no store.
+  const filters = useMemo(
+    () => (extraFilters && extraFilters.length ? [...storeFilters, ...extraFilters] : storeFilters),
+    [storeFilters, extraFilters]
+  );
+  const pages = useBiStore(s => s.pages);
   const tables = useBiStore(s => s.tables);
   const measures = useBiStore(s => s.measures);
   const setCrossFilter = useBiStore(s => s.setCrossFilter);
+  const updateSlicerSelection = useBiStore(s => s.setSlicerSelection);
   const updateVisual = useBiStore(s => s.updateVisual);
   const moveVisualsDelta = useBiStore(s => s.moveVisualsDelta);
   const deleteVisual = useBiStore(s => s.deleteVisual);
@@ -404,6 +425,14 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     visual.type !== 'textbox' &&
     Boolean(tables.find(t => t.id === visual.dataConfig.tableId)?.rowsTruncated);
 
+  // v0.10 Frente G: drill-down hierárquico (gráficos) e matriz com N níveis.
+  const drill = useVisualDrill(visual, filters, {
+    native: supportsNativeRustQuery,
+    onShowTable: () => setShowRawTable(true),
+    onDrillthrough: (field, value) => setDrillPop({ field, value }),
+    extraDrillFilters,
+  });
+
   const nativeCacheKey = useMemo(() => {
     if (!supportsNativeRustQuery) return '';
     // Sort/limit are applied client-side after the native query, so they don't invalidate it.
@@ -465,6 +494,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
   }, [supportsNativeRustQuery, nativeCacheKey]);
 
   const queryResult = useMemo(() => {
+    if (drill.chartResult) return { ...tsQueryResult, ...drill.chartResult };
     if (supportsNativeRustQuery && asyncNativeResult) {
       // The native engine returns categories unsorted and without TopN; apply the
       // exact same shared sort (+ limit after sort) as the JS QueryPlanner.
@@ -495,7 +525,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       };
     }
     return tsQueryResult;
-  }, [supportsNativeRustQuery, asyncNativeResult, tsQueryResult, visual, tables]);
+  }, [supportsNativeRustQuery, asyncNativeResult, tsQueryResult, visual, tables, drill.chartResult]);
 
   // "Classificar por" — shared by the header "..." menu and table/matrix header clicks
   const sortKind = sortMenuKind(visual);
@@ -539,6 +569,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
   // Handle cross-filtering & drill-through prompt when user clicks on a chart data point
   const onChartClick = useCallback((params: any) => {
     if (!params) return;
+    if (drill.handlePointClick(params)) return;
     const catName = params.name || params.data?.name;
     if (catName && catName !== 'Sem dados' && visual.dataConfig.xAxisField) {
       setCrossFilter(visual.dataConfig.tableId, visual.dataConfig.xAxisField, catName);
@@ -547,11 +578,90 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
         value: catName,
       });
     }
-  }, [visual.dataConfig.tableId, visual.dataConfig.xAxisField, setCrossFilter]);
+  }, [visual.dataConfig.tableId, visual.dataConfig.xAxisField, setCrossFilter, drill.handlePointClick]);
+
+  // Report Page Tooltip (v0.10 Rodada 2, frente F): resolve a página de dica
+  // (Padrão/Página do relatório/Automático) e, no hover, abre um popover com
+  // essa página renderizada em miniatura, filtrada pelo ponto sob o mouse.
+  const resolvedTooltipPage = useMemo(
+    () => (isTooltipPreview ? null : resolveTooltipPage(visual, pages)),
+    [isTooltipPreview, visual.formatConfig?.tooltip, visual.dataConfig, pages]
+  );
+  const { popover: tooltipPopover, show: showTooltipHover, hide: hideTooltipHover } = useTooltipHover(150);
+
+  const onChartMouseOver = useCallback((params: any) => {
+    if (!resolvedTooltipPage || !params) return;
+    const catRaw = params.name ?? params.data?.name;
+    const categoryValue = typeof catRaw === 'string' || typeof catRaw === 'number' ? catRaw : undefined;
+    // Legenda só é um filtro válido quando o visual de fato separa séries por ela.
+    const legendValue = visual.dataConfig.legendField && queryResult.series.length > 1 ? params.seriesName : undefined;
+    // v0.10 Rodada 2 (seams F↔G): quando o visual tem hierarquia de drill, o filtro
+    // temporário usa o nível atual + todo o drillPath (`resolveHoverDrillFilters`),
+    // nunca o `xAxisField` cru — senão um ponto "2024 Trim 1" expandido filtraria
+    // errado pelo rótulo concatenado. Sem hierarquia, mantém o Filter simples de antes.
+    const hoverDrillFilters = drill.resolveHoverDrillFilters(catRaw);
+    const tempFilters = buildTemporaryFilters(visual.dataConfig.tableId, {
+      categoryField: hoverDrillFilters.length > 0 ? undefined : visual.dataConfig.xAxisField,
+      categoryValue: hoverDrillFilters.length > 0 ? undefined : categoryValue,
+      legendField: visual.dataConfig.legendField,
+      legendValue,
+    });
+    const nativeEvent = params.event?.event as MouseEvent | undefined;
+    showTooltipHover({
+      pageId: resolvedTooltipPage.id,
+      filters: tempFilters,
+      drillFilters: hoverDrillFilters,
+      anchor: { x: nativeEvent?.clientX ?? 0, y: nativeEvent?.clientY ?? 0 },
+    });
+  }, [resolvedTooltipPage, visual.dataConfig, queryResult.series.length, showTooltipHover, drill.resolveHoverDrillFilters]);
+
+  const onChartMouseOut = useCallback(() => {
+    hideTooltipHover();
+  }, [hideTooltipHover]);
 
   const onEvents = useMemo(() => ({
     click: onChartClick,
-  }), [onChartClick]);
+    mouseover: onChartMouseOver,
+    mouseout: onChartMouseOut,
+    contextmenu: drill.handleContextMenu,
+  }), [onChartClick, onChartMouseOver, onChartMouseOut, drill.handleContextMenu]);
+
+  // Célula de tabela/matriz sob o mouse abre a mesma dica de página (debounce de 150ms).
+  // `field` por padrão é o eixo X (linha da matriz); tabelas simples passam a própria coluna.
+  const onCellMouseEnter = useCallback(
+    (e: React.MouseEvent, categoryValue: unknown, legendValue?: unknown, field: string | undefined = visual.dataConfig.xAxisField) => {
+      if (!resolvedTooltipPage) return;
+      const tempFilters = buildTemporaryFilters(visual.dataConfig.tableId, {
+        categoryField: field,
+        categoryValue,
+        legendField: visual.dataConfig.legendField,
+        legendValue,
+      });
+      showTooltipHover({
+        pageId: resolvedTooltipPage.id,
+        filters: tempFilters,
+        anchor: { x: e.clientX, y: e.clientY },
+      });
+    },
+    [resolvedTooltipPage, visual.dataConfig, showTooltipHover]
+  );
+  const onCellMouseLeave = useCallback(() => hideTooltipHover(), [hideTooltipHover]);
+  // v0.10 Rodada 2 (seams F↔G): a matriz hierárquica não tinha dica de página —
+  // o hover numa linha filtra pelo caminho INTEIRO (todos os níveis acima), via
+  // o mecanismo de drill (`drill.renderMatrix`'s onRowHover já traz os filtros prontos).
+  const onMatrixRowHover = useCallback(
+    (e: React.MouseEvent, drillFilters: DrillFilterSpec[]) => {
+      if (!resolvedTooltipPage) return;
+      showTooltipHover({
+        pageId: resolvedTooltipPage.id,
+        filters: [],
+        drillFilters,
+        anchor: { x: e.clientX, y: e.clientY },
+      });
+    },
+    [resolvedTooltipPage, showTooltipHover]
+  );
+  const tooltipPopoverPage = tooltipPopover ? pages.find(p => p.id === tooltipPopover.pageId) : undefined;
 
   // Build ECharts Options based on visual.type
   const echartsOption = useMemo(() => {
@@ -629,7 +739,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             name: s.name,
             type: 'bar',
             stack: visual.type === 'stacked-column' ? 'total' : undefined,
-            data: s.data,
+            data: buildBarSeriesData(activeFormats(visual), s.name, s.data),
             itemStyle: { borderRadius: [4, 4, 0, 0] },
             label: {
               show: visual.formatConfig.showDataLabels ?? false,
@@ -687,7 +797,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             name: s.name,
             type: 'bar',
             stack: visual.type === 'stacked-bar' ? 'total' : undefined,
-            data: s.data,
+            data: buildBarSeriesData(activeFormats(visual), s.name, s.data),
             itemStyle: { borderRadius: [0, 4, 4, 0] },
             label: {
               show: visual.formatConfig.showDataLabels ?? false,
@@ -1266,6 +1376,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     <div
       ref={cardRef}
       data-visual-id={visual.id}
+      {...drill.hoverProps}
       onClick={(e) => {
         e.stopPropagation();
         if (didDragMoveRef.current) {
@@ -1332,6 +1443,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
         {/* Action Buttons */}
         <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100">
+          {drill.header}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -1470,7 +1582,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               onClick={(e) => {
                 e.stopPropagation();
                 const store = useBiStore.getState();
-                if (visual.formatConfig.actionType === 'page-navigation' && visual.formatConfig.actionTargetPageId) {
+                if (visual.formatConfig.actionType === 'bookmark') {
+                  // v0.10 (Indicadores): aplica o indicador configurado. Funciona em
+                  // Modo Apresentação e, em edição, com Ctrl+clique (como no Power BI).
+                  if (store.isPresentationMode || e.ctrlKey) {
+                    if (visual.formatConfig.actionBookmarkId) {
+                      store.applyBookmark(visual.formatConfig.actionBookmarkId);
+                    }
+                  }
+                } else if (visual.formatConfig.actionType === 'page-navigation' && visual.formatConfig.actionTargetPageId) {
                   store.setActivePageId(visual.formatConfig.actionTargetPageId);
                 } else if (store.activeDrillthrough) {
                   store.clearDrillthrough(true);
@@ -1482,10 +1602,16 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                 }
               }}
               className="w-full h-full flex items-center justify-center gap-1.5 rounded-lg bg-slate-100 hover:bg-amber-500 hover:text-slate-950 dark:bg-slate-800 dark:hover:bg-amber-500 text-slate-700 dark:text-slate-200 font-semibold text-xs border border-slate-300 dark:border-slate-700 transition-colors cursor-pointer"
-              title={visual.title}
+              title={
+                visual.formatConfig.actionType === 'bookmark'
+                  ? `${visual.title} (Ctrl+clique para aplicar o indicador em edição)`
+                  : visual.title
+              }
             >
               {visual.formatConfig.actionType === 'page-navigation' ? (
                 <ArrowRight className="w-4 h-4 shrink-0" />
+              ) : visual.formatConfig.actionType === 'bookmark' ? (
+                <BookmarkIcon className="w-4 h-4 shrink-0" />
               ) : (
                 <ArrowLeft className="w-4 h-4 shrink-0" />
               )}
@@ -1539,9 +1665,14 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                 : 'text-slate-800 dark:text-slate-100'
               : 'text-slate-800 dark:text-slate-100';
 
+            const cardCondFormat = isValBlank ? {} : getFieldFormat(activeFormats(visual), yField, val, [val]);
+
             return (
               <div className="flex flex-col items-center justify-center h-full text-center p-2">
-                <span className={`text-3xl font-extrabold tracking-tight ${signColorClass}`}>
+                <span
+                  className={`text-3xl font-extrabold tracking-tight ${cardCondFormat.color ? '' : signColorClass}`}
+                  style={cellStyleFromFormat(cardCondFormat)}
+                >
                   {displayText}
                 </span>
                 <span className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-1">
@@ -1562,6 +1693,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               >
                 {queryResult.categories.map((label, idx) => {
                   const rawVal = Number(queryResult.series[0]?.data[idx] ?? 0) || 0;
+                  const multiCardFormat = getFieldFormat(activeFormats(visual), label, rawVal, [rawVal]);
                   const targetMeasure = measures.find(m => m.name.toLowerCase() === label.toLowerCase());
                   const isPct = targetMeasure?.format === 'percentage' || label.includes('%');
                   const isCurr = targetMeasure?.format === 'currency' || isCurrencyField(label);
@@ -1591,11 +1723,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                     <div
                       key={label}
                       className="p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800/50 flex flex-col justify-center min-w-0"
+                      style={multiCardFormat.background ? { backgroundColor: multiCardFormat.background } : undefined}
                     >
                       <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 truncate" title={label}>
                         {label}
                       </span>
-                      <span className={`text-lg font-extrabold mt-0.5 truncate ${signColorClass}`}>
+                      <span
+                        className={`text-lg font-extrabold mt-0.5 truncate ${multiCardFormat.color ? '' : signColorClass}`}
+                        style={multiCardFormat.color ? { color: multiCardFormat.color } : undefined}
+                      >
                         {formatted}
                       </span>
                     </div>
@@ -1613,17 +1749,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             const targetTableObj = tables.find(
               t => t.id === hintTbl || t.name === hintTbl || t.id === visual.dataConfig.tableId || t.name === visual.dataConfig.tableId
             );
-            const slicerTableId = targetTableObj?.id || hintTbl;
             const slicerCol = hintCol;
-            const activeSlicerFilter = filters.find(
-              f =>
-                (f.tableId === slicerTableId ||
-                  f.tableId === visual.dataConfig.tableId ||
-                  (targetTableObj && f.tableId === targetTableObj.name)) &&
-                (f.column.toLowerCase() === slicerCol.toLowerCase() || f.column.toLowerCase() === rawSlicerCol.toLowerCase())
-            );
-            const activeVal = activeSlicerFilter ? String(activeSlicerFilter.value) : 'TODOS';
-            const isTiles = visual.dataConfig.slicerConfig?.mode === 'tiles';
+            const slicerColumn = targetTableObj?.columns.find(c => c.name.toLowerCase() === slicerCol.toLowerCase());
+            const mode = visual.dataConfig.slicerConfig?.mode || 'dropdown';
+            const hasSelection =
+              mode === 'between'
+                ? Boolean(visual.dataConfig.slicerConfig?.between?.start || visual.dataConfig.slicerConfig?.between?.end)
+                : mode === 'relative-date'
+                  ? false
+                  : (visual.dataConfig.slicerConfig?.selectedValues?.length || 0) > 0;
 
             return (
               <div className="flex flex-col h-full justify-center p-2 space-y-2 overflow-auto">
@@ -1631,66 +1765,21 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                   <label className="text-xs font-medium text-slate-600 dark:text-slate-300 flex items-center gap-1">
                     <Filter className="w-3 h-3 text-amber-500" /> {t.visualCard.selectField} {slicerCol}:
                   </label>
-                  {activeVal !== 'TODOS' && (
+                  {hasSelection && (
                     <button
-                      onClick={() => setCrossFilter(slicerTableId, slicerCol, '')}
+                      onClick={() => updateSlicerSelection(visual.id, { selectedValues: [], between: {} })}
                       className="text-[10px] text-amber-600 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-300 font-semibold cursor-pointer"
                     >
                       {t.common.clear}
                     </button>
                   )}
                 </div>
-                {isTiles ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setCrossFilter(slicerTableId, slicerCol, '')}
-                      className={`px-2 py-1 rounded text-[11px] font-semibold border transition-colors cursor-pointer ${
-                        activeVal === 'TODOS'
-                          ? 'bg-amber-500 text-slate-950 border-amber-500'
-                          : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-amber-400'
-                      }`}
-                    >
-                      {t.visualCard.allRecords}
-                    </button>
-                    {queryResult.categories.map(c => {
-                      const selected = activeVal === c;
-                      return (
-                        <button
-                          key={c}
-                          type="button"
-                          onClick={() => setCrossFilter(slicerTableId, slicerCol, selected ? '' : c)}
-                          className={`px-2 py-1 rounded text-[11px] font-medium border transition-colors cursor-pointer ${
-                            selected
-                              ? 'bg-amber-500 text-slate-950 border-amber-500 font-bold'
-                              : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-amber-400'
-                          }`}
-                        >
-                          {c}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <select
-                    value={activeVal}
-                    className="w-full text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded px-2 py-1.5 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500 font-medium"
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setCrossFilter(slicerTableId, slicerCol, val === 'TODOS' ? '' : val);
-                    }}
-                  >
-                    <option value="TODOS">{t.visualCard.allRecords}</option>
-                    {queryResult.categories.map(c => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                )}
+                <SlicerBody visual={visual} table={targetTableObj} column={slicerColumn} categories={queryResult.categories} />
               </div>
             );
           })()
+        ) : visual.type === 'matrix' && drill.renderMatrix ? (
+          drill.renderMatrix(isCurrencyField, onMatrixRowHover, onCellMouseLeave)
         ) : visual.type === 'matrix' ? (
           (() => {
             const { categories, series } = queryResult;
@@ -1811,6 +1900,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                   setCrossFilter(visual.dataConfig.tableId, visual.dataConfig.xAxisField, cat);
                                 }
                               }}
+                              onMouseEnter={(e) => onCellMouseEnter(e, cat)}
+                              onMouseLeave={onCellMouseLeave}
                               className="px-2.5 py-1 font-semibold text-slate-700 dark:text-slate-200 border-r border-slate-200 dark:border-slate-800 cursor-pointer hover:text-amber-600 whitespace-nowrap"
                             >
                               <div className="flex items-center gap-1">
@@ -1830,23 +1921,37 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                 <span>{cat}</span>
                               </div>
                             </td>
-                            {series.map(s => (
-                              <td
-                                key={s.name}
-                                className="px-2.5 py-1 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap"
-                              >
-                                {fmtCell(Number(s.data[rIdx]) || 0, s.name)}
-                              </td>
-                            ))}
+                            {series.map(s => {
+                              const cellVal = Number(s.data[rIdx]) || 0;
+                              const cellFormat = getFieldFormat(activeFormats(visual), s.name, cellVal, s.data, resolverFromSeries(series, rIdx));
+                              return (
+                                <FormattedCell
+                                  key={s.name}
+                                  format={cellFormat}
+                                  onMouseEnter={(e) => onCellMouseEnter(e, cat, visual.dataConfig.legendField ? s.name : undefined)}
+                                  onMouseLeave={onCellMouseLeave}
+                                  className="px-2.5 py-1 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap"
+                                >
+                                  {fmtCell(cellVal, s.name)}
+                                </FormattedCell>
+                              );
+                            })}
                             {series.length > 1 && (
-                              <td className="px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap">
+                              <td
+                                className="px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap"
+                                style={styleForTotalCell(activeFormats(visual), primaryY, rowTotals[rIdx], rowTotals)}
+                              >
                                 {fmtCell(rowTotals[rIdx])}
                               </td>
                             )}
                           </tr>
-                          {isExpanded && childData && childData.categories.map((childCat, cIdx) => {
-                            const childRowTotal = childData.series.reduce((sum, cs) => sum + (Number(cs.data[cIdx]) || 0), 0);
-                            return (
+                          {isExpanded && childData && (() => {
+                            const childRowTotals = childData.categories.map((_, ci) =>
+                              childData.series.reduce((sum, cs) => sum + (Number(cs.data[ci]) || 0), 0)
+                            );
+                            return childData.categories.map((childCat, cIdx) => {
+                              const childRowTotal = childRowTotals[cIdx];
+                              return (
                               <tr key={`${cat}::${childCat}`} className="bg-slate-50/70 dark:bg-slate-800/30">
                                 <td className="pl-7 pr-2.5 py-1 text-[11px] text-slate-600 dark:text-slate-300 border-r border-slate-200 dark:border-slate-800 whitespace-nowrap">
                                   {childCat}
@@ -1863,13 +1968,17 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                   );
                                 })}
                                 {series.length > 1 && (
-                                  <td className="px-2.5 py-1 text-right font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 border-l border-slate-200 dark:border-slate-800 whitespace-nowrap">
+                                  <td
+                                    className="px-2.5 py-1 text-right font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 border-l border-slate-200 dark:border-slate-800 whitespace-nowrap"
+                                    style={styleForTotalCell(activeFormats(visual), primaryY, childRowTotal, childRowTotals)}
+                                  >
                                     {fmtCell(childRowTotal)}
                                   </td>
                                 )}
                               </tr>
-                            );
-                          })}
+                              );
+                            });
+                          })()}
                         </React.Fragment>
                       );
                     })}
@@ -1883,12 +1992,16 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                         <td
                           key={series[cIdx]?.name || cIdx}
                           className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-900 dark:text-amber-300 border-t-2 border-slate-300 dark:border-slate-700 whitespace-nowrap"
+                          style={styleForTotalCell(activeFormats(visual), series[cIdx]?.name || '', tot, colTotals)}
                         >
                           {fmtCell(tot, series[cIdx]?.name)}
                         </td>
                       ))}
                       {series.length > 1 && (
-                        <td className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-950 dark:text-amber-400 border-t-2 border-l border-slate-300 dark:border-slate-700 whitespace-nowrap">
+                        <td
+                          className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-950 dark:text-amber-400 border-t-2 border-l border-slate-300 dark:border-slate-700 whitespace-nowrap"
+                          style={styleForTotalCell(activeFormats(visual), primaryY, grandTotal, [grandTotal])}
+                        >
                           {fmtCell(grandTotal)}
                         </td>
                       )}
@@ -1925,26 +2038,35 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                 {queryResult.rawRows.slice(0, 20).map((row, i) => {
                   const firstCol = Object.keys(row)[0] || 'Categoria';
                   const firstVal = row[firstCol];
+                  const tableFormats = activeFormats(visual);
                   return (
                     <tr key={i} className="hover:bg-amber-50/50 dark:hover:bg-slate-800/60 group/row">
-                      {Object.keys(row).slice(0, 6).map(col => (
-                        <td
-                          key={col}
-                          onClick={() => {
-                            const val = row[col];
-                            if (val !== undefined && val !== null) {
-                              setCrossFilter(visual.dataConfig.tableId, col, val);
-                              setDrillPop({ field: col, value: val });
-                            }
-                          }}
-                          className="px-2 py-1 text-slate-600 dark:text-slate-300 truncate max-w-[120px] cursor-pointer hover:text-amber-800 dark:hover:text-amber-400 hover:font-semibold"
-                          title={`Filtrar ou detalhar por ${col}: ${row[col]}`}
-                        >
-                          {typeof row[col] === 'number' && isCurrencyField(col)
-                            ? formatCurrency(row[col])
-                            : String(row[col] ?? '')}
-                        </td>
-                      ))}
+                      {Object.keys(row).slice(0, 6).map(col => {
+                        const colVal = row[col];
+                        const colVisible = queryResult.rawRows.map(r => Number(r[col])).filter(n => Number.isFinite(n));
+                        const cellFormat = getFieldFormat(tableFormats, col, colVal, colVisible, resolverFromRows(queryResult.rawRows, row));
+                        return (
+                          <FormattedCell
+                            key={col}
+                            format={cellFormat}
+                            onClick={() => {
+                              const val = row[col];
+                              if (val !== undefined && val !== null) {
+                                setCrossFilter(visual.dataConfig.tableId, col, val);
+                                setDrillPop({ field: col, value: val });
+                              }
+                            }}
+                            onMouseEnter={(e) => onCellMouseEnter(e, row[col], undefined, col)}
+                            onMouseLeave={onCellMouseLeave}
+                            className="px-2 py-1 text-slate-600 dark:text-slate-300 truncate max-w-[120px] cursor-pointer hover:text-amber-800 dark:hover:text-amber-400 hover:font-semibold"
+                            title={`Filtrar ou detalhar por ${col}: ${row[col]}`}
+                          >
+                            {typeof row[col] === 'number' && isCurrencyField(col)
+                              ? formatCurrency(row[col])
+                              : String(row[col] ?? '')}
+                          </FormattedCell>
+                        );
+                      })}
                       <td className="px-1 py-0.5 text-center">
                         <button
                           onClick={(e) => {
@@ -1969,7 +2091,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           <ErrorBoundary fallbackTitle="Falha na renderização deste gráfico">
             <ReactECharts
               key={`${visual.id}_${visual.type}`}
-              option={echartsOption}
+              option={resolvedTooltipPage ? { ...echartsOption, tooltip: { show: false } } : echartsOption}
               notMerge={true}
               lazyUpdate={true}
               onEvents={onEvents}
@@ -1979,6 +2101,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           </ErrorBoundary>
         )}
       </div>
+
+      {drill.overlay}
 
       {/* Floating Interactive Drill-Through Popover */}
       {drillPop && (
@@ -2043,6 +2167,11 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             </div>
           )}
         </div>
+      )}
+
+      {/* Report Page Tooltip: popover flutuante com a página de dica em miniatura */}
+      {tooltipPopover && tooltipPopoverPage && (
+        <TooltipPopover page={tooltipPopoverPage} filters={tooltipPopover.filters} drillFilters={tooltipPopover.drillFilters} anchor={tooltipPopover.anchor} />
       )}
 
       {/* Resize Handle Indicator */}

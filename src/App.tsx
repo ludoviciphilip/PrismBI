@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import { useBiStore } from './store/useBiStore';
 import { Ribbon } from './components/layout/Ribbon';
 import { SidebarNav } from './components/layout/SidebarNav';
@@ -19,6 +19,8 @@ import { DaxComplianceView } from './components/compliance/DaxComplianceView';
 import { VisualizationsPane } from './components/panels/VisualizationsPane';
 import { FieldsPane } from './components/panels/FieldsPane';
 import { FiltersPane } from './components/panels/FiltersPane';
+import { BookmarksPane } from './components/panels/BookmarksPane';
+import { SelectionPane } from './components/panels/SelectionPane';
 import { AiAssistantModal } from './components/ai/AiAssistantModal';
 import { DataSourceModal } from './components/modals/DataSourceModal';
 import { QuickMeasureModal } from './components/modals/QuickMeasureModal';
@@ -32,6 +34,7 @@ import { WelcomeScreen } from './components/welcome/WelcomeScreen';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { isTauriRuntime, checkForUpdatesNative } from './bridge/tauriBridge';
 import { APP_VERSION } from './version';
+import { useUiPrefs } from './store/useUiPrefs';
 
 export default function App() {
   const activeView = useBiStore(s => s.activeView);
@@ -40,9 +43,19 @@ export default function App() {
   const setIsPresentationMode = useBiStore(s => s.setIsPresentationMode);
   const setAvailableUpdate = useBiStore(s => s.setAvailableUpdate);
 
-  const [showFiltersPane, setShowFiltersPane] = useState(true);
-  const [showVisualsPane, setShowVisualsPane] = useState(true);
-  const [showFieldsPane, setShowFieldsPane] = useState(true);
+  const panes = useUiPrefs(s => s.panes);
+  const setPaneHidden = useUiPrefs(s => s.setPaneHidden);
+  const toggleAllPanesCollapsed = useUiPrefs(s => s.toggleAllPanesCollapsed);
+  const showFiltersPane = panes.filters !== 'hidden';
+  const showVisualsPane = panes.visualizations !== 'hidden';
+  const showFieldsPane = panes.fields !== 'hidden';
+  const showBookmarksPane = panes.bookmarks !== 'hidden';
+  const showSelectionPane = panes.selection !== 'hidden';
+  const setShowFiltersPane = (v: boolean) => setPaneHidden('filters', !v);
+  const setShowVisualsPane = (v: boolean) => setPaneHidden('visualizations', !v);
+  const setShowFieldsPane = (v: boolean) => setPaneHidden('fields', !v);
+  const setShowBookmarksPane = (v: boolean) => setPaneHidden('bookmarks', !v);
+  const setShowSelectionPane = (v: boolean) => setPaneHidden('selection', !v);
 
   // Silent background check for app updates on startup (Tauri desktop only)
   useEffect(() => {
@@ -77,6 +90,19 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isPresentationMode, setIsPresentationMode]);
 
+  // v0.10.0: Ctrl+F1 collapses/expands every visible side pane at once,
+  // Power BI Desktop style (useful on small laptop screens).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === 'F1') {
+        e.preventDefault();
+        toggleAllPanesCollapsed();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [toggleAllPanesCollapsed]);
+
   if (showWelcomeScreen) {
     return (
       <>
@@ -107,6 +133,10 @@ export default function App() {
           setShowVisualsPane={setShowVisualsPane}
           showFieldsPane={showFieldsPane}
           setShowFieldsPane={setShowFieldsPane}
+          showBookmarksPane={showBookmarksPane}
+          setShowBookmarksPane={setShowBookmarksPane}
+          showSelectionPane={showSelectionPane}
+          setShowSelectionPane={setShowSelectionPane}
         />
       )}
 
@@ -137,6 +167,16 @@ export default function App() {
                 </ErrorBoundary>
               )}
               {showFieldsPane && <FieldsPane />}
+              {showBookmarksPane && (
+                <ErrorBoundary fallbackTitle="Painel de Indicadores">
+                  <BookmarksPane />
+                </ErrorBoundary>
+              )}
+              {showSelectionPane && (
+                <ErrorBoundary fallbackTitle="Painel de Seleção">
+                  <SelectionPane />
+                </ErrorBoundary>
+              )}
             </div>
           )}
         </div>

@@ -180,14 +180,54 @@ pub(super) fn apply_calculate_modifier(
         Expr::Call { name, args } => {
             let upper = name.trim().to_uppercase();
             match upper.as_str() {
-                "REMOVEFILTERS" | "ALL" | "ALLSELECTED" => {
+                "REMOVEFILTERS" | "ALL" => {
                     if args.is_empty() {
                         next_ctx.filters.clear();
+                        next_ctx.tuple_filters.clear();
                     } else {
                         for arg in args {
                             match arg {
                                 Expr::Ident(t) => next_ctx.clear_table(t),
                                 Expr::TableColRef { table, column } => next_ctx.clear_column(table, column),
+                                _ => {}
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+                "ALLSELECTED" => {
+                    // §3 item 3: ALLSELECTED restores the *visual's* starting filter
+                    // (the shadow captured once in `build_filter_context`), not the
+                    // model-wide unfiltered state — unlike bare ALL/REMOVEFILTERS.
+                    let shadow = outer_ctx.shadow_ctx();
+                    if args.is_empty() {
+                        next_ctx.filters = shadow.filters.clone();
+                        next_ctx.tuple_filters = shadow.tuple_filters.clone();
+                    } else {
+                        for arg in args {
+                            match arg {
+                                Expr::Ident(t) => {
+                                    let tl = t.to_lowercase();
+                                    next_ctx.filters.remove(&tl);
+                                    next_ctx.tuple_filters.retain(|tf| tf.table != tl);
+                                    if let Some(cols) = shadow.filters.get(&tl) {
+                                        next_ctx.filters.insert(tl.clone(), cols.clone());
+                                    }
+                                    next_ctx
+                                        .tuple_filters
+                                        .extend(shadow.tuple_filters.iter().filter(|tf| tf.table == tl).cloned());
+                                }
+                                Expr::TableColRef { table, column } => {
+                                    let shadow_val = shadow
+                                        .filters
+                                        .get(&table.to_lowercase())
+                                        .and_then(|m| m.get(&column.to_lowercase()))
+                                        .cloned();
+                                    match shadow_val {
+                                        Some(v) => next_ctx.set_column_filter(table, column, v),
+                                        None => next_ctx.clear_column(table, column),
+                                    }
+                                }
                                 _ => {}
                             }
                         }
@@ -253,6 +293,25 @@ pub(super) fn apply_calculate_modifier(
                 }
                 "KEEPFILTERS" => {
                     if let Some(inner) = args.first() {
+                        let is_table_filter = matches!(
+                            inner,
+                            Expr::Call { name, .. } if matches!(
+                                name.trim().to_uppercase().as_str(),
+                                "FILTER" | "VALUES" | "DISTINCT" | "SUMMARIZE" | "ADDCOLUMNS" | "SELECTCOLUMNS"
+                                    | "UNION" | "INTERSECT" | "EXCEPT" | "CROSSJOIN" | "TOPN" | "CALCULATETABLE"
+                                    | "RELATEDTABLE" | "TREATAS"
+                            )
+                        );
+                        if is_table_filter {
+                            if let Expr::Call { name, args: inner_args } = inner {
+                                if name.trim().eq_ignore_ascii_case("TREATAS") {
+                                    apply_treatas(inner_args, model, outer_ctx, next_ctx, row_stack, vars, true)?;
+                                    return Ok(());
+                                }
+                            }
+                            apply_table_filter(inner, model, outer_ctx, next_ctx, row_stack, vars, true)?;
+                            return Ok(());
+                        }
                         if let Some((tbl_name, col_name)) = find_primary_table_col(inner) {
                             if let Some(tbl) = model.get_table(&tbl_name) {
                                 if let Some(cidx) = tbl.get_col_idx(&col_name) {
@@ -422,49 +481,23 @@ pub(super) fn apply_calculate_modifier(
                     return Ok(());
                 }
                 "TREATAS" => {
-                    if args.len() >= 2 {
-                        let (src_tbl, src_indices, _) =
-                            eval_table_expr(&args[0], model, outer_ctx, row_stack, vars)?;
-                        let src_data = src_tbl.as_ref();
-                        for (col_pos, col_expr) in args[1..].iter().enumerate() {
-                            if let Expr::TableColRef { table, column } = col_expr {
-                                if let Some(target_tbl) = model.get_table(table) {
-                                    let mut allowed = HashSet::new();
-                                    for &r_idx in &src_indices {
-                                        if let Some(cell) = src_data.rows[r_idx].get(col_pos) {
-                                            allowed.insert(cell.value_key());
-                                        }
-                                    }
-                                    next_ctx.set_column_filter(&target_tbl.name, column, allowed);
-                                }
-                            }
-                        }
-                    }
+                    apply_treatas(args, model, outer_ctx, next_ctx, row_stack, vars, false)?;
                     return Ok(());
                 }
                 "FILTER" => {
-                    if args.len() >= 2 {
-                        let (tbl_eval, kept_indices, _) = eval_table_expr(expr, model, outer_ctx, row_stack, vars)?;
-                        let tbl = tbl_eval.as_ref();
-                        // A physical table is filtered through its first (key) column; a
-                        // synthetic table (e.g. FILTER(VALUES(T[c]), ...), FILTER(SUMMARIZE(..)))
-                        // filters every column that has model lineage.
-                        let filter_cols: Vec<(usize, String, String)> = match &tbl_eval {
-                            TableEval::Borrowed(_) => tbl
-                                .columns
-                                .first()
-                                .map(|c| vec![(0, tbl.name.clone(), c.clone())])
-                                .unwrap_or_default(),
-                            TableEval::Owned(_) => (0..tbl.columns.len())
-                                .filter_map(|i| column_lineage(model, tbl, i).map(|(t, c)| (i, t, c)))
-                                .collect(),
-                        };
-                        for (cidx, t, c) in filter_cols {
-                            let allowed: HashSet<ValueKey> =
-                                kept_indices.iter().map(|&i| tbl.rows[i][cidx].value_key()).collect();
-                            next_ctx.set_column_filter(&t, &c, allowed);
-                        }
-                    }
+                    apply_table_filter(expr, model, outer_ctx, next_ctx, row_stack, vars, false)?;
+                    return Ok(());
+                }
+                // §2.3/§3: a table expression used *directly* as a CALCULATE
+                // modifier (without a FILTER wrapper) — SUMMARIZE/VALUES/ADDCOLUMNS
+                // used as a filter, CALCULATETABLE, set ops, GENERATESERIES/CROSSJOIN
+                // (no-op when the result has no model lineage). This mirrors FILTER's
+                // handling: the resulting rows become the filter, grouped into tuple
+                // filters whenever more than one of their columns trace back to the
+                // same table.
+                "VALUES" | "DISTINCT" | "SUMMARIZE" | "ADDCOLUMNS" | "SELECTCOLUMNS" | "UNION" | "INTERSECT"
+                | "EXCEPT" | "CROSSJOIN" | "GENERATESERIES" | "TOPN" | "CALCULATETABLE" | "RELATEDTABLE" => {
+                    apply_table_filter(expr, model, outer_ctx, next_ctx, row_stack, vars, false)?;
                     return Ok(());
                 }
                 "FIRSTNONBLANK" | "LASTNONBLANK" => {
@@ -505,6 +538,126 @@ pub(super) fn apply_calculate_modifier(
         }
     }
 
+    Ok(())
+}
+
+/// §2.3: TREATAS's target columns, grouped by table so a multi-column TREATAS
+/// onto the same table becomes ONE tuple filter — the combinations that
+/// actually occur in the source table — instead of N independent per-column
+/// filters that would also let through combinations that never occurred
+/// together in the source (classic cross-join-of-filters bug).
+pub(super) fn apply_treatas(
+    args: &[Expr],
+    model: &DaxModel,
+    outer_ctx: &FilterContext,
+    next_ctx: &mut FilterContext,
+    row_stack: &[RowContext<'_>],
+    vars: &HashMap<String, DaxValue>,
+    keep: bool,
+) -> Result<(), String> {
+    if args.len() < 2 {
+        return Ok(());
+    }
+    let (src_tbl, src_indices, _) = eval_table_expr(&args[0], model, outer_ctx, row_stack, vars)?;
+    let src_data = src_tbl.as_ref();
+    let mut by_table: HashMap<String, Vec<(usize, String)>> = HashMap::new();
+    for (col_pos, col_expr) in args[1..].iter().enumerate() {
+        if let Expr::TableColRef { table, column } = col_expr {
+            if model.get_table(table).is_some() {
+                by_table.entry(table.clone()).or_default().push((col_pos, column.clone()));
+            }
+        }
+    }
+    for (table, cols) in by_table {
+        if cols.len() == 1 {
+            let (pos, col) = &cols[0];
+            let mut allowed: HashSet<ValueKey> =
+                src_indices.iter().filter_map(|&i| src_data.rows[i].get(*pos)).map(|c| c.value_key()).collect();
+            if keep {
+                if let Some(existing) = outer_ctx.filters.get(&table.to_lowercase()).and_then(|m| m.get(&col.to_lowercase())) {
+                    allowed = allowed.intersection(existing).cloned().collect();
+                }
+            }
+            next_ctx.set_column_filter(&table, col, allowed);
+        } else {
+            let col_names: Vec<String> = cols.iter().map(|(_, c)| c.clone()).collect();
+            let mut tuples: HashSet<Vec<ValueKey>> = src_indices
+                .iter()
+                .map(|&i| cols.iter().map(|(pos, _)| src_data.rows[i][*pos].value_key()).collect())
+                .collect();
+            if keep {
+                let tl = table.to_lowercase();
+                let cls: Vec<String> = col_names.iter().map(|c| c.to_lowercase()).collect();
+                if let Some(existing) = outer_ctx.tuple_filters.iter().find(|tf| tf.table == tl && tf.columns == cls) {
+                    tuples = tuples.intersection(&existing.tuples).cloned().collect();
+                }
+            }
+            next_ctx.set_tuple_filter(&table, &col_names, tuples);
+        }
+    }
+    Ok(())
+}
+
+/// §2.3/§3: applies a table expression's resulting rows as a filter —
+/// FILTER's own argument, or any other table-producing call used *directly*
+/// as a CALCULATE modifier (SUMMARIZE/VALUES/ADDCOLUMNS as a filter,
+/// CALCULATETABLE, set ops...). A physical table is filtered through its
+/// first (key) column; a synthetic table filters every column that has model
+/// lineage, grouped by source table so that 2+ lineage columns from the SAME
+/// table become one tuple filter instead of independent per-column filters.
+/// `keep`: KEEPFILTERS semantics — intersect with any filter already on the
+/// exact same (table, column) or (table, columns) signature instead of
+/// replacing it.
+pub(super) fn apply_table_filter(
+    expr: &Expr,
+    model: &DaxModel,
+    outer_ctx: &FilterContext,
+    next_ctx: &mut FilterContext,
+    row_stack: &[RowContext<'_>],
+    vars: &HashMap<String, DaxValue>,
+    keep: bool,
+) -> Result<(), String> {
+    let (tbl_eval, kept_indices, _) = eval_table_expr(expr, model, outer_ctx, row_stack, vars)?;
+    let tbl = tbl_eval.as_ref();
+    let filter_cols: Vec<(usize, String, String)> = match &tbl_eval {
+        TableEval::Borrowed(_) => {
+            tbl.columns.first().map(|c| vec![(0, tbl.name.clone(), c.clone())]).unwrap_or_default()
+        }
+        TableEval::Owned(_) => {
+            (0..tbl.columns.len()).filter_map(|i| column_lineage(model, tbl, i).map(|(t, c)| (i, t, c))).collect()
+        }
+    };
+    let mut by_table: HashMap<String, Vec<(usize, String)>> = HashMap::new();
+    for (cidx, t, c) in filter_cols {
+        by_table.entry(t).or_default().push((cidx, c));
+    }
+    for (t, cols) in by_table {
+        if cols.len() == 1 {
+            let (cidx, c) = &cols[0];
+            let mut allowed: HashSet<ValueKey> =
+                kept_indices.iter().map(|&i| tbl.rows[i][*cidx].value_key()).collect();
+            if keep {
+                if let Some(existing) = outer_ctx.filters.get(&t.to_lowercase()).and_then(|m| m.get(&c.to_lowercase())) {
+                    allowed = allowed.intersection(existing).cloned().collect();
+                }
+            }
+            next_ctx.set_column_filter(&t, c, allowed);
+        } else {
+            let col_names: Vec<String> = cols.iter().map(|(_, c)| c.clone()).collect();
+            let mut tuples: HashSet<Vec<ValueKey>> = kept_indices
+                .iter()
+                .map(|&i| cols.iter().map(|(cidx, _)| tbl.rows[i][*cidx].value_key()).collect())
+                .collect();
+            if keep {
+                let tl = t.to_lowercase();
+                let cls: Vec<String> = col_names.iter().map(|c| c.to_lowercase()).collect();
+                if let Some(existing) = outer_ctx.tuple_filters.iter().find(|tf| tf.table == tl && tf.columns == cls) {
+                    tuples = tuples.intersection(&existing.tuples).cloned().collect();
+                }
+            }
+            next_ctx.set_tuple_filter(&t, &col_names, tuples);
+        }
+    }
     Ok(())
 }
 
@@ -633,4 +786,183 @@ pub(super) fn count_distinct_visible(
         .map(|i| tbl.rows[i][cidx].value_key())
         .collect::<HashSet<_>>()
         .len()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::dax::{
+        build_filter_context, DaxMeasureInput, DaxModel, DaxModelSyncPayload, DaxRelationshipInput, DaxTableInput,
+        NativeFilterInput,
+    };
+    use serde_json::json;
+
+    fn row(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    /// A tiny star schema (no global state: built fresh in every test),
+    /// mirroring tests/dax-corpus/models/vendas.json closely enough to
+    /// hand-check every assertion below. `orphan`: adds one f_Vendas row
+    /// whose ProdutoID (9) doesn't exist in d_Produto, to exercise the
+    /// blank-member tests.
+    fn sales_model(orphan: bool) -> DaxModel {
+        let mut f_rows = vec![
+            row(json!({"VendaID": 1, "ProdutoID": 1, "ClienteID": 1, "Valor": 25.0})),
+            row(json!({"VendaID": 2, "ProdutoID": 1, "ClienteID": 2, "Valor": 50.0})),
+            row(json!({"VendaID": 3, "ProdutoID": 2, "ClienteID": 1, "Valor": 36.0})),
+            row(json!({"VendaID": 4, "ProdutoID": 2, "ClienteID": 2, "Valor": 60.0})),
+            row(json!({"VendaID": 5, "ProdutoID": 2, "ClienteID": 2, "Valor": 24.0})),
+            row(json!({"VendaID": 6, "ProdutoID": 4, "ClienteID": 1, "Valor": 300.0})),
+            row(json!({"VendaID": 7, "ProdutoID": 1, "ClienteID": 1, "Valor": 20.0})),
+        ];
+        if orphan {
+            // ProdutoID 9 doesn't exist in d_Produto below -> orphan FK.
+            f_rows.push(row(json!({"VendaID": 8, "ProdutoID": 9, "ClienteID": 1, "Valor": 99.0})));
+        }
+        let mut model = DaxModel::new();
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput {
+                    duckdb_table: None,
+                    name: "d_Produto".into(),
+                    columns: vec!["ProdutoID".into(), "Produto".into(), "Categoria".into()],
+                    rows: vec![
+                        row(json!({"ProdutoID": 1, "Produto": "Caneta", "Categoria": "Papelaria"})),
+                        row(json!({"ProdutoID": 2, "Produto": "Caderno", "Categoria": "Papelaria"})),
+                        row(json!({"ProdutoID": 3, "Produto": "Mouse", "Categoria": "Informatica"})),
+                        row(json!({"ProdutoID": 4, "Produto": "Teclado", "Categoria": "Informatica"})),
+                    ],
+                    column_types: vec![],
+                },
+                DaxTableInput {
+                    duckdb_table: None,
+                    name: "d_Cliente".into(),
+                    columns: vec!["ClienteID".into(), "Cliente".into()],
+                    rows: vec![
+                        row(json!({"ClienteID": 1, "Cliente": "Ana"})),
+                        row(json!({"ClienteID": 2, "Cliente": "Bruno"})),
+                        row(json!({"ClienteID": 3, "Cliente": "Carla"})),
+                    ],
+                    column_types: vec![],
+                },
+                DaxTableInput {
+                    duckdb_table: None,
+                    name: "f_Vendas".into(),
+                    // (ProdutoID, ClienteID): (1,1)x2, (1,2), (2,1), (2,2)x2, (4,1) — a
+                    // deliberately non-bijective mix so a per-column AND decomposition
+                    // of a 2-column filter differs from the true tuple set.
+                    columns: vec!["VendaID".into(), "ProdutoID".into(), "ClienteID".into(), "Valor".into()],
+                    rows: f_rows,
+                    column_types: vec![],
+                },
+            ],
+            relationships: vec![
+                DaxRelationshipInput {
+                    from_table: "f_Vendas".into(),
+                    from_column: "ProdutoID".into(),
+                    to_table: "d_Produto".into(),
+                    to_column: "ProdutoID".into(),
+                    cross_filter_direction: "single".into(),
+                    is_active: true,
+                },
+                DaxRelationshipInput {
+                    from_table: "f_Vendas".into(),
+                    from_column: "ClienteID".into(),
+                    to_table: "d_Cliente".into(),
+                    to_column: "ClienteID".into(),
+                    cross_filter_direction: "single".into(),
+                    is_active: true,
+                },
+            ],
+            measures: vec![DaxMeasureInput {
+                name: "Total".into(),
+                table_name: "f_Vendas".into(),
+                formula: "SUM(f_Vendas[Valor])".into(),
+            }],
+        });
+        model
+    }
+
+    fn val(model: &DaxModel, expr: &str, filters: &[NativeFilterInput]) -> f64 {
+        let ctx = build_filter_context(filters, model);
+        model.evaluate_dax(expr, &ctx).unwrap().as_f64().unwrap()
+    }
+
+    fn filt(table: &str, column: &str, values: &[&str]) -> NativeFilterInput {
+        NativeFilterInput {
+            table_id: table.into(),
+            column: column.into(),
+            values: values.iter().map(|v| json!(v)).collect(),
+        }
+    }
+
+    #[test]
+    fn allselected_table_arg_restores_shadow_not_model_total() {
+        let model = sales_model(false);
+        let slicer = [filt("d_Produto", "Produto", &["Caneta", "Mouse"])];
+        // Caneta(25+50+20)=95, Mouse has no rows here -> shadow total = 95.
+        let got = val(
+            &model,
+            "CALCULATE(CALCULATE([Total], ALLSELECTED(d_Produto)), d_Produto[Produto] = \"Caneta\")",
+            &slicer,
+        );
+        let shadow_total = val(&model, "[Total]", &slicer);
+        assert_eq!(got, shadow_total, "ALLSELECTED(table) must restore the visual's shadow filter");
+        let model_total = val(&model, "[Total]", &[]);
+        assert_ne!(got, model_total, "ALLSELECTED must not behave like ALL/REMOVEFILTERS (model-wide total)");
+    }
+
+    #[test]
+    fn allselected_column_outside_shadow_clears_fully() {
+        let model = sales_model(false);
+        // Shadow never touched d_Produto[Produto] at all, so ALLSELECTED on
+        // that column must behave like a full clear, not a no-op.
+        let got = val(&model, "CALCULATE(CALCULATE([Total], ALLSELECTED(d_Produto[Produto])), d_Produto[Produto] = \"Caneta\")", &[]);
+        let total_all = val(&model, "[Total]", &[]);
+        assert_eq!(got, total_all);
+    }
+
+    #[test]
+    fn tuple_filter_restricts_to_exact_combinations_not_cross_join() {
+        let model = sales_model(false);
+        let expr = "CALCULATE([Total], TREATAS(SUMMARIZE(FILTER(f_Vendas, (f_Vendas[ProdutoID] = 1 && f_Vendas[ClienteID] = 1) || (f_Vendas[ProdutoID] = 2 && f_Vendas[ClienteID] = 2)), f_Vendas[ProdutoID], f_Vendas[ClienteID]), f_Vendas[ProdutoID], f_Vendas[ClienteID]))";
+        // Rows with (1,1): VendaID 1,7 (25+20=45); rows with (2,2): VendaID 4,5 (60+24=84). Total 129.
+        let got = val(&model, expr, &[]);
+        assert_eq!(got, 129.0);
+        // A naive per-column AND decomposition (ProdutoID∈{1,2}, ClienteID∈{1,2})
+        // would additionally admit VendaID 2 (1,2)=50 and VendaID 3 (2,1)=36,
+        // landing on 215 instead — the exact bug this filter exists to avoid.
+        assert_ne!(got, 215.0);
+    }
+
+    #[test]
+    fn keepfilters_intersects_tuple_filters_instead_of_replacing() {
+        let model = sales_model(false);
+        let expr = "CALCULATE(CALCULATE([Total], KEEPFILTERS(TREATAS(SUMMARIZE(FILTER(f_Vendas, (f_Vendas[ProdutoID] = 1 && f_Vendas[ClienteID] = 1) || (f_Vendas[ProdutoID] = 4 && f_Vendas[ClienteID] = 1)), f_Vendas[ProdutoID], f_Vendas[ClienteID]), f_Vendas[ProdutoID], f_Vendas[ClienteID]))), TREATAS(SUMMARIZE(FILTER(f_Vendas, (f_Vendas[ProdutoID] = 1 && f_Vendas[ClienteID] = 1) || (f_Vendas[ProdutoID] = 2 && f_Vendas[ClienteID] = 2)), f_Vendas[ProdutoID], f_Vendas[ClienteID]), f_Vendas[ProdutoID], f_Vendas[ClienteID]))";
+        // Outer tuple set = {(1,1),(2,2)}; inner (without KEEPFILTERS) would be
+        // {(1,1),(4,1)}. KEEPFILTERS intersects: only (1,1) survives -> 45.
+        let got = val(&model, expr, &[]);
+        assert_eq!(got, 45.0);
+    }
+
+    #[test]
+    fn values_table_includes_blank_member_for_orphan_fk() {
+        let model = sales_model(true);
+        let n_table = val(&model, "COUNTROWS(d_Produto)", &[]);
+        let n_values = val(&model, "COUNTROWS(VALUES(d_Produto))", &[]);
+        let n_distinct = val(&model, "COUNTROWS(DISTINCT(d_Produto[Produto]))", &[]);
+        assert_eq!(n_table, 4.0, "the physical table never gains a blank row");
+        assert_eq!(n_values, 5.0, "VALUES(table) must surface the blank member for the orphan FK");
+        assert_eq!(n_distinct, 4.0, "DISTINCT never includes the blank member");
+    }
+
+    #[test]
+    fn values_blank_member_disappears_under_a_direct_filter() {
+        let model = sales_model(true);
+        let direct = [filt("d_Produto", "Categoria", &["Papelaria"])];
+        let got = val(&model, "COUNTROWS(VALUES(d_Produto))", &direct);
+        // Papelaria has 2 physical rows and the blank member can never match
+        // a direct equality filter, so it must not be counted here.
+        assert_eq!(got, 2.0);
+    }
 }

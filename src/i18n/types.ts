@@ -92,6 +92,8 @@ export interface Translations {
     limitations: string;
   };
   panes: {
+    collapse: string;
+    expand: string;
     filters: {
       title: string;
       onThisPage: string;
@@ -139,6 +141,67 @@ export interface Translations {
     selectField: string;
     drillthrough: string;
     openCalcModal: string;
+  };
+  /** v0.10 Rodada 2 (Frente G, seams i18n): controles de drill-down no cabeçalho do visual e menu de contexto. */
+  drill: {
+    controlsGroupLabel: string;
+    drillUp: string;
+    drillUpHint: string;
+    drillUpAtTop: string;
+    drillDownMode: string;
+    drillDownModeOnHint: string;
+    drillDownModeOffHint: string;
+    nextLevel: string;
+    nextLevelHint: string;
+    expandAllLevels: string;
+    expandAllLevelsHint: string;
+    atLowestLevel: string;
+    matrixControlsGroupLabel: string;
+    expandOneLevel: string;
+    expandOneLevelHint: string;
+    expandOneLevelDoneHint: string;
+    expandAll: string;
+    expandAllHint: string;
+    expandAllDoneHint: string;
+    collapseAll: string;
+    collapseAllHint: string;
+    collapseAllDoneHint: string;
+    pointMenuLabel: string;
+    drillDownAction: string;
+    drillDownActionHint: string;
+    drillUpActionHint: string;
+    showAsTable: string;
+    showAsTableHint: string;
+    drillthroughAction: string;
+    drillthroughActionHint: string;
+    drillthroughUnavailableHint: string;
+  };
+  slicer: {
+    searchPlaceholder: string;
+    selectAll: string;
+    between: string;
+    relativeDate: string;
+    min: string;
+    max: string;
+    start: string;
+    end: string;
+    anchorLast: string;
+    anchorThis: string;
+    anchorNext: string;
+    unitDays: string;
+    unitWeeks: string;
+    unitMonths: string;
+    unitQuarters: string;
+    unitYears: string;
+    includeToday: string;
+    syncSlicersTitle: string;
+    syncGroup: string;
+    syncGroupPlaceholder: string;
+    syncPages: string;
+    syncAllPages: string;
+    filterLabelBetweenDates: string;
+    filterLabelRelative: string;
+    showSearchBox: string;
   };
   report: {
     addPage: string;

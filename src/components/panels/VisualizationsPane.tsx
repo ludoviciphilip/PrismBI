@@ -24,6 +24,14 @@ import { VisualType, Visual } from '../../types/bi';
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { useTranslation } from '../../i18n';
+import { useUiPrefs } from '../../store/useUiPrefs';
+import { CollapsedPaneStrip, PaneCollapseButton } from './PaneCollapseShell';
+import { ConditionalFormatList } from '../report/conditionalFormat/ConditionalFormatList';
+import { SlicerSyncPanel } from '../report/slicer';
+import { ActionButtonBookmarkConfig } from '../report/bookmarks';
+import { PageTooltipSettings, TooltipCard } from '../report/tooltipPage';
+import { DrillLevelsEditor } from '../report/drill/DrillLevelsEditor';
+import { DRILLABLE_VISUAL_TYPES } from '../../engine/drill';
 
 const visualTypes: { type: VisualType; label: string; icon: any }[] = [
   { type: 'column', label: 'Colunas', icon: BarChart },
@@ -49,7 +57,9 @@ const visualTypes: { type: VisualType; label: string; icon: any }[] = [
 
 export const VisualizationsPane: React.FC = React.memo(() => {
   const { t } = useTranslation();
-  const { pages, activePageId, selectedVisualId, updateVisual, tables, measures, relationships } = useBiStore(useShallow(s => ({
+  const paneState = useUiPrefs(s => s.panes.visualizations);
+  const togglePaneCollapsed = useUiPrefs(s => s.togglePaneCollapsed);
+  const { pages, activePageId, selectedVisualId, updateVisual, tables, measures, relationships, bookmarks, setPageTooltipConfig, setPageCanvasSize } = useBiStore(useShallow(s => ({
     pages: s.pages,
     activePageId: s.activePageId,
     selectedVisualId: s.selectedVisualId,
@@ -57,6 +67,9 @@ export const VisualizationsPane: React.FC = React.memo(() => {
     tables: s.tables,
     measures: s.measures,
     relationships: s.relationships,
+    bookmarks: s.bookmarks,
+    setPageTooltipConfig: s.setPageTooltipConfig,
+    setPageCanvasSize: s.setPageCanvasSize,
   })));
   const [activeTab, setActiveTab] = useState<'build' | 'format'>('build');
 
@@ -81,6 +94,27 @@ export const VisualizationsPane: React.FC = React.memo(() => {
     });
     return tables.filter(t => t.id !== selectedTable.id && (relTableIds.has(t.id) || relTableIds.has(t.name)));
   }, [selectedTable, relationships, tables]);
+
+  // v0.10 Rodada 2 (frente F): universo de campos oferecido ao marcar os
+  // "Campos da dica" de uma página de tooltip (colunas de todas as tabelas + medidas).
+  const allFieldNames = useMemo(() => {
+    const names = new Set<string>();
+    tables.forEach(tb => tb.columns.forEach(c => names.add(c.name)));
+    measures.forEach(m => names.add(m.name));
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [tables, measures]);
+
+  const conditionalFormatFields = useMemo(() => {
+    if (!selectedVisual) return [];
+    const fields = new Set<string>();
+    (selectedVisual.dataConfig.yAxisFields || []).forEach(f => fields.add(f));
+    if (selectedVisual.dataConfig.xAxisField) fields.add(selectedVisual.dataConfig.xAxisField);
+    if (selectedVisual.dataConfig.legendField) fields.add(selectedVisual.dataConfig.legendField);
+    if ((selectedVisual.type === 'table' || selectedVisual.type === 'matrix') && selectedTable) {
+      selectedTable.columns.forEach(c => fields.add(c.name));
+    }
+    return [...fields];
+  }, [selectedVisual, selectedTable]);
 
   const fieldLabels = useMemo(() => {
     if (!selectedVisual) {
@@ -208,11 +242,29 @@ export const VisualizationsPane: React.FC = React.memo(() => {
     }
   }, [selectedVisual?.type]);
 
+  if (paneState === 'collapsed') {
+    return (
+      <CollapsedPaneStrip
+        icon={Layers}
+        iconClassName="w-4 h-4 text-slate-500 dark:text-slate-400"
+        title={t.panes.visualizations.title}
+        expandLabel={t.panes.expand}
+        onExpand={() => togglePaneCollapsed('visualizations')}
+        testId="visualizations-pane-collapsed"
+      />
+    );
+  }
+
   if (!selectedVisual) {
     return (
-      <div className="w-64 border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col h-full text-xs text-slate-700 dark:text-slate-300">
+      <div className="w-64 border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col h-full overflow-y-auto text-xs text-slate-700 dark:text-slate-300">
         <div className="p-3 border-b border-slate-200 dark:border-slate-800 font-semibold text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-900/60 flex items-center justify-between">
           <span>{t.panes.visualizations.title}</span>
+          <PaneCollapseButton
+            collapseLabel={t.panes.collapse}
+            onCollapse={() => togglePaneCollapsed('visualizations')}
+            testId="visualizations-pane-collapse"
+          />
         </div>
         <div className="p-3 grid grid-cols-4 gap-1.5 border-b border-slate-200 dark:border-slate-800">
           {visualTypes.map(v => {
@@ -228,6 +280,14 @@ export const VisualizationsPane: React.FC = React.memo(() => {
             );
           })}
         </div>
+        {activePage && (
+          <PageTooltipSettings
+            page={activePage}
+            availableFields={allFieldNames}
+            onChange={(tooltipPage) => setPageTooltipConfig(activePage.id, tooltipPage)}
+            onSuggestCanvasSize={(canvasSize) => setPageCanvasSize(activePage.id, canvasSize)}
+          />
+        )}
         <div className="p-4 text-center text-slate-400 dark:text-slate-500 flex flex-col items-center justify-center flex-1">
           <Layers className="w-8 h-8 mb-2 text-slate-300 dark:text-slate-600" />
           <p className="font-medium text-slate-600 dark:text-slate-300">Nenhum visual selecionado</p>
@@ -260,6 +320,11 @@ export const VisualizationsPane: React.FC = React.memo(() => {
             {t.panes.visualizations.formatVisual}
           </button>
         </div>
+        <PaneCollapseButton
+          collapseLabel={t.panes.collapse}
+          onCollapse={() => togglePaneCollapsed('visualizations')}
+          testId="visualizations-pane-collapse"
+        />
       </div>
 
       {/* Visual Type Picker Grid */}
@@ -500,38 +565,13 @@ export const VisualizationsPane: React.FC = React.memo(() => {
             </div>
           )}
 
-          {selectedVisual.type === 'matrix' && (
-            <div>
-              <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
-                Sub-linha (Hierarquia Expansível)
-              </label>
-              <select
-                value={selectedVisual.dataConfig.drillFields?.[0] || ''}
-                onChange={(e) =>
-                  updateVisual(selectedVisual.id, {
-                    dataConfig: {
-                      ...selectedVisual.dataConfig,
-                      drillFields: e.target.value ? [e.target.value] : [],
-                    },
-                  })
-                }
-                className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded px-2 py-1 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
-              >
-                <option value="">(Nenhuma sub-linha)</option>
-                {selectedTable?.columns.map(c => (
-                  <option key={c.name} value={c.name}>
-                    {c.name}
-                  </option>
-                ))}
-                {relatedTables.map(relT =>
-                  relT.columns.map(c => (
-                    <option key={`${relT.name}.${c.name}`} value={`${relT.name}.${c.name}`}>
-                      {relT.name}.{c.name}
-                    </option>
-                  ))
-                )}
-              </select>
-            </div>
+          {(selectedVisual.type === 'matrix' || DRILLABLE_VISUAL_TYPES.has(selectedVisual.type)) && (
+            <DrillLevelsEditor
+              visual={selectedVisual}
+              table={selectedTable}
+              relatedTables={relatedTables}
+              onChange={patch => updateVisual(selectedVisual.id, { dataConfig: { ...selectedVisual.dataConfig, ...patch } })}
+            />
           )}
         </div>
       )}
@@ -664,7 +704,7 @@ export const VisualizationsPane: React.FC = React.memo(() => {
                         ...selectedVisual.dataConfig,
                         slicerConfig: {
                           ...selectedVisual.dataConfig.slicerConfig,
-                          mode: e.target.value as 'dropdown' | 'tiles',
+                          mode: e.target.value as NonNullable<Visual['dataConfig']['slicerConfig']>['mode'],
                         },
                       },
                     })
@@ -672,9 +712,64 @@ export const VisualizationsPane: React.FC = React.memo(() => {
                   className="bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-slate-700 dark:text-slate-200"
                 >
                   <option value="dropdown">Suspenso (Dropdown)</option>
+                  <option value="list">Lista</option>
                   <option value="tiles">Blocos / Botões (Tiles)</option>
+                  <option value="between">{t.slicer.between}</option>
+                  <option value="relative-date">{t.slicer.relativeDate}</option>
                 </select>
               </div>
+            )}
+
+            {selectedVisual.type === 'slicer' &&
+              ['list', 'dropdown', 'tiles'].includes(selectedVisual.dataConfig.slicerConfig?.mode || 'dropdown') && (
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-medium text-slate-700 dark:text-slate-200">{t.slicer.showSearchBox}</span>
+                  <input
+                    type="checkbox"
+                    checked={selectedVisual.dataConfig.slicerConfig?.showSearch ?? false}
+                    onChange={(e) =>
+                      updateVisual(selectedVisual.id, {
+                        dataConfig: {
+                          ...selectedVisual.dataConfig,
+                          slicerConfig: { ...selectedVisual.dataConfig.slicerConfig, mode: selectedVisual.dataConfig.slicerConfig?.mode || 'dropdown', showSearch: e.target.checked },
+                        },
+                      })
+                    }
+                    className="rounded border-slate-300 text-amber-500 focus:ring-amber-400"
+                  />
+                </div>
+              )}
+
+            {selectedVisual.type === 'slicer' && (
+              <SlicerSyncPanel
+                visual={selectedVisual}
+                pages={pages}
+                onChange={(patch) =>
+                  updateVisual(selectedVisual.id, {
+                    dataConfig: {
+                      ...selectedVisual.dataConfig,
+                      slicerConfig: {
+                        ...selectedVisual.dataConfig.slicerConfig,
+                        mode: selectedVisual.dataConfig.slicerConfig?.mode || 'dropdown',
+                        ...patch,
+                      },
+                    },
+                  })
+                }
+              />
+            )}
+
+            {selectedVisual.type === 'action-button' && (
+              <ActionButtonBookmarkConfig
+                formatConfig={selectedVisual.formatConfig}
+                pages={pages}
+                bookmarks={bookmarks}
+                onChange={(patch) =>
+                  updateVisual(selectedVisual.id, {
+                    formatConfig: { ...selectedVisual.formatConfig, ...patch },
+                  })
+                }
+              />
             )}
           </div>
 
@@ -727,6 +822,32 @@ export const VisualizationsPane: React.FC = React.memo(() => {
               />
             </div>
           </div>
+
+          {/* Formatação condicional */}
+          <div className="space-y-2 border-t border-slate-100 dark:border-slate-800 pt-2">
+            <label className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 block">Formatação condicional</label>
+            <ConditionalFormatList
+              visual={selectedVisual}
+              availableFields={conditionalFormatFields}
+              measureFields={measures.filter(m => m.tableName === selectedTable?.name || m.tableId === selectedTable?.id).map(m => m.name)}
+              onChange={(formats) =>
+                updateVisual(selectedVisual.id, {
+                  formatConfig: { ...selectedVisual.formatConfig, conditionalFormats: formats },
+                })
+              }
+            />
+          </div>
+
+          {/* Dica de ferramenta (Report Page Tooltip) */}
+          <TooltipCard
+            visual={selectedVisual}
+            pages={pages}
+            onChange={(tooltip) =>
+              updateVisual(selectedVisual.id, {
+                formatConfig: { ...selectedVisual.formatConfig, tooltip },
+              })
+            }
+          />
         </div>
       )}
     </div>
