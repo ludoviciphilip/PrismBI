@@ -45,6 +45,7 @@ import { useTranslation } from '../../i18n';
 import { getEffectiveCanvasSize } from '../../engine/shared/canvasPresets';
 import { PowerBiImportModal } from '../modals/PowerBiImportModal';
 import { etlToM } from '../../services/etl/etlClient';
+import { conditionalFormatsToExportPayload } from '../../engine/conditionalFormat';
 import {
   isTauriRuntime,
   pickFolderDialog,
@@ -335,10 +336,34 @@ export const Ribbon: React.FC<{
             // Mapped to PBIR query.sortDefinition by the Rust writer.
             sortField: v.dataConfig.sortField ? qualifyExportField(v.dataConfig.sortField) : null,
             sortOrder: v.dataConfig.sortOrder ?? null,
+            // v0.10 Frente H: formatação condicional + segmentador novo, round-trip .pbip.
+            condFormats: conditionalFormatsToExportPayload(v.formatConfig.conditionalFormats),
+            slicerBetweenStart: v.dataConfig.slicerConfig?.between?.start != null ? String(v.dataConfig.slicerConfig.between.start) : null,
+            slicerBetweenEnd: v.dataConfig.slicerConfig?.between?.end != null ? String(v.dataConfig.slicerConfig.between.end) : null,
+            slicerRelativeAnchor: v.dataConfig.slicerConfig?.relative?.anchor ?? null,
+            slicerRelativeCount: v.dataConfig.slicerConfig?.relative?.count ?? null,
+            slicerRelativeUnit: v.dataConfig.slicerConfig?.relative?.unit ?? null,
+            slicerRelativeIncludeToday: v.dataConfig.slicerConfig?.relative?.includeToday ?? null,
+            slicerShowSearch: v.dataConfig.slicerConfig?.showSearch ?? null,
           })),
         })),
         themeName: state.activeThemeId || theme || 'PrismTheme',
         themePalette: activePalette,
+        // v0.10 Frente H: indicadores (bookmarks) no formato PBIR, round-trip .pbip.
+        bookmarks: (state.bookmarks || []).map((bm: any) => ({
+          id: bm.id,
+          name: bm.name,
+          activePageId: bm.activePageId,
+          filters: toExportFilters(bm.filters || []),
+          order: bm.order ?? null,
+          groupId: bm.groupId ?? null,
+          captureData: bm.capture?.data ?? null,
+          captureDisplay: bm.capture?.display ?? null,
+          captureCurrentPage: bm.capture?.currentPage ?? null,
+          scope: Array.isArray(bm.scope) ? bm.scope : [],
+          visualState: bm.visualState ?? null,
+          slicerSelections: bm.slicerSelections ?? null,
+        })),
       });
       alert(`Projeto .pbip exportado com sucesso em:\n${savedPath}`);
     } catch (err: any) {
