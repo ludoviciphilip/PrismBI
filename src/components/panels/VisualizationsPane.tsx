@@ -28,6 +28,7 @@ import { useUiPrefs } from '../../store/useUiPrefs';
 import { CollapsedPaneStrip, PaneCollapseButton } from './PaneCollapseShell';
 import { ConditionalFormatList } from '../report/conditionalFormat/ConditionalFormatList';
 import { SlicerSyncPanel } from '../report/slicer';
+import { ActionButtonBookmarkConfig } from '../report/bookmarks';
 
 const visualTypes: { type: VisualType; label: string; icon: any }[] = [
   { type: 'column', label: 'Colunas', icon: BarChart },
@@ -55,7 +56,7 @@ export const VisualizationsPane: React.FC = React.memo(() => {
   const { t } = useTranslation();
   const paneState = useUiPrefs(s => s.panes.visualizations);
   const togglePaneCollapsed = useUiPrefs(s => s.togglePaneCollapsed);
-  const { pages, activePageId, selectedVisualId, updateVisual, tables, measures, relationships } = useBiStore(useShallow(s => ({
+  const { pages, activePageId, selectedVisualId, updateVisual, tables, measures, relationships, bookmarks } = useBiStore(useShallow(s => ({
     pages: s.pages,
     activePageId: s.activePageId,
     selectedVisualId: s.selectedVisualId,
@@ -63,6 +64,7 @@ export const VisualizationsPane: React.FC = React.memo(() => {
     tables: s.tables,
     measures: s.measures,
     relationships: s.relationships,
+    bookmarks: s.bookmarks,
   })));
   const [activeTab, setActiveTab] = useState<'build' | 'format'>('build');
 
@@ -755,6 +757,19 @@ export const VisualizationsPane: React.FC = React.memo(() => {
                         ...patch,
                       },
                     },
+                  })
+                }
+              />
+            )}
+
+            {selectedVisual.type === 'action-button' && (
+              <ActionButtonBookmarkConfig
+                formatConfig={selectedVisual.formatConfig}
+                pages={pages}
+                bookmarks={bookmarks}
+                onChange={(patch) =>
+                  updateVisual(selectedVisual.id, {
+                    formatConfig: { ...selectedVisual.formatConfig, ...patch },
                   })
                 }
               />

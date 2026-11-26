@@ -20,6 +20,7 @@ import {
   ArrowUp,
   ArrowDown,
   ArrowUpDown,
+  Bookmark as BookmarkIcon,
 } from 'lucide-react';
 import { Visual, Filter as BiFilter } from '../../types/bi';
 import { useBiStore } from '../../store/useBiStore';
@@ -1474,7 +1475,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               onClick={(e) => {
                 e.stopPropagation();
                 const store = useBiStore.getState();
-                if (visual.formatConfig.actionType === 'page-navigation' && visual.formatConfig.actionTargetPageId) {
+                if (visual.formatConfig.actionType === 'bookmark') {
+                  // v0.10 (Indicadores): aplica o indicador configurado. Funciona em
+                  // Modo Apresentação e, em edição, com Ctrl+clique (como no Power BI).
+                  if (store.isPresentationMode || e.ctrlKey) {
+                    if (visual.formatConfig.actionBookmarkId) {
+                      store.applyBookmark(visual.formatConfig.actionBookmarkId);
+                    }
+                  }
+                } else if (visual.formatConfig.actionType === 'page-navigation' && visual.formatConfig.actionTargetPageId) {
                   store.setActivePageId(visual.formatConfig.actionTargetPageId);
                 } else if (store.activeDrillthrough) {
                   store.clearDrillthrough(true);
@@ -1486,10 +1495,16 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                 }
               }}
               className="w-full h-full flex items-center justify-center gap-1.5 rounded-lg bg-slate-100 hover:bg-amber-500 hover:text-slate-950 dark:bg-slate-800 dark:hover:bg-amber-500 text-slate-700 dark:text-slate-200 font-semibold text-xs border border-slate-300 dark:border-slate-700 transition-colors cursor-pointer"
-              title={visual.title}
+              title={
+                visual.formatConfig.actionType === 'bookmark'
+                  ? `${visual.title} (Ctrl+clique para aplicar o indicador em edição)`
+                  : visual.title
+              }
             >
               {visual.formatConfig.actionType === 'page-navigation' ? (
                 <ArrowRight className="w-4 h-4 shrink-0" />
+              ) : visual.formatConfig.actionType === 'bookmark' ? (
+                <BookmarkIcon className="w-4 h-4 shrink-0" />
               ) : (
                 <ArrowLeft className="w-4 h-4 shrink-0" />
               )}

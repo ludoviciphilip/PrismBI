@@ -14,7 +14,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
  */
 export type PaneVisibility = 'open' | 'collapsed' | 'hidden';
 
-export type PaneKey = 'filters' | 'visualizations' | 'fields';
+export type PaneKey = 'filters' | 'visualizations' | 'fields' | 'bookmarks' | 'selection';
 
 export const COLLAPSED_PANE_WIDTH = 32;
 
@@ -22,12 +22,18 @@ interface PanesState {
   filters: PaneVisibility;
   visualizations: PaneVisibility;
   fields: PaneVisibility;
+  /** v0.10: painel "Indicadores" (Bookmarks), aberto pela guia Exibir. */
+  bookmarks: PaneVisibility;
+  /** v0.10: painel "Seleção" (mostrar/ocultar visuais), aberto pela guia Exibir. */
+  selection: PaneVisibility;
 }
 
 const DEFAULT_PANES: PanesState = {
   filters: 'open',
   visualizations: 'open',
   fields: 'open',
+  bookmarks: 'hidden',
+  selection: 'hidden',
 };
 
 interface UiPrefsState {
@@ -46,7 +52,7 @@ interface UiPrefsState {
   toggleAllPanesCollapsed: () => void;
 }
 
-const PANE_KEYS: PaneKey[] = ['filters', 'visualizations', 'fields'];
+const PANE_KEYS: PaneKey[] = ['filters', 'visualizations', 'fields', 'bookmarks', 'selection'];
 
 export const useUiPrefs = create<UiPrefsState>()(
   persist(
@@ -85,7 +91,19 @@ export const useUiPrefs = create<UiPrefsState>()(
     {
       name: 'prismbi.ui',
       storage: createJSONStorage(() => localStorage),
-      version: 1,
+      version: 2,
+      // v0.10: panes persisted before "bookmarks"/"selection" existed won't
+      // have those keys; backfill them (hidden by default) instead of
+      // leaving `panes.bookmarks`/`panes.selection` undefined after rehydrate.
+      migrate: (persistedState: any) => ({
+        ...persistedState,
+        panes: { ...DEFAULT_PANES, ...(persistedState?.panes ?? {}) },
+      }),
+      merge: (persistedState: any, currentState) => ({
+        ...currentState,
+        ...persistedState,
+        panes: { ...DEFAULT_PANES, ...currentState.panes, ...(persistedState?.panes ?? {}) },
+      }),
     }
   )
 );
