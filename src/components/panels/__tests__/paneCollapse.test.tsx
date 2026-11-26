@@ -15,7 +15,7 @@ import { FieldsPane } from '../FieldsPane';
 
 function resetUiPrefs() {
   localStorage.clear();
-  useUiPrefs.setState({ panes: { filters: 'open', visualizations: 'open', fields: 'open' } });
+  useUiPrefs.setState({ panes: { filters: 'open', visualizations: 'open', fields: 'open', bookmarks: 'hidden', selection: 'hidden' } });
 }
 
 beforeEach(() => {

@@ -34,6 +34,17 @@ import {
   resolveSlicerField,
   slicerFilterId,
 } from '../components/report/slicer/slicerFilter';
+import { captureBookmark, applyBookmark as applyBookmarkPure } from '../components/report/bookmarks/capture';
+import {
+  createBookmarkEntry,
+  renameBookmarkEntry,
+  deleteBookmarkEntry,
+  duplicateBookmarkEntry,
+  reorderBookmarkEntry,
+  setBookmarkGroup,
+  ungroupBookmarkEntries,
+  updateBookmarkSettings as updateBookmarkSettingsPure,
+} from './bookmarks';
 
 export interface ApplyAllQueriesResult {
   applied: { tableId: string; name: string; rowCount: number; truncated: boolean; measuresOnly?: boolean }[];
@@ -235,6 +246,8 @@ interface BiState {
   duplicatePage: (id: string) => void;
   deletePage: (id: string) => void;
   setPageCanvasSize: (pageId: string, canvasSize: CanvasSizeConfig, applyToAllPages?: boolean) => void;
+  /** v0.10 Rodada 2 (frente F): liga/desliga a página como dica de ferramenta e seus campos. */
+  setPageTooltipConfig: (pageId: string, tooltipPage: NonNullable<Page['tooltipPage']>) => void;
   setSelectedVisualId: (id: string | null) => void;
   setSelectedVisualIds: (ids: string[]) => void;
   toggleVisualSelection: (id: string) => void;
@@ -276,9 +289,21 @@ interface BiState {
 
   // Bookmarks
   bookmarks: Bookmark[];
-  addBookmark: (name: string) => void;
+  /** Captura o estado atual num novo indicador (Power BI "Adicionar"). */
+  addBookmark: (name: string, opts?: { capture?: Bookmark['capture']; scope?: Bookmark['scope'] }) => void;
+  /** Recaptura o estado atual sobre um indicador existente (Power BI "Atualizar"), mantendo id/nome/ordem/grupo. */
+  refreshBookmark: (id: string) => void;
+  /** Aplica um indicador: página, filtros, seleções de segmentador e estado dos visuais conforme capture/scope.
+   *  Uma única entrada no histórico de Undo (se o histórico existir). */
   applyBookmark: (id: string) => void;
   deleteBookmark: (id: string) => void;
+  renameBookmark: (id: string, name: string) => void;
+  duplicateBookmark: (id: string) => void;
+  /** Arrastar para reordenar: move `id` para a posição de `overId`. */
+  reorderBookmark: (id: string, overId: string) => void;
+  groupBookmarks: (ids: string[], groupId: string) => void;
+  ungroupBookmarks: (ids: string[]) => void;
+  updateBookmarkSettings: (id: string, patch: Partial<Pick<Bookmark, 'capture' | 'scope'>>) => void;
 
   // Dashboards & Goals
   dashboardTiles: DashboardTile[];
@@ -1976,6 +2001,12 @@ export const useBiStore = create<BiState>((set, get) => {
       );
     },
 
+    setPageTooltipConfig: (pageId, tooltipPage) => {
+      pushPagesHistory(
+        get().pages.map(p => (p.id === pageId ? { ...p, tooltipPage } : p))
+      );
+    },
+
     setSelectedVisualId: (id) => set({ selectedVisualId: id, selectedVisualIds: id ? [id] : [] }),
     setSelectedVisualIds: (ids) => {
       const unique = Array.from(new Set(ids));
@@ -2019,6 +2050,7 @@ export const useBiStore = create<BiState>((set, get) => {
           xAxisField: catCol,
           yAxisFields: [numCol],
           aggregation: 'SUM',
+          drillMode: 'drill', // v0.10 Frente G: habilita a hierarquia de data automática
         },
         formatConfig: {
           showTitle: true,
@@ -2434,31 +2466,82 @@ export const useBiStore = create<BiState>((set, get) => {
         name: 'Visão Geral Sem Filtros',
         activePageId: defaultPageId,
         filters: [],
+        order: 0,
+        capture: { data: true, display: true, currentPage: true },
+        scope: 'all',
       },
     ],
 
-    addBookmark: (name) => {
-      const newBm: Bookmark = {
-        id: 'bm_' + Math.random().toString(36).substr(2, 6),
-        name,
-        activePageId: get().activePageId,
-        filters: [...get().filters],
-      };
-      set({ bookmarks: [...get().bookmarks, newBm] });
+    addBookmark: (name, opts) => {
+      const state = get();
+      const activePage = state.pages.find(p => p.id === state.activePageId);
+      const selected = state.selectedVisualIds;
+      const scope: Bookmark['scope'] = opts?.scope ?? (selected.length > 0 ? [...selected] : 'all');
+      const captured = captureBookmark({
+        activePageId: state.activePageId,
+        filters: state.filters,
+        visuals: activePage?.visuals ?? [],
+        capture: opts?.capture,
+        scope,
+      });
+      const entry = createBookmarkEntry(name, captured, state.bookmarks);
+      set({ bookmarks: [...state.bookmarks, entry] });
+    },
+
+    refreshBookmark: (id) => {
+      const state = get();
+      const existing = state.bookmarks.find(b => b.id === id);
+      if (!existing) return;
+      const activePage = state.pages.find(p => p.id === state.activePageId);
+      const captured = captureBookmark({
+        activePageId: state.activePageId,
+        filters: state.filters,
+        visuals: activePage?.visuals ?? [],
+        capture: existing.capture,
+        scope: existing.scope,
+      });
+      set({ bookmarks: state.bookmarks.map(b => (b.id === id ? { ...b, ...captured } : b)) });
     },
 
     applyBookmark: (id) => {
-      const bm = get().bookmarks.find(b => b.id === id);
-      if (bm) {
-        set({
-          activePageId: bm.activePageId,
-          filters: [...bm.filters],
-        });
-      }
+      const state = get();
+      const bm = state.bookmarks.find(b => b.id === id);
+      if (!bm) return;
+      const patch = applyBookmarkPure(bm, { pages: state.pages, filters: state.filters, activePageId: state.activePageId });
+      // Single Undo entry: pages (visibility/drill/sort/slicer selections) and
+      // filters/activePageId land in ONE set() call via pushPagesHistory's `extra`.
+      pushPagesHistory(patch.pages ?? state.pages, {
+        ...(patch.filters !== undefined ? { filters: patch.filters } : {}),
+        ...(patch.activePageId !== undefined ? { activePageId: patch.activePageId } : {}),
+      });
     },
 
     deleteBookmark: (id) => {
-      set({ bookmarks: get().bookmarks.filter(b => b.id !== id) });
+      set({ bookmarks: deleteBookmarkEntry(get().bookmarks, id) });
+    },
+
+    renameBookmark: (id, name) => {
+      set({ bookmarks: renameBookmarkEntry(get().bookmarks, id, name) });
+    },
+
+    duplicateBookmark: (id) => {
+      set({ bookmarks: duplicateBookmarkEntry(get().bookmarks, id) });
+    },
+
+    reorderBookmark: (id, overId) => {
+      set({ bookmarks: reorderBookmarkEntry(get().bookmarks, id, overId) });
+    },
+
+    groupBookmarks: (ids, groupId) => {
+      set({ bookmarks: setBookmarkGroup(get().bookmarks, ids, groupId) });
+    },
+
+    ungroupBookmarks: (ids) => {
+      set({ bookmarks: ungroupBookmarkEntries(get().bookmarks, ids) });
+    },
+
+    updateBookmarkSettings: (id, patch) => {
+      set({ bookmarks: updateBookmarkSettingsPure(get().bookmarks, id, patch) });
     },
 
     // Dashboard & Goals

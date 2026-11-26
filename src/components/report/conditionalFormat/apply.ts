@@ -71,6 +71,48 @@ export function activeFormats(visual: Visual): ConditionalFormat[] {
   return visual.formatConfig.conditionalFormats || [];
 }
 
+/**
+ * v0.10 Frente H: formatos que também valem para totais/subtotais da
+ * matriz — "Aplicar a: Valores e totais" no painel (ver `ConditionalFormat.applyToTotals`).
+ * "Somente valores" (padrão) não inclui o formato aqui.
+ */
+export function totalFormats(formats: ConditionalFormat[] | undefined): ConditionalFormat[] {
+  return (formats || []).filter(f => f.applyToTotals);
+}
+
+/**
+ * Formatação condicional para uma célula de TOTAL/SUBTOTAL da matriz
+ * (coluna "Total" por linha, linha "Total Geral", total de um grupo
+ * expandido). Usa só os `ConditionalFormat` com `applyToTotals: true` e
+ * calcula o gradiente/percentil sobre `totalsVisibleValues` — os totais
+ * visíveis no mesmo nível, não os valores de célula comuns — replicando o
+ * Power BI, que usa uma escala própria para os totais.
+ *
+ * INTEGRAÇÃO (Frente G, matriz N níveis): para cada célula de
+ * subtotal/total (qualquer nível) e para o total geral, chamar isto com
+ * `field` = o campo da medida daquela coluna de total e
+ * `totalsVisibleValues` = todos os totais do mesmo nível/coluna
+ * atualmente visíveis (ex.: todos os subtotais de um grupo, ou todos os
+ * totais de coluna da linha "Total Geral"). Aplicar o `CSSProperties`
+ * retornado na célula; não precisa (e não deve) tocar no motor.
+ */
+export function styleForTotalCell(
+  formats: ConditionalFormat[] | undefined,
+  field: string,
+  value: number,
+  totalsVisibleValues: number[]
+): CSSProperties {
+  const applicable = totalFormats(formats);
+  if (applicable.length === 0) return {};
+  const result = computeCellFormat(
+    applicable,
+    field,
+    () => value,
+    () => totalsVisibleValues
+  );
+  return cellStyleFromFormat(result);
+}
+
 /** Converte um `FormatResult` (sem a parte de barra/ícone) em estilo inline de célula. */
 export function cellStyleFromFormat(result: FormatResult): CSSProperties {
   const style: CSSProperties = {};

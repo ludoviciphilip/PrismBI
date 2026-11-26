@@ -120,6 +120,8 @@ export interface PbiConditionalFormatMeta {
   gradientMax?: PbiCondFormatStopMeta | null;
   dataBarPositive?: string | null;
   dataBarNegative?: string | null;
+  /** v0.10 Frente H: conjunto de ícones ('arrows' | 'traffic' | 'flags') quando target === 'icon'. */
+  iconSet?: string | null;
 }
 
 export interface PbiVisualMeta {
@@ -135,6 +137,8 @@ export interface PbiVisualMeta {
   categoryField?: string | null;
   legendField?: string | null;
   valueFields: string[];
+  /** v0.10 Frente G: projeções extras de Category/Rows (hierarquia). */
+  drillFields?: string[];
   columnCount?: number | null;
   slicerMode?: string | null;
   actionType?: string | null;
@@ -146,6 +150,17 @@ export interface PbiVisualMeta {
   sortOrder?: 'asc' | 'desc' | null;
   /** v0.10 Frente B. */
   conditionalFormats?: PbiConditionalFormatMeta[];
+  /** v0.10 Frente H (round-trip do segmentador). */
+  slicerBetweenStart?: string | null;
+  slicerBetweenEnd?: string | null;
+  slicerRelativeAnchor?: string | null;
+  slicerRelativeCount?: number | null;
+  slicerRelativeUnit?: string | null;
+  slicerRelativeIncludeToday?: boolean | null;
+  slicerShowSearch?: boolean | null;
+  /** v0.10 Frente H (round-trip de VisualFormatConfig.backgroundColor/borderColor). */
+  backgroundColor?: string | null;
+  borderColor?: string | null;
 }
 
 export interface PbiPageMeta {
@@ -242,10 +257,62 @@ export interface ExportPbipPayload {
       /** Written as PBIR query.sortDefinition. */
       sortField?: string | null;
       sortOrder?: 'asc' | 'desc' | null;
+      /** v0.10 Frente H: formatação condicional, gravada em objects.values do visual.json. */
+      condFormats?: ExportPbipCondFormat[];
+      /** v0.10 Frente H (round-trip do segmentador). */
+      slicerBetweenStart?: string | null;
+      slicerBetweenEnd?: string | null;
+      slicerRelativeAnchor?: string | null;
+      slicerRelativeCount?: number | null;
+      slicerRelativeUnit?: string | null;
+      slicerRelativeIncludeToday?: boolean | null;
+      slicerShowSearch?: boolean | null;
+      /** v0.10 Rodada 2 (seams H↔G): hierarquia de drill do gráfico (níveis
+       * abaixo de xAxisField), exportada como projeções extras em Category. */
+      drillFields?: string[];
+      /** v0.10 Rodada 2 (seams H↔G): campos das linhas da matriz hierárquica
+       * (N níveis). O 1º espelha xAxisField e não é duplicado na exportação. */
+      matrixRowFields?: string[];
     }[];
   }[];
   themeName?: string | null;
   themePalette?: string[] | null;
+  /** v0.10 Frente H: indicadores (bookmarks), gravados em definition/bookmarks/*.bookmark.json. */
+  bookmarks?: ExportPbipBookmark[];
+}
+
+/** Achatado de `ConditionalFormat` (src/types/bi.ts) para o que o PBIR
+ * consegue representar — ver `ExportCondFormatPayload` em pbip_writer.rs. */
+export interface ExportPbipCondFormat {
+  id: string;
+  target: string;
+  applyTo: string;
+  mode: string;
+  applyToTotals?: boolean | null;
+  rules?: { operator: string; value: number; value2?: number | null; color: string }[];
+  gradientMin?: { kind: string; value?: number | null; color: string } | null;
+  gradientMid?: { kind: string; value?: number | null; color: string } | null;
+  gradientMax?: { kind: string; value?: number | null; color: string } | null;
+  dataBarPositive?: string | null;
+  dataBarNegative?: string | null;
+  iconSet?: string | null;
+}
+
+/** Espelha só a interface `Bookmark` do contrato V010.md (bloco E); não
+ * depende do código da Frente E (`feat/v0.10-bookmarks`). */
+export interface ExportPbipBookmark {
+  id: string;
+  name: string;
+  activePageId: string;
+  filters?: ExportPbipFilter[];
+  order?: number | null;
+  groupId?: string | null;
+  captureData?: boolean | null;
+  captureDisplay?: boolean | null;
+  captureCurrentPage?: boolean | null;
+  scope?: string[];
+  visualState?: unknown;
+  slicerSelections?: unknown;
 }
 
 export interface DaxModelSyncPayload {
@@ -385,6 +452,25 @@ export interface NativeVisualQueryRequest {
   yAxisFields: string[];
   aggregation?: string;
   filters: { tableId: string; column: string; values: any[] }[];
+  /** v0.10 Frente G: agrupamento do eixo por níveis (drill/expandir/hierarquia de data). */
+  categoryLevels?: { field: string; datePart?: string | null }[];
+  /** v0.10 Frente G: caminho de drill (entra no build_filter_context do Rust). */
+  drillFilters?: { field: string; datePart?: string | null; value: unknown }[];
+  /** v0.10 Frente G: linhas da matriz (N níveis) e estado de expansão. */
+  matrixRows?: { field: string; datePart?: string | null }[];
+  matrixExpandDepth?: number;
+  matrixExpanded?: unknown[][];
+  matrixCollapsed?: unknown[][];
+}
+
+export interface NativeMatrixNodeDto {
+  key: unknown;
+  label: string;
+  values: number[];
+  rowTotal?: number | null;
+  hasChildren: boolean;
+  expanded: boolean;
+  children: NativeMatrixNodeDto[];
 }
 
 export interface NativeVisualSeries {
@@ -398,6 +484,9 @@ export interface NativeVisualQueryResult {
   summaryValue?: number | null;
   queryTimeMs: number;
   engine: string;
+  /** v0.10 Frente G: chave de cada nível por categoria (alinhado com `categories`). */
+  categoryKeys?: unknown[][];
+  matrix?: { rows: NativeMatrixNodeDto[]; columnTotals: number[]; grandTotal?: number | null } | null;
 }
 
 export async function queryVisualNative(

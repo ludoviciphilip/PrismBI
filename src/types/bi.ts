@@ -174,6 +174,11 @@ export interface ConditionalFormat {
   gradient?: { min: CondFormatStop; mid?: CondFormatStop; max: CondFormatStop };
   dataBar?: { positiveColor: string; negativeColor: string; showBarOnly?: boolean };
   icons?: { set: 'arrows' | 'traffic' | 'flags'; rules: ConditionalFormatRule[] };
+  /** v0.10 Frente H: "Aplicar a" da matriz — Somente valores (padrão/ausente)
+   * ou Valores e totais. Quando `true`, totais/subtotais também recebem a
+   * formatação, com min/max (gradiente) calculados sobre a própria escala
+   * dos totais — ver `styleForTotalCell` em conditionalFormat/apply.ts. */
+  applyToTotals?: boolean;
 }
 // --- fim Bloco B ---
 
@@ -194,8 +199,12 @@ export interface VisualFormatConfig {
   displayUnits?: 'none' | 'auto';
   colorBySign?: boolean;
   textContent?: string;
-  actionType?: 'back' | 'page-navigation';
+  actionType?: 'back' | 'page-navigation' | 'bookmark';
   actionTargetPageId?: string;
+  /** v0.10 (Indicadores): id do Bookmark aplicado por este botão quando actionType === 'bookmark'. */
+  actionBookmarkId?: string;
+  /** v0.10 (Indicadores/Seleção): visual oculto do canvas; alternado pelo painel "Seleção" ou por um indicador. */
+  hidden?: boolean;
   /** @deprecated legado (pré v0.10), migrado para `conditionalFormats` em src/engine/migrations/condfmt.ts */
   conditionalFormatting?: {
     field: string;
@@ -203,6 +212,8 @@ export interface VisualFormatConfig {
   };
   /** v0.10: formatação condicional completa (gradiente, regras, valor de campo, barras, ícones). */
   conditionalFormats?: ConditionalFormat[];
+  /** v0.10 Rodada 2 (frente F): dica de ferramenta de página (Report Page Tooltip). */
+  tooltip?: { type: 'default' | 'page'; pageId?: string | 'auto' };
 }
 
 export interface VisualCalculation {
@@ -226,6 +237,19 @@ export interface VisualDataConfig {
   limit?: number;
   drillFields?: string[];
   currentDrillLevel?: number;
+  // --- Bloco G (v0.10, Frente "Drill-down") ---
+  /** 'drill' (padrão): mostra só o nível atual filtrado por `drillPath`; 'expand': agrupa os níveis 0..atual com rótulos concatenados ("2024 Trim 1"). */
+  drillMode?: 'drill' | 'expand';
+  /** Valores escolhidos nos níveis acima do atual (um por nível). `{ $all: true }` = "ir para o próximo nível" sem filtrar. */
+  drillPath?: unknown[];
+  /** Matriz: campos das linhas (N níveis). O primeiro espelha `xAxisField`. */
+  matrixRowFields?: string[];
+  /** v0.10 Rodada 2 (seams E↔G): estado de expansão da matriz hierárquica, só para
+   * indicadores (Bookmarks) restaurarem — ver `MatrixExpansion` em engine/drill.ts.
+   * Continua não persistido no projeto fora de um indicador (editar a matriz
+   * normalmente não grava aqui). */
+  matrixExpansion?: { depth: number; expanded: string[]; collapsed: string[] };
+  // --- fim Bloco G ---
   kpiTarget?: number;
   kpiComparisonField?: string;
   visualCalculations?: VisualCalculation[];
@@ -314,6 +338,8 @@ export interface Page {
   layoutMode?: 'desktop' | 'mobile';
   drillthroughConfig?: DrillthroughConfig;
   canvasSize?: CanvasSizeConfig;
+  /** v0.10 Rodada 2 (frente F): esta página pode ser usada como dica de ferramenta (Report Page Tooltip). */
+  tooltipPage?: { enabled: boolean; fields?: string[] };
 }
 
 export interface Filter {
@@ -326,11 +352,37 @@ export interface Filter {
   value: any;
 }
 
+/** Per-visual display state captured by a Bookmark (capture.display), Power BI style. */
+export interface BookmarkVisualState {
+  hidden?: boolean;
+  drillLevel?: number;
+  sortField?: string;
+  sortOrder?: 'asc' | 'desc';
+  // --- v0.10 Rodada 2 (seams E↔G): opcionais, indicadores antigos continuam válidos ---
+  /** Gráficos com hierarquia: `drillPath`/`drillMode` (ver `VisualDataConfig`). */
+  drillPath?: unknown[];
+  drillMode?: 'drill' | 'expand';
+  /** Matriz hierárquica: níveis expandidos (ver `VisualDataConfig.matrixExpansion`). */
+  matrixExpansion?: { depth: number; expanded: string[]; collapsed: string[] };
+}
+
 export interface Bookmark {
   id: string;
   name: string;
   activePageId: string;
   filters: Filter[];
+  /** Posição na lista do painel Indicadores (ordenação manual/arrastar). */
+  order?: number;
+  /** Nome do grupo de indicadores (indicadores com o mesmo valor pertencem ao mesmo grupo). */
+  groupId?: string;
+  /** O que este indicador captura/restaura, como "Dados / Exibição / Página atual" no Power BI. */
+  capture?: { data: boolean; display: boolean; currentPage: boolean };
+  /** Estado de exibição por visual (visibilidade, nível de drill, ordenação). */
+  visualState?: Record<string, BookmarkVisualState>;
+  /** visualId -> seleção do segmentador (selectedValues/between/relative de slicerConfig). */
+  slicerSelections?: Record<string, unknown>;
+  /** Visuais afetados: 'all' (todos) ou a lista de ids dos visuais selecionados na captura. */
+  scope?: 'all' | string[];
 }
 
 export interface BiTheme {

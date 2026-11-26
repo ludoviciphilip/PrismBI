@@ -113,6 +113,11 @@ pub struct PbiConditionalFormatMeta {
     pub data_bar_positive: Option<String>,
     #[serde(default)]
     pub data_bar_negative: Option<String>,
+    /// v0.10 Frente H: conjunto de ícones (`'arrows' | 'traffic' | 'flags'`)
+    /// quando `target == "icon"`, inferido do nome do ícone PBIR
+    /// (`icon.value.expr.Conditional`, ver `parse_pbir_icon_conditional`).
+    #[serde(default)]
+    pub icon_set: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +135,10 @@ pub struct PbiVisualMeta {
     pub category_field: Option<String>,
     pub legend_field: Option<String>,
     pub value_fields: Vec<String>,
+    /// v0.10 Frente G: projeções extras de Category/Rows (hierarquia de drill
+    /// nos gráficos, níveis seguintes das linhas na matriz).
+    #[serde(default)]
+    pub drill_fields: Vec<String>,
     #[serde(default)]
     pub column_count: Option<u32>,
     #[serde(default)]
@@ -151,6 +160,31 @@ pub struct PbiVisualMeta {
     /// v0.10 Frente B: formatação condicional (gradiente/regras/barras) lida de `objects`.
     #[serde(default)]
     pub conditional_formats: Vec<PbiConditionalFormatMeta>,
+    /// v0.10 Frente H (round-trip): segmentador modo 'between', lido de
+    /// `objects.general.properties.filter` (self-filter) quando é `Between`.
+    #[serde(default)]
+    pub slicer_between_start: Option<String>,
+    #[serde(default)]
+    pub slicer_between_end: Option<String>,
+    /// Segmentador 'relative-date', lido do mesmo self-filter quando é `DateSpan`.
+    #[serde(default)]
+    pub slicer_relative_anchor: Option<String>,
+    #[serde(default)]
+    pub slicer_relative_count: Option<f64>,
+    #[serde(default)]
+    pub slicer_relative_unit: Option<String>,
+    #[serde(default)]
+    pub slicer_relative_include_today: Option<bool>,
+    /// Caixa de busca do segmentador (`objects.searchBox[0].properties.show`).
+    #[serde(default)]
+    pub slicer_show_search: Option<bool>,
+    /// v0.10 Frente H: cor de fundo/borda do visual, lida de
+    /// `visualContainerObjects.background`/`border` (round-trip de
+    /// `VisualFormatConfig.backgroundColor`/`borderColor`).
+    #[serde(default)]
+    pub background_color: Option<String>,
+    #[serde(default)]
+    pub border_color: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -481,6 +515,7 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
                 let mut category_field: Option<String> = None;
                 let mut legend_field: Option<String> = None;
                 let mut value_fields = Vec::new();
+                let mut drill_fields: Vec<String> = Vec::new();
 
                 if let Some(projs) = sv.get("projections").and_then(|p| p.as_object()) {
                     for (role, items) in projs {
@@ -501,6 +536,8 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
                             {
                                 if category_field.is_none() {
                                     category_field = Some(fld);
+                                } else if role_l != "values" && !drill_fields.contains(&fld) {
+                                    drill_fields.push(fld);
                                 }
                             } else if role_l == "series" || role_l == "columns" || role_l == "legend" {
                                 if legend_field.is_none() {
@@ -538,6 +575,7 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
                     category_field,
                     legend_field,
                     value_fields,
+                    drill_fields,
                     column_count: None,
                     slicer_mode: None,
                     action_type: None,
@@ -547,6 +585,15 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
                     sort_field: None,
                     sort_order: None,
                     conditional_formats: Vec::new(),
+                    slicer_between_start: None,
+                    slicer_between_end: None,
+                    slicer_relative_anchor: None,
+                    slicer_relative_count: None,
+                    slicer_relative_unit: None,
+                    slicer_relative_include_today: None,
+                    slicer_show_search: None,
+                    background_color: None,
+                    border_color: None,
                 });
             }
         }

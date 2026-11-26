@@ -19,6 +19,8 @@ import { DaxComplianceView } from './components/compliance/DaxComplianceView';
 import { VisualizationsPane } from './components/panels/VisualizationsPane';
 import { FieldsPane } from './components/panels/FieldsPane';
 import { FiltersPane } from './components/panels/FiltersPane';
+import { BookmarksPane } from './components/panels/BookmarksPane';
+import { SelectionPane } from './components/panels/SelectionPane';
 import { AiAssistantModal } from './components/ai/AiAssistantModal';
 import { DataSourceModal } from './components/modals/DataSourceModal';
 import { QuickMeasureModal } from './components/modals/QuickMeasureModal';
@@ -47,9 +49,13 @@ export default function App() {
   const showFiltersPane = panes.filters !== 'hidden';
   const showVisualsPane = panes.visualizations !== 'hidden';
   const showFieldsPane = panes.fields !== 'hidden';
+  const showBookmarksPane = panes.bookmarks !== 'hidden';
+  const showSelectionPane = panes.selection !== 'hidden';
   const setShowFiltersPane = (v: boolean) => setPaneHidden('filters', !v);
   const setShowVisualsPane = (v: boolean) => setPaneHidden('visualizations', !v);
   const setShowFieldsPane = (v: boolean) => setPaneHidden('fields', !v);
+  const setShowBookmarksPane = (v: boolean) => setPaneHidden('bookmarks', !v);
+  const setShowSelectionPane = (v: boolean) => setPaneHidden('selection', !v);
 
   // Silent background check for app updates on startup (Tauri desktop only)
   useEffect(() => {
@@ -127,6 +133,10 @@ export default function App() {
           setShowVisualsPane={setShowVisualsPane}
           showFieldsPane={showFieldsPane}
           setShowFieldsPane={setShowFieldsPane}
+          showBookmarksPane={showBookmarksPane}
+          setShowBookmarksPane={setShowBookmarksPane}
+          showSelectionPane={showSelectionPane}
+          setShowSelectionPane={setShowSelectionPane}
         />
       )}
 
@@ -157,6 +167,16 @@ export default function App() {
                 </ErrorBoundary>
               )}
               {showFieldsPane && <FieldsPane />}
+              {showBookmarksPane && (
+                <ErrorBoundary fallbackTitle="Painel de Indicadores">
+                  <BookmarksPane />
+                </ErrorBoundary>
+              )}
+              {showSelectionPane && (
+                <ErrorBoundary fallbackTitle="Painel de Seleção">
+                  <SelectionPane />
+                </ErrorBoundary>
+              )}
             </div>
           )}
         </div>

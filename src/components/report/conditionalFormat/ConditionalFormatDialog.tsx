@@ -86,6 +86,9 @@ export const ConditionalFormatDialog: React.FC<ConditionalFormatDialogProps> = (
           { operator: '<=', value: 33, color: '' },
         ]
   );
+  // v0.10 Frente H: só a matriz tem totais/subtotais; outros visuais não
+  // mostram a opção "Aplicar a" (sempre "Somente valores" para eles).
+  const [applyToTotals, setApplyToTotals] = useState(Boolean(initial?.applyToTotals));
 
   const previewStyle = useMemo(() => {
     const stops: { pct: number; color: string }[] = [{ pct: 0, color: gradMin.color }];
@@ -111,6 +114,7 @@ export const ConditionalFormatDialog: React.FC<ConditionalFormatDialogProps> = (
       applyTo,
       mode: target === 'dataBar' || target === 'icon' ? mode : mode,
       ...(basedOnField ? { basedOn: { field: basedOnField, kind: basedOnKind } } : {}),
+      ...(visual.type === 'matrix' ? { applyToTotals } : {}),
     };
     if (target === 'dataBar') {
       format.dataBar = { positiveColor: dataBarPos, negativeColor: dataBarNeg, showBarOnly: dataBarShowBarOnly };
@@ -205,6 +209,21 @@ export const ConditionalFormatDialog: React.FC<ConditionalFormatDialogProps> = (
               )}
             </div>
           </div>
+
+          {visual.type === 'matrix' && (
+            <div className="space-y-1">
+              <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 block">Aplicar a</label>
+              <select
+                aria-label="Aplicar a"
+                value={applyToTotals ? 'totals' : 'values'}
+                onChange={e => setApplyToTotals(e.target.value === 'totals')}
+                className="w-full flex-1 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded px-2 py-1.5 text-slate-800 dark:text-slate-100"
+              >
+                <option value="values">Somente valores</option>
+                <option value="totals">Valores e totais</option>
+              </select>
+            </div>
+          )}
 
           {(target === 'background' || target === 'fontColor') && (
             <div className="space-y-1">

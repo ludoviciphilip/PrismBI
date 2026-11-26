@@ -20,6 +20,7 @@ import {
   ArrowUp,
   ArrowDown,
   ArrowUpDown,
+  Bookmark as BookmarkIcon,
 } from 'lucide-react';
 import { Visual, Filter as BiFilter } from '../../types/bi';
 import { useBiStore } from '../../store/useBiStore';
@@ -40,8 +41,11 @@ import {
   patchForOrder,
   patchForHeaderClick,
 } from './visualSortOptions';
-import { getFieldFormat, cellStyleFromFormat, buildBarSeriesData, resolverFromRows, resolverFromSeries, activeFormats } from './conditionalFormat/apply';
+import { getFieldFormat, cellStyleFromFormat, buildBarSeriesData, resolverFromRows, resolverFromSeries, activeFormats, styleForTotalCell } from './conditionalFormat/apply';
 import { FormattedCell } from './conditionalFormat/FormattedCell';
+import { resolveTooltipPage, buildTemporaryFilters, useTooltipHover, TooltipPopover } from './tooltipPage';
+import { useVisualDrill } from './drill';
+import type { DrillFilterSpec } from '../../engine/drill';
 
 export interface SnapGuide {
   orientation: 'v' | 'h';
@@ -55,6 +59,12 @@ interface VisualCardProps {
   onSelect: (id: string, additive?: boolean) => void;
   onSnapGuidesChange?: (guides: SnapGuide[]) => void;
   isMobile?: boolean;
+  /** Filtros temporários injetados pela miniatura de uma página de dica de ferramenta (nunca gravados no store). */
+  extraFilters?: BiFilter[];
+  /** v0.10 Rodada 2 (seams F↔G): idem, via o mecanismo de drill (ancestrais + nível/caminho do ponto). */
+  extraDrillFilters?: DrillFilterSpec[];
+  /** Renderização dentro do popover de dica de ferramenta: sem interação e sem dica própria (evita recursão). */
+  isTooltipPreview?: boolean;
 }
 
 const nativeQueryCache = new Map<string, NativeVisualQueryResult>();
@@ -80,10 +90,17 @@ function formatCompactDisplay(val: number, isCurr: boolean, currSymbol: string):
   return isCurr ? `${sign}${currSymbol} ${numStr}${suffix}` : `${sign}${numStr}${suffix}`;
 }
 
-export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSelected, isMultiSelected, onSelect, onSnapGuidesChange, isMobile }) => {
+export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSelected, isMultiSelected, onSelect, onSnapGuidesChange, isMobile, extraFilters, extraDrillFilters, isTooltipPreview }) => {
   const cardRef = useRef<HTMLDivElement>(null);
   const didDragMoveRef = useRef(false);
-  const filters = useBiStore(s => s.filters);
+  const storeFilters = useBiStore(s => s.filters);
+  // Filtros temporários do popover de dica de ferramenta (categoria/legenda do ponto sob o mouse)
+  // se somam aos filtros normais só para esta instância, sem tocar no store.
+  const filters = useMemo(
+    () => (extraFilters && extraFilters.length ? [...storeFilters, ...extraFilters] : storeFilters),
+    [storeFilters, extraFilters]
+  );
+  const pages = useBiStore(s => s.pages);
   const tables = useBiStore(s => s.tables);
   const measures = useBiStore(s => s.measures);
   const setCrossFilter = useBiStore(s => s.setCrossFilter);
@@ -408,6 +425,14 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     visual.type !== 'textbox' &&
     Boolean(tables.find(t => t.id === visual.dataConfig.tableId)?.rowsTruncated);
 
+  // v0.10 Frente G: drill-down hierárquico (gráficos) e matriz com N níveis.
+  const drill = useVisualDrill(visual, filters, {
+    native: supportsNativeRustQuery,
+    onShowTable: () => setShowRawTable(true),
+    onDrillthrough: (field, value) => setDrillPop({ field, value }),
+    extraDrillFilters,
+  });
+
   const nativeCacheKey = useMemo(() => {
     if (!supportsNativeRustQuery) return '';
     // Sort/limit are applied client-side after the native query, so they don't invalidate it.
@@ -469,6 +494,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
   }, [supportsNativeRustQuery, nativeCacheKey]);
 
   const queryResult = useMemo(() => {
+    if (drill.chartResult) return { ...tsQueryResult, ...drill.chartResult };
     if (supportsNativeRustQuery && asyncNativeResult) {
       // The native engine returns categories unsorted and without TopN; apply the
       // exact same shared sort (+ limit after sort) as the JS QueryPlanner.
@@ -499,7 +525,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       };
     }
     return tsQueryResult;
-  }, [supportsNativeRustQuery, asyncNativeResult, tsQueryResult, visual, tables]);
+  }, [supportsNativeRustQuery, asyncNativeResult, tsQueryResult, visual, tables, drill.chartResult]);
 
   // "Classificar por" — shared by the header "..." menu and table/matrix header clicks
   const sortKind = sortMenuKind(visual);
@@ -543,6 +569,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
   // Handle cross-filtering & drill-through prompt when user clicks on a chart data point
   const onChartClick = useCallback((params: any) => {
     if (!params) return;
+    if (drill.handlePointClick(params)) return;
     const catName = params.name || params.data?.name;
     if (catName && catName !== 'Sem dados' && visual.dataConfig.xAxisField) {
       setCrossFilter(visual.dataConfig.tableId, visual.dataConfig.xAxisField, catName);
@@ -551,11 +578,90 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
         value: catName,
       });
     }
-  }, [visual.dataConfig.tableId, visual.dataConfig.xAxisField, setCrossFilter]);
+  }, [visual.dataConfig.tableId, visual.dataConfig.xAxisField, setCrossFilter, drill.handlePointClick]);
+
+  // Report Page Tooltip (v0.10 Rodada 2, frente F): resolve a página de dica
+  // (Padrão/Página do relatório/Automático) e, no hover, abre um popover com
+  // essa página renderizada em miniatura, filtrada pelo ponto sob o mouse.
+  const resolvedTooltipPage = useMemo(
+    () => (isTooltipPreview ? null : resolveTooltipPage(visual, pages)),
+    [isTooltipPreview, visual.formatConfig?.tooltip, visual.dataConfig, pages]
+  );
+  const { popover: tooltipPopover, show: showTooltipHover, hide: hideTooltipHover } = useTooltipHover(150);
+
+  const onChartMouseOver = useCallback((params: any) => {
+    if (!resolvedTooltipPage || !params) return;
+    const catRaw = params.name ?? params.data?.name;
+    const categoryValue = typeof catRaw === 'string' || typeof catRaw === 'number' ? catRaw : undefined;
+    // Legenda só é um filtro válido quando o visual de fato separa séries por ela.
+    const legendValue = visual.dataConfig.legendField && queryResult.series.length > 1 ? params.seriesName : undefined;
+    // v0.10 Rodada 2 (seams F↔G): quando o visual tem hierarquia de drill, o filtro
+    // temporário usa o nível atual + todo o drillPath (`resolveHoverDrillFilters`),
+    // nunca o `xAxisField` cru — senão um ponto "2024 Trim 1" expandido filtraria
+    // errado pelo rótulo concatenado. Sem hierarquia, mantém o Filter simples de antes.
+    const hoverDrillFilters = drill.resolveHoverDrillFilters(catRaw);
+    const tempFilters = buildTemporaryFilters(visual.dataConfig.tableId, {
+      categoryField: hoverDrillFilters.length > 0 ? undefined : visual.dataConfig.xAxisField,
+      categoryValue: hoverDrillFilters.length > 0 ? undefined : categoryValue,
+      legendField: visual.dataConfig.legendField,
+      legendValue,
+    });
+    const nativeEvent = params.event?.event as MouseEvent | undefined;
+    showTooltipHover({
+      pageId: resolvedTooltipPage.id,
+      filters: tempFilters,
+      drillFilters: hoverDrillFilters,
+      anchor: { x: nativeEvent?.clientX ?? 0, y: nativeEvent?.clientY ?? 0 },
+    });
+  }, [resolvedTooltipPage, visual.dataConfig, queryResult.series.length, showTooltipHover, drill.resolveHoverDrillFilters]);
+
+  const onChartMouseOut = useCallback(() => {
+    hideTooltipHover();
+  }, [hideTooltipHover]);
 
   const onEvents = useMemo(() => ({
     click: onChartClick,
-  }), [onChartClick]);
+    mouseover: onChartMouseOver,
+    mouseout: onChartMouseOut,
+    contextmenu: drill.handleContextMenu,
+  }), [onChartClick, onChartMouseOver, onChartMouseOut, drill.handleContextMenu]);
+
+  // Célula de tabela/matriz sob o mouse abre a mesma dica de página (debounce de 150ms).
+  // `field` por padrão é o eixo X (linha da matriz); tabelas simples passam a própria coluna.
+  const onCellMouseEnter = useCallback(
+    (e: React.MouseEvent, categoryValue: unknown, legendValue?: unknown, field: string | undefined = visual.dataConfig.xAxisField) => {
+      if (!resolvedTooltipPage) return;
+      const tempFilters = buildTemporaryFilters(visual.dataConfig.tableId, {
+        categoryField: field,
+        categoryValue,
+        legendField: visual.dataConfig.legendField,
+        legendValue,
+      });
+      showTooltipHover({
+        pageId: resolvedTooltipPage.id,
+        filters: tempFilters,
+        anchor: { x: e.clientX, y: e.clientY },
+      });
+    },
+    [resolvedTooltipPage, visual.dataConfig, showTooltipHover]
+  );
+  const onCellMouseLeave = useCallback(() => hideTooltipHover(), [hideTooltipHover]);
+  // v0.10 Rodada 2 (seams F↔G): a matriz hierárquica não tinha dica de página —
+  // o hover numa linha filtra pelo caminho INTEIRO (todos os níveis acima), via
+  // o mecanismo de drill (`drill.renderMatrix`'s onRowHover já traz os filtros prontos).
+  const onMatrixRowHover = useCallback(
+    (e: React.MouseEvent, drillFilters: DrillFilterSpec[]) => {
+      if (!resolvedTooltipPage) return;
+      showTooltipHover({
+        pageId: resolvedTooltipPage.id,
+        filters: [],
+        drillFilters,
+        anchor: { x: e.clientX, y: e.clientY },
+      });
+    },
+    [resolvedTooltipPage, showTooltipHover]
+  );
+  const tooltipPopoverPage = tooltipPopover ? pages.find(p => p.id === tooltipPopover.pageId) : undefined;
 
   // Build ECharts Options based on visual.type
   const echartsOption = useMemo(() => {
@@ -1270,6 +1376,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     <div
       ref={cardRef}
       data-visual-id={visual.id}
+      {...drill.hoverProps}
       onClick={(e) => {
         e.stopPropagation();
         if (didDragMoveRef.current) {
@@ -1336,6 +1443,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
 
         {/* Action Buttons */}
         <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100">
+          {drill.header}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -1474,7 +1582,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               onClick={(e) => {
                 e.stopPropagation();
                 const store = useBiStore.getState();
-                if (visual.formatConfig.actionType === 'page-navigation' && visual.formatConfig.actionTargetPageId) {
+                if (visual.formatConfig.actionType === 'bookmark') {
+                  // v0.10 (Indicadores): aplica o indicador configurado. Funciona em
+                  // Modo Apresentação e, em edição, com Ctrl+clique (como no Power BI).
+                  if (store.isPresentationMode || e.ctrlKey) {
+                    if (visual.formatConfig.actionBookmarkId) {
+                      store.applyBookmark(visual.formatConfig.actionBookmarkId);
+                    }
+                  }
+                } else if (visual.formatConfig.actionType === 'page-navigation' && visual.formatConfig.actionTargetPageId) {
                   store.setActivePageId(visual.formatConfig.actionTargetPageId);
                 } else if (store.activeDrillthrough) {
                   store.clearDrillthrough(true);
@@ -1486,10 +1602,16 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                 }
               }}
               className="w-full h-full flex items-center justify-center gap-1.5 rounded-lg bg-slate-100 hover:bg-amber-500 hover:text-slate-950 dark:bg-slate-800 dark:hover:bg-amber-500 text-slate-700 dark:text-slate-200 font-semibold text-xs border border-slate-300 dark:border-slate-700 transition-colors cursor-pointer"
-              title={visual.title}
+              title={
+                visual.formatConfig.actionType === 'bookmark'
+                  ? `${visual.title} (Ctrl+clique para aplicar o indicador em edição)`
+                  : visual.title
+              }
             >
               {visual.formatConfig.actionType === 'page-navigation' ? (
                 <ArrowRight className="w-4 h-4 shrink-0" />
+              ) : visual.formatConfig.actionType === 'bookmark' ? (
+                <BookmarkIcon className="w-4 h-4 shrink-0" />
               ) : (
                 <ArrowLeft className="w-4 h-4 shrink-0" />
               )}
@@ -1656,6 +1778,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               </div>
             );
           })()
+        ) : visual.type === 'matrix' && drill.renderMatrix ? (
+          drill.renderMatrix(isCurrencyField, onMatrixRowHover, onCellMouseLeave)
         ) : visual.type === 'matrix' ? (
           (() => {
             const { categories, series } = queryResult;
@@ -1776,6 +1900,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                   setCrossFilter(visual.dataConfig.tableId, visual.dataConfig.xAxisField, cat);
                                 }
                               }}
+                              onMouseEnter={(e) => onCellMouseEnter(e, cat)}
+                              onMouseLeave={onCellMouseLeave}
                               className="px-2.5 py-1 font-semibold text-slate-700 dark:text-slate-200 border-r border-slate-200 dark:border-slate-800 cursor-pointer hover:text-amber-600 whitespace-nowrap"
                             >
                               <div className="flex items-center gap-1">
@@ -1802,6 +1928,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                 <FormattedCell
                                   key={s.name}
                                   format={cellFormat}
+                                  onMouseEnter={(e) => onCellMouseEnter(e, cat, visual.dataConfig.legendField ? s.name : undefined)}
+                                  onMouseLeave={onCellMouseLeave}
                                   className="px-2.5 py-1 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap"
                                 >
                                   {fmtCell(cellVal, s.name)}
@@ -1809,14 +1937,21 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                               );
                             })}
                             {series.length > 1 && (
-                              <td className="px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap">
+                              <td
+                                className="px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap"
+                                style={styleForTotalCell(activeFormats(visual), primaryY, rowTotals[rIdx], rowTotals)}
+                              >
                                 {fmtCell(rowTotals[rIdx])}
                               </td>
                             )}
                           </tr>
-                          {isExpanded && childData && childData.categories.map((childCat, cIdx) => {
-                            const childRowTotal = childData.series.reduce((sum, cs) => sum + (Number(cs.data[cIdx]) || 0), 0);
-                            return (
+                          {isExpanded && childData && (() => {
+                            const childRowTotals = childData.categories.map((_, ci) =>
+                              childData.series.reduce((sum, cs) => sum + (Number(cs.data[ci]) || 0), 0)
+                            );
+                            return childData.categories.map((childCat, cIdx) => {
+                              const childRowTotal = childRowTotals[cIdx];
+                              return (
                               <tr key={`${cat}::${childCat}`} className="bg-slate-50/70 dark:bg-slate-800/30">
                                 <td className="pl-7 pr-2.5 py-1 text-[11px] text-slate-600 dark:text-slate-300 border-r border-slate-200 dark:border-slate-800 whitespace-nowrap">
                                   {childCat}
@@ -1833,13 +1968,17 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                   );
                                 })}
                                 {series.length > 1 && (
-                                  <td className="px-2.5 py-1 text-right font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 border-l border-slate-200 dark:border-slate-800 whitespace-nowrap">
+                                  <td
+                                    className="px-2.5 py-1 text-right font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 border-l border-slate-200 dark:border-slate-800 whitespace-nowrap"
+                                    style={styleForTotalCell(activeFormats(visual), primaryY, childRowTotal, childRowTotals)}
+                                  >
                                     {fmtCell(childRowTotal)}
                                   </td>
                                 )}
                               </tr>
-                            );
-                          })}
+                              );
+                            });
+                          })()}
                         </React.Fragment>
                       );
                     })}
@@ -1853,12 +1992,16 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                         <td
                           key={series[cIdx]?.name || cIdx}
                           className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-900 dark:text-amber-300 border-t-2 border-slate-300 dark:border-slate-700 whitespace-nowrap"
+                          style={styleForTotalCell(activeFormats(visual), series[cIdx]?.name || '', tot, colTotals)}
                         >
                           {fmtCell(tot, series[cIdx]?.name)}
                         </td>
                       ))}
                       {series.length > 1 && (
-                        <td className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-950 dark:text-amber-400 border-t-2 border-l border-slate-300 dark:border-slate-700 whitespace-nowrap">
+                        <td
+                          className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-950 dark:text-amber-400 border-t-2 border-l border-slate-300 dark:border-slate-700 whitespace-nowrap"
+                          style={styleForTotalCell(activeFormats(visual), primaryY, grandTotal, [grandTotal])}
+                        >
                           {fmtCell(grandTotal)}
                         </td>
                       )}
@@ -1913,6 +2056,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                 setDrillPop({ field: col, value: val });
                               }
                             }}
+                            onMouseEnter={(e) => onCellMouseEnter(e, row[col], undefined, col)}
+                            onMouseLeave={onCellMouseLeave}
                             className="px-2 py-1 text-slate-600 dark:text-slate-300 truncate max-w-[120px] cursor-pointer hover:text-amber-800 dark:hover:text-amber-400 hover:font-semibold"
                             title={`Filtrar ou detalhar por ${col}: ${row[col]}`}
                           >
@@ -1946,7 +2091,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           <ErrorBoundary fallbackTitle="Falha na renderização deste gráfico">
             <ReactECharts
               key={`${visual.id}_${visual.type}`}
-              option={echartsOption}
+              option={resolvedTooltipPage ? { ...echartsOption, tooltip: { show: false } } : echartsOption}
               notMerge={true}
               lazyUpdate={true}
               onEvents={onEvents}
@@ -1956,6 +2101,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           </ErrorBoundary>
         )}
       </div>
+
+      {drill.overlay}
 
       {/* Floating Interactive Drill-Through Popover */}
       {drillPop && (
@@ -2020,6 +2167,11 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             </div>
           )}
         </div>
+      )}
+
+      {/* Report Page Tooltip: popover flutuante com a página de dica em miniatura */}
+      {tooltipPopover && tooltipPopoverPage && (
+        <TooltipPopover page={tooltipPopoverPage} filters={tooltipPopover.filters} drillFilters={tooltipPopover.drillFilters} anchor={tooltipPopover.anchor} />
       )}
 
       {/* Resize Handle Indicator */}

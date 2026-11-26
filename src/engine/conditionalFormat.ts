@@ -314,6 +314,8 @@ export function conditionalFormatsFromPbiMeta(
     gradientMax?: { kind: string; value?: number | null; color: string } | null;
     dataBarPositive?: string | null;
     dataBarNegative?: string | null;
+    /** v0.10 Frente H: conjunto de ícones quando target === 'icon'. */
+    iconSet?: string | null;
   }> | undefined,
   idPrefix: string
 ): ConditionalFormat[] {
@@ -322,6 +324,25 @@ export function conditionalFormatsFromPbiMeta(
   pbiFormats.forEach((pf, idx) => {
     const target = pf.target as ConditionalFormat['target'];
     const id = `${idPrefix}_${idx}`;
+    if (target === 'icon') {
+      if (!pf.rules || pf.rules.length === 0) return;
+      out.push({
+        id,
+        target,
+        applyTo: pf.applyTo,
+        mode: 'rules',
+        icons: {
+          set: (pf.iconSet as 'arrows' | 'traffic' | 'flags') || 'arrows',
+          rules: pf.rules.map(r => ({
+            operator: r.operator as ConditionalFormatRule['operator'],
+            value: r.value,
+            value2: r.value2 ?? undefined,
+            color: r.color || '',
+          })),
+        },
+      });
+      return;
+    }
     if (target === 'dataBar') {
       if (!pf.dataBarPositive && !pf.dataBarNegative) return;
       out.push({
@@ -370,6 +391,46 @@ export function conditionalFormatsFromPbiMeta(
     // filtrados no lado Rust e não chegam aqui.
   });
   return out;
+}
+
+/**
+ * Inverso de `conditionalFormatsFromPbiMeta`: achata `ConditionalFormat[]`
+ * do modelo PrismBI para o formato que `ExportCondFormatPayload`
+ * (src-tauri/src/pbi/pbip_writer.rs) grava no PBIR. Usado pelo exportador
+ * `.pbip` (`handleExportPbip` em Ribbon.tsx). `basedOn` não é exportável
+ * (o PBIR não representa "cor calculada a partir de outro campo" para um
+ * `Conditional.Cases` simples) — o formato ainda é exportado, só a parte
+ * de `basedOn` é descartada no writer Rust.
+ */
+export function conditionalFormatsToExportPayload(formats: ConditionalFormat[] | undefined): Array<{
+  id: string;
+  target: string;
+  applyTo: string;
+  mode: string;
+  applyToTotals?: boolean;
+  rules?: Array<{ operator: string; value: number; value2?: number; color: string }>;
+  gradientMin?: { kind: string; value?: number; color: string };
+  gradientMid?: { kind: string; value?: number; color: string };
+  gradientMax?: { kind: string; value?: number; color: string };
+  dataBarPositive?: string;
+  dataBarNegative?: string;
+  iconSet?: string;
+}> {
+  if (!formats || formats.length === 0) return [];
+  return formats.map(f => ({
+    id: f.id,
+    target: f.target,
+    applyTo: f.applyTo,
+    mode: f.mode,
+    applyToTotals: f.applyToTotals,
+    rules: f.target === 'icon' ? f.icons?.rules.map(r => ({ operator: r.operator, value: r.value, value2: r.value2, color: r.color })) : f.rules?.map(r => ({ operator: r.operator, value: r.value, value2: r.value2, color: r.color })),
+    gradientMin: f.gradient?.min,
+    gradientMid: f.gradient?.mid,
+    gradientMax: f.gradient?.max,
+    dataBarPositive: f.dataBar?.positiveColor,
+    dataBarNegative: f.dataBar?.negativeColor,
+    iconSet: f.icons?.set,
+  }));
 }
 
 /**

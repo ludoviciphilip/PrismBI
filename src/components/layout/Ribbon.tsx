@@ -45,6 +45,7 @@ import { useTranslation } from '../../i18n';
 import { getEffectiveCanvasSize } from '../../engine/shared/canvasPresets';
 import { PowerBiImportModal } from '../modals/PowerBiImportModal';
 import { etlToM } from '../../services/etl/etlClient';
+import { conditionalFormatsToExportPayload } from '../../engine/conditionalFormat';
 import {
   isTauriRuntime,
   pickFolderDialog,
@@ -58,6 +59,10 @@ export const Ribbon: React.FC<{
   setShowVisualsPane: (v: boolean) => void;
   showFieldsPane: boolean;
   setShowFieldsPane: (v: boolean) => void;
+  showBookmarksPane: boolean;
+  setShowBookmarksPane: (v: boolean) => void;
+  showSelectionPane: boolean;
+  setShowSelectionPane: (v: boolean) => void;
 }> = ({
   showFiltersPane,
   setShowFiltersPane,
@@ -65,6 +70,10 @@ export const Ribbon: React.FC<{
   setShowVisualsPane,
   showFieldsPane,
   setShowFieldsPane,
+  showBookmarksPane,
+  setShowBookmarksPane,
+  showSelectionPane,
+  setShowSelectionPane,
 }) => {
   const [activeRibbonTab, setActiveRibbonTab] = useState<'inicio' | 'inserir' | 'modelagem' | 'exibir' | 'ajuda'>('inicio');
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
@@ -335,10 +344,37 @@ export const Ribbon: React.FC<{
             // Mapped to PBIR query.sortDefinition by the Rust writer.
             sortField: v.dataConfig.sortField ? qualifyExportField(v.dataConfig.sortField) : null,
             sortOrder: v.dataConfig.sortOrder ?? null,
+            // v0.10 Frente H: formatação condicional + segmentador novo, round-trip .pbip.
+            condFormats: conditionalFormatsToExportPayload(v.formatConfig.conditionalFormats),
+            slicerBetweenStart: v.dataConfig.slicerConfig?.between?.start != null ? String(v.dataConfig.slicerConfig.between.start) : null,
+            slicerBetweenEnd: v.dataConfig.slicerConfig?.between?.end != null ? String(v.dataConfig.slicerConfig.between.end) : null,
+            slicerRelativeAnchor: v.dataConfig.slicerConfig?.relative?.anchor ?? null,
+            slicerRelativeCount: v.dataConfig.slicerConfig?.relative?.count ?? null,
+            slicerRelativeUnit: v.dataConfig.slicerConfig?.relative?.unit ?? null,
+            slicerRelativeIncludeToday: v.dataConfig.slicerConfig?.relative?.includeToday ?? null,
+            slicerShowSearch: v.dataConfig.slicerConfig?.showSearch ?? null,
+            // v0.10 Rodada 2 (seams H↔G): hierarquia completa no round-trip .pbip.
+            drillFields: v.dataConfig.drillFields ?? [],
+            matrixRowFields: v.dataConfig.matrixRowFields ?? [],
           })),
         })),
         themeName: state.activeThemeId || theme || 'PrismTheme',
         themePalette: activePalette,
+        // v0.10 Frente H: indicadores (bookmarks) no formato PBIR, round-trip .pbip.
+        bookmarks: (state.bookmarks || []).map((bm: any) => ({
+          id: bm.id,
+          name: bm.name,
+          activePageId: bm.activePageId,
+          filters: toExportFilters(bm.filters || []),
+          order: bm.order ?? null,
+          groupId: bm.groupId ?? null,
+          captureData: bm.capture?.data ?? null,
+          captureDisplay: bm.capture?.display ?? null,
+          captureCurrentPage: bm.capture?.currentPage ?? null,
+          scope: Array.isArray(bm.scope) ? bm.scope : [],
+          visualState: bm.visualState ?? null,
+          slicerSelections: bm.slicerSelections ?? null,
+        })),
       });
       alert(`Projeto .pbip exportado com sucesso em:\n${savedPath}`);
     } catch (err: any) {
@@ -913,6 +949,26 @@ export const Ribbon: React.FC<{
                 }`}
               >
                 <span className="text-[10px]">{t.panes.fields.title}</span>
+              </button>
+              <button
+                onClick={() => setShowBookmarksPane(!showBookmarksPane)}
+                data-testid="ribbon-toggle-bookmarks"
+                className={`flex flex-col items-center p-1.5 rounded text-slate-700 dark:text-slate-200 cursor-pointer ${
+                  showBookmarksPane ? 'bg-amber-100 dark:bg-amber-950/60 dark:text-amber-300 font-bold' : 'hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+                title="Indicadores"
+              >
+                <span className="text-[10px]">Indicadores</span>
+              </button>
+              <button
+                onClick={() => setShowSelectionPane(!showSelectionPane)}
+                data-testid="ribbon-toggle-selection"
+                className={`flex flex-col items-center p-1.5 rounded text-slate-700 dark:text-slate-200 cursor-pointer ${
+                  showSelectionPane ? 'bg-amber-100 dark:bg-amber-950/60 dark:text-amber-300 font-bold' : 'hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+                title="Seleção"
+              >
+                <span className="text-[10px]">Seleção</span>
               </button>
             </div>
 
