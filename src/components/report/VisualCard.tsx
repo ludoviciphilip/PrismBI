@@ -43,6 +43,7 @@ import {
 } from './visualSortOptions';
 import { getFieldFormat, cellStyleFromFormat, buildBarSeriesData, resolverFromRows, resolverFromSeries, activeFormats, styleForTotalCell } from './conditionalFormat/apply';
 import { FormattedCell } from './conditionalFormat/FormattedCell';
+import { resolveTooltipPage, buildTemporaryFilters, useTooltipHover, TooltipPopover } from './tooltipPage';
 
 export interface SnapGuide {
   orientation: 'v' | 'h';
@@ -56,6 +57,10 @@ interface VisualCardProps {
   onSelect: (id: string, additive?: boolean) => void;
   onSnapGuidesChange?: (guides: SnapGuide[]) => void;
   isMobile?: boolean;
+  /** Filtros temporários injetados pela miniatura de uma página de dica de ferramenta (nunca gravados no store). */
+  extraFilters?: BiFilter[];
+  /** Renderização dentro do popover de dica de ferramenta: sem interação e sem dica própria (evita recursão). */
+  isTooltipPreview?: boolean;
 }
 
 const nativeQueryCache = new Map<string, NativeVisualQueryResult>();
@@ -81,10 +86,17 @@ function formatCompactDisplay(val: number, isCurr: boolean, currSymbol: string):
   return isCurr ? `${sign}${currSymbol} ${numStr}${suffix}` : `${sign}${numStr}${suffix}`;
 }
 
-export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSelected, isMultiSelected, onSelect, onSnapGuidesChange, isMobile }) => {
+export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSelected, isMultiSelected, onSelect, onSnapGuidesChange, isMobile, extraFilters, isTooltipPreview }) => {
   const cardRef = useRef<HTMLDivElement>(null);
   const didDragMoveRef = useRef(false);
-  const filters = useBiStore(s => s.filters);
+  const storeFilters = useBiStore(s => s.filters);
+  // Filtros temporários do popover de dica de ferramenta (categoria/legenda do ponto sob o mouse)
+  // se somam aos filtros normais só para esta instância, sem tocar no store.
+  const filters = useMemo(
+    () => (extraFilters && extraFilters.length ? [...storeFilters, ...extraFilters] : storeFilters),
+    [storeFilters, extraFilters]
+  );
+  const pages = useBiStore(s => s.pages);
   const tables = useBiStore(s => s.tables);
   const measures = useBiStore(s => s.measures);
   const setCrossFilter = useBiStore(s => s.setCrossFilter);
@@ -554,9 +566,66 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     }
   }, [visual.dataConfig.tableId, visual.dataConfig.xAxisField, setCrossFilter]);
 
+  // Report Page Tooltip (v0.10 Rodada 2, frente F): resolve a página de dica
+  // (Padrão/Página do relatório/Automático) e, no hover, abre um popover com
+  // essa página renderizada em miniatura, filtrada pelo ponto sob o mouse.
+  const resolvedTooltipPage = useMemo(
+    () => (isTooltipPreview ? null : resolveTooltipPage(visual, pages)),
+    [isTooltipPreview, visual.formatConfig?.tooltip, visual.dataConfig, pages]
+  );
+  const { popover: tooltipPopover, show: showTooltipHover, hide: hideTooltipHover } = useTooltipHover(150);
+
+  const onChartMouseOver = useCallback((params: any) => {
+    if (!resolvedTooltipPage || !params) return;
+    const catRaw = params.name ?? params.data?.name;
+    const categoryValue = typeof catRaw === 'string' || typeof catRaw === 'number' ? catRaw : undefined;
+    // Legenda só é um filtro válido quando o visual de fato separa séries por ela.
+    const legendValue = visual.dataConfig.legendField && queryResult.series.length > 1 ? params.seriesName : undefined;
+    const tempFilters = buildTemporaryFilters(visual.dataConfig.tableId, {
+      categoryField: visual.dataConfig.xAxisField,
+      categoryValue,
+      legendField: visual.dataConfig.legendField,
+      legendValue,
+    });
+    const nativeEvent = params.event?.event as MouseEvent | undefined;
+    showTooltipHover({
+      pageId: resolvedTooltipPage.id,
+      filters: tempFilters,
+      anchor: { x: nativeEvent?.clientX ?? 0, y: nativeEvent?.clientY ?? 0 },
+    });
+  }, [resolvedTooltipPage, visual.dataConfig, queryResult.series.length, showTooltipHover]);
+
+  const onChartMouseOut = useCallback(() => {
+    hideTooltipHover();
+  }, [hideTooltipHover]);
+
   const onEvents = useMemo(() => ({
     click: onChartClick,
-  }), [onChartClick]);
+    mouseover: onChartMouseOver,
+    mouseout: onChartMouseOut,
+  }), [onChartClick, onChartMouseOver, onChartMouseOut]);
+
+  // Célula de tabela/matriz sob o mouse abre a mesma dica de página (debounce de 150ms).
+  // `field` por padrão é o eixo X (linha da matriz); tabelas simples passam a própria coluna.
+  const onCellMouseEnter = useCallback(
+    (e: React.MouseEvent, categoryValue: unknown, legendValue?: unknown, field: string | undefined = visual.dataConfig.xAxisField) => {
+      if (!resolvedTooltipPage) return;
+      const tempFilters = buildTemporaryFilters(visual.dataConfig.tableId, {
+        categoryField: field,
+        categoryValue,
+        legendField: visual.dataConfig.legendField,
+        legendValue,
+      });
+      showTooltipHover({
+        pageId: resolvedTooltipPage.id,
+        filters: tempFilters,
+        anchor: { x: e.clientX, y: e.clientY },
+      });
+    },
+    [resolvedTooltipPage, visual.dataConfig, showTooltipHover]
+  );
+  const onCellMouseLeave = useCallback(() => hideTooltipHover(), [hideTooltipHover]);
+  const tooltipPopoverPage = tooltipPopover ? pages.find(p => p.id === tooltipPopover.pageId) : undefined;
 
   // Build ECharts Options based on visual.type
   const echartsOption = useMemo(() => {
@@ -1791,6 +1860,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                   setCrossFilter(visual.dataConfig.tableId, visual.dataConfig.xAxisField, cat);
                                 }
                               }}
+                              onMouseEnter={(e) => onCellMouseEnter(e, cat)}
+                              onMouseLeave={onCellMouseLeave}
                               className="px-2.5 py-1 font-semibold text-slate-700 dark:text-slate-200 border-r border-slate-200 dark:border-slate-800 cursor-pointer hover:text-amber-600 whitespace-nowrap"
                             >
                               <div className="flex items-center gap-1">
@@ -1817,6 +1888,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                 <FormattedCell
                                   key={s.name}
                                   format={cellFormat}
+                                  onMouseEnter={(e) => onCellMouseEnter(e, cat, visual.dataConfig.legendField ? s.name : undefined)}
+                                  onMouseLeave={onCellMouseLeave}
                                   className="px-2.5 py-1 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap"
                                 >
                                   {fmtCell(cellVal, s.name)}
@@ -1943,6 +2016,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                 setDrillPop({ field: col, value: val });
                               }
                             }}
+                            onMouseEnter={(e) => onCellMouseEnter(e, row[col], undefined, col)}
+                            onMouseLeave={onCellMouseLeave}
                             className="px-2 py-1 text-slate-600 dark:text-slate-300 truncate max-w-[120px] cursor-pointer hover:text-amber-800 dark:hover:text-amber-400 hover:font-semibold"
                             title={`Filtrar ou detalhar por ${col}: ${row[col]}`}
                           >
@@ -1976,7 +2051,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
           <ErrorBoundary fallbackTitle="Falha na renderização deste gráfico">
             <ReactECharts
               key={`${visual.id}_${visual.type}`}
-              option={echartsOption}
+              option={resolvedTooltipPage ? { ...echartsOption, tooltip: { show: false } } : echartsOption}
               notMerge={true}
               lazyUpdate={true}
               onEvents={onEvents}
@@ -2050,6 +2125,11 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             </div>
           )}
         </div>
+      )}
+
+      {/* Report Page Tooltip: popover flutuante com a página de dica em miniatura */}
+      {tooltipPopover && tooltipPopoverPage && (
+        <TooltipPopover page={tooltipPopoverPage} filters={tooltipPopover.filters} anchor={tooltipPopover.anchor} />
       )}
 
       {/* Resize Handle Indicator */}

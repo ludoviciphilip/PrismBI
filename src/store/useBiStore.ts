@@ -246,6 +246,8 @@ interface BiState {
   duplicatePage: (id: string) => void;
   deletePage: (id: string) => void;
   setPageCanvasSize: (pageId: string, canvasSize: CanvasSizeConfig, applyToAllPages?: boolean) => void;
+  /** v0.10 Rodada 2 (frente F): liga/desliga a página como dica de ferramenta e seus campos. */
+  setPageTooltipConfig: (pageId: string, tooltipPage: NonNullable<Page['tooltipPage']>) => void;
   setSelectedVisualId: (id: string | null) => void;
   setSelectedVisualIds: (ids: string[]) => void;
   toggleVisualSelection: (id: string) => void;
@@ -1996,6 +1998,12 @@ export const useBiStore = create<BiState>((set, get) => {
           }
           return p;
         })
+      );
+    },
+
+    setPageTooltipConfig: (pageId, tooltipPage) => {
+      pushPagesHistory(
+        get().pages.map(p => (p.id === pageId ? { ...p, tooltipPage } : p))
       );
     },
 

@@ -5,6 +5,7 @@ import { fileEtlSource, inlineEtlSource } from '../services/etl/etlSource';
 import { migrateConditionalFormats } from './migrations/condfmt';
 import { migrateSlicerConfigs } from './migrations/slicers';
 import { migrateBookmarks } from './migrations/bookmarks';
+import { migrateTooltipPages } from './migrations/tooltipPages';
 
 export const CURRENT_ENGINE_VERSION = '2.2.0';
 
@@ -402,7 +403,7 @@ export function migrateProjectState(rawState: any): ProjectState {
     tables: synced.tables,
     relationships: normalizedRelationships,
     measures: synced.measures,
-    pages: migrateSlicerConfigs(migratedPages),
+    pages: migrateSlicerConfigs(migrateTooltipPages(migratedPages)),
     activePageId: rawState.activePageId || rawState.pages?.[0]?.id || 'page_executivo',
     filters: Array.isArray(rawState.filters) ? rawState.filters : [],
     bookmarks: migrateBookmarks(rawState.bookmarks),

@@ -212,6 +212,8 @@ export interface VisualFormatConfig {
   };
   /** v0.10: formatação condicional completa (gradiente, regras, valor de campo, barras, ícones). */
   conditionalFormats?: ConditionalFormat[];
+  /** v0.10 Rodada 2 (frente F): dica de ferramenta de página (Report Page Tooltip). */
+  tooltip?: { type: 'default' | 'page'; pageId?: string | 'auto' };
 }
 
 export interface VisualCalculation {
@@ -323,6 +325,8 @@ export interface Page {
   layoutMode?: 'desktop' | 'mobile';
   drillthroughConfig?: DrillthroughConfig;
   canvasSize?: CanvasSizeConfig;
+  /** v0.10 Rodada 2 (frente F): esta página pode ser usada como dica de ferramenta (Report Page Tooltip). */
+  tooltipPage?: { enabled: boolean; fields?: string[] };
 }
 
 export interface Filter {

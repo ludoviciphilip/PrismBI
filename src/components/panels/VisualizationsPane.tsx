@@ -29,6 +29,7 @@ import { CollapsedPaneStrip, PaneCollapseButton } from './PaneCollapseShell';
 import { ConditionalFormatList } from '../report/conditionalFormat/ConditionalFormatList';
 import { SlicerSyncPanel } from '../report/slicer';
 import { ActionButtonBookmarkConfig } from '../report/bookmarks';
+import { PageTooltipSettings, TooltipCard } from '../report/tooltipPage';
 
 const visualTypes: { type: VisualType; label: string; icon: any }[] = [
   { type: 'column', label: 'Colunas', icon: BarChart },
@@ -56,7 +57,7 @@ export const VisualizationsPane: React.FC = React.memo(() => {
   const { t } = useTranslation();
   const paneState = useUiPrefs(s => s.panes.visualizations);
   const togglePaneCollapsed = useUiPrefs(s => s.togglePaneCollapsed);
-  const { pages, activePageId, selectedVisualId, updateVisual, tables, measures, relationships, bookmarks } = useBiStore(useShallow(s => ({
+  const { pages, activePageId, selectedVisualId, updateVisual, tables, measures, relationships, bookmarks, setPageTooltipConfig, setPageCanvasSize } = useBiStore(useShallow(s => ({
     pages: s.pages,
     activePageId: s.activePageId,
     selectedVisualId: s.selectedVisualId,
@@ -65,6 +66,8 @@ export const VisualizationsPane: React.FC = React.memo(() => {
     measures: s.measures,
     relationships: s.relationships,
     bookmarks: s.bookmarks,
+    setPageTooltipConfig: s.setPageTooltipConfig,
+    setPageCanvasSize: s.setPageCanvasSize,
   })));
   const [activeTab, setActiveTab] = useState<'build' | 'format'>('build');
 
@@ -89,6 +92,15 @@ export const VisualizationsPane: React.FC = React.memo(() => {
     });
     return tables.filter(t => t.id !== selectedTable.id && (relTableIds.has(t.id) || relTableIds.has(t.name)));
   }, [selectedTable, relationships, tables]);
+
+  // v0.10 Rodada 2 (frente F): universo de campos oferecido ao marcar os
+  // "Campos da dica" de uma página de tooltip (colunas de todas as tabelas + medidas).
+  const allFieldNames = useMemo(() => {
+    const names = new Set<string>();
+    tables.forEach(tb => tb.columns.forEach(c => names.add(c.name)));
+    measures.forEach(m => names.add(m.name));
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [tables, measures]);
 
   const conditionalFormatFields = useMemo(() => {
     if (!selectedVisual) return [];
@@ -243,7 +255,7 @@ export const VisualizationsPane: React.FC = React.memo(() => {
 
   if (!selectedVisual) {
     return (
-      <div className="w-64 border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col h-full text-xs text-slate-700 dark:text-slate-300">
+      <div className="w-64 border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col h-full overflow-y-auto text-xs text-slate-700 dark:text-slate-300">
         <div className="p-3 border-b border-slate-200 dark:border-slate-800 font-semibold text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-900/60 flex items-center justify-between">
           <span>{t.panes.visualizations.title}</span>
           <PaneCollapseButton
@@ -266,6 +278,14 @@ export const VisualizationsPane: React.FC = React.memo(() => {
             );
           })}
         </div>
+        {activePage && (
+          <PageTooltipSettings
+            page={activePage}
+            availableFields={allFieldNames}
+            onChange={(tooltipPage) => setPageTooltipConfig(activePage.id, tooltipPage)}
+            onSuggestCanvasSize={(canvasSize) => setPageCanvasSize(activePage.id, canvasSize)}
+          />
+        )}
         <div className="p-4 text-center text-slate-400 dark:text-slate-500 flex flex-col items-center justify-center flex-1">
           <Layers className="w-8 h-8 mb-2 text-slate-300 dark:text-slate-600" />
           <p className="font-medium text-slate-600 dark:text-slate-300">Nenhum visual selecionado</p>
@@ -840,6 +860,17 @@ export const VisualizationsPane: React.FC = React.memo(() => {
               }
             />
           </div>
+
+          {/* Dica de ferramenta (Report Page Tooltip) */}
+          <TooltipCard
+            visual={selectedVisual}
+            pages={pages}
+            onChange={(tooltip) =>
+              updateVisual(selectedVisual.id, {
+                formatConfig: { ...selectedVisual.formatConfig, tooltip },
+              })
+            }
+          />
         </div>
       )}
     </div>

@@ -15,6 +15,8 @@ export function FormattedCell({
   style,
   children,
   onClick,
+  onMouseEnter,
+  onMouseLeave,
   title,
 }: {
   format: FormatResult;
@@ -22,6 +24,8 @@ export function FormattedCell({
   style?: CSSProperties;
   children: ReactNode;
   onClick?: () => void;
+  onMouseEnter?: (e: React.MouseEvent<HTMLTableCellElement>) => void;
+  onMouseLeave?: (e: React.MouseEvent<HTMLTableCellElement>) => void;
   title?: string;
 }) {
   const cellStyle: CSSProperties = {
@@ -32,7 +36,7 @@ export function FormattedCell({
   };
 
   return (
-    <td className={className} style={cellStyle} onClick={onClick} title={title}>
+    <td className={className} style={cellStyle} onClick={onClick} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave} title={title}>
       {format.dataBar && (
         <div
           aria-hidden

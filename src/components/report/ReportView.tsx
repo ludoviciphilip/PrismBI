@@ -25,6 +25,7 @@ import { VisualCard, SnapGuide } from './VisualCard';
 import { ErrorBoundary } from '../shared/ErrorBoundary';
 import { useTranslation } from '../../i18n';
 import { getEffectiveCanvasSize } from '../../engine/shared/canvasPresets';
+import { visiblePagesForPresentation } from './tooltipPage';
 
 export const ReportView: React.FC = () => {
   const { t } = useTranslation();
@@ -54,6 +55,7 @@ export const ReportView: React.FC = () => {
     clearDrillthrough,
     setCanvasSizeModalOpen,
     isDarkMode,
+    isPresentationMode,
   } = useBiStore(useShallow(s => ({
     pages: s.pages,
     activePageId: s.activePageId,
@@ -80,6 +82,7 @@ export const ReportView: React.FC = () => {
     clearDrillthrough: s.clearDrillthrough,
     setCanvasSizeModalOpen: s.setCanvasSizeModalOpen,
     isDarkMode: s.isDarkMode,
+    isPresentationMode: s.isPresentationMode,
   })));
   const hasPendingQueryChanges = useBiStore(s => s.hasPendingQueryChanges());
   const setActiveView = useBiStore(s => s.setActiveView);
@@ -90,6 +93,9 @@ export const ReportView: React.FC = () => {
   // v0.10 (Indicadores/Seleção): visuais ocultados pelo painel "Seleção" (ou por
   // um indicador aplicado) não aparecem no canvas, como no Power BI Desktop.
   const visibleVisuals = activePage?.visuals.filter(v => !v.formatConfig?.hidden) ?? [];
+  // v0.10 Rodada 2 (frente F): páginas de dica de ferramenta não aparecem como
+  // destino de navegação no Modo Apresentação.
+  const navigablePages = visiblePagesForPresentation(pages, isPresentationMode);
   const { width: canvasWidth, height: canvasHeight, label: canvasSizeLabel } = getEffectiveCanvasSize(activePage);
   const canvasRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -492,7 +498,7 @@ export const ReportView: React.FC = () => {
       {/* Bottom Page Navigation Bar */}
       <div className="h-9 bg-white dark:bg-slate-900 border-t border-slate-300 dark:border-slate-800 flex items-center justify-between px-3 text-xs shrink-0 select-none">
         <div className="flex items-center gap-1 overflow-x-auto">
-          {pages.map(page => {
+          {navigablePages.map(page => {
             const isActive = page.id === activePageId;
             return (
               <div
