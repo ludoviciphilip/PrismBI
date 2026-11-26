@@ -140,6 +140,33 @@ export interface Translations {
     drillthrough: string;
     openCalcModal: string;
   };
+  slicer: {
+    searchPlaceholder: string;
+    selectAll: string;
+    between: string;
+    relativeDate: string;
+    min: string;
+    max: string;
+    start: string;
+    end: string;
+    anchorLast: string;
+    anchorThis: string;
+    anchorNext: string;
+    unitDays: string;
+    unitWeeks: string;
+    unitMonths: string;
+    unitQuarters: string;
+    unitYears: string;
+    includeToday: string;
+    syncSlicersTitle: string;
+    syncGroup: string;
+    syncGroupPlaceholder: string;
+    syncPages: string;
+    syncAllPages: string;
+    filterLabelBetweenDates: string;
+    filterLabelRelative: string;
+    showSearchBox: string;
+  };
   report: {
     addPage: string;
     duplicatePage: string;
