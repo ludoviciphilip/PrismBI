@@ -93,6 +93,8 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 - [ ] **Report Page Tooltips** (páginas configuradas como tooltip dinâmico ao passar o cursor nos gráficos).
 - [ ] **Slicers Avançados:** filtro de intervalo de datas (*Between* / *Relative Date*), busca interna nos itens e **Sincronização de Slicers** entre páginas.
 - [ ] **Drill-Down hierárquico em gráficos** (ex.: Ano → Trimestre → Mês → Dia) e suporte a **3+ níveis expansíveis na Matriz**.
+- [ ] **Painéis recolhíveis** (Filtros, Visualizações, Dados): recolher/expandir cada painel para maximizar o canvas em telas pequenas, com o estado lembrado por usuário (pedido no teste em notebook, `v0.9.1`).
+- [ ] **Windows:** um único `.msi` com pt-BR e en-US (hoje saem dois e o updater pega o primeiro), teste de atualização via `msiexec` e assinatura de código (fim do aviso do SmartScreen).
 
 ---
 
