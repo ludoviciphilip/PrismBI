@@ -209,14 +209,33 @@ export interface VisualDataConfig {
   kpiComparisonField?: string;
   visualCalculations?: VisualCalculation[];
   slicerConfig?: {
-    mode: 'list' | 'dropdown' | 'slider' | 'relative-date' | 'tiles';
+    mode: 'list' | 'dropdown' | 'slider' | 'relative-date' | 'tiles' | 'between';
     selectedValues?: any[];
+    /** @deprecated migrated to `relative` by src/engine/migrations/slicers.ts */
     dateRange?: {
       start?: string;
       end?: string;
       relativePreset?: 'last7days' | 'last30days' | 'thisMonth' | 'thisYear' | 'all';
     };
+    /** 'between' mode range. ISO date string for date columns, number for numeric columns. */
+    between?: { start?: string | number; end?: string | number };
+    /** 'relative-date' mode definition. Re-resolved to a concrete range on every load via src/engine/relativeDate.ts. */
+    relative?: RelativeDateFilter;
+    /** Search box on top of list/dropdown/tiles modes. */
+    showSearch?: boolean;
+    /** Slicers with the same syncGroup share their selection (Power BI "Sincronizar segmentações"). */
+    syncGroup?: string;
+    /** Pages where the sync applies; empty/absent = all pages. */
+    syncPages?: string[];
   };
+}
+
+export type RelativeDateUnit = 'days' | 'weeks' | 'months' | 'quarters' | 'years';
+export interface RelativeDateFilter {
+  anchor: 'last' | 'this' | 'next';
+  count: number;
+  unit: RelativeDateUnit;
+  includeToday?: boolean;
 }
 
 export interface Visual {
