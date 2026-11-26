@@ -35,6 +35,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          # Mesmo cache no CI e na release (o DuckDB leva ~1 h para compilar
+          # no Windows sem cache). Só a main salva: PRs e tags restauram o
+          # cache da main (o GitHub permite ler o do branch padrão) e o limite
+          # de 10 GB do repositório não expulsa o cache bom.
+          shared-key: linux
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Tauri & packaging dependencies
         run: |
@@ -101,6 +107,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          # Mesmo cache no CI e na release (o DuckDB leva ~1 h para compilar
+          # no Windows sem cache). Só a main salva: PRs e tags restauram o
+          # cache da main (o GitHub permite ler o do branch padrão) e o limite
+          # de 10 GB do repositório não expulsa o cache bom.
+          shared-key: windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install frontend dependencies & run tests
         run: |
