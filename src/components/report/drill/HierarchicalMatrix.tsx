@@ -6,7 +6,7 @@ import { globalDataEngine, formatValue, formatCurrency, formatNumber, formatPerc
 import { applyVisualSort, fieldMatches, VisualSortSpec } from '../../../engine/visualSort';
 import { DrillLevel, MatrixExpansion, toggleMatrixPath } from '../../../engine/drill';
 import { patchForHeaderClick } from '../visualSortOptions';
-import { getFieldFormat, activeFormats } from '../conditionalFormat/apply';
+import { getFieldFormat, activeFormats, styleForTotalCell } from '../conditionalFormat/apply';
 import { FormattedCell } from '../conditionalFormat/FormattedCell';
 import { MatrixNode, MatrixQueryResult } from './engineQuery';
 
@@ -130,6 +130,11 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
   const visibleAt = (depth: number) =>
     seriesNames.map((_, i) => rows.filter(r => r.depth === depth).map(r => r.node.values[i] ?? 0));
   const visibleByDepth = levels.map((_, d) => visibleAt(d));
+  // v0.10 Frente H→G: cada nível (subtotal) tem a própria escala para `styleForTotalCell`,
+  // igual ao total da linha, aos totais de coluna e ao total geral abaixo.
+  const lastDepth = levels.length - 1;
+  const rowTotalsByDepth = levels.map((_, d) => rows.filter(r => r.depth === d).map(r => rowTotalOf(r.node)));
+  const colTotalsVisible = data?.columnTotals ?? [];
 
   return (
     <div className="w-full h-full overflow-auto text-xs" data-testid="hierarchical-matrix">
@@ -225,6 +230,20 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
                 </td>
                 {seriesNames.map((name, sIdx) => {
                   const val = Number(node.values[sIdx]) || 0;
+                  const isSubtotalRow = depth < lastDepth;
+                  if (isSubtotalRow) {
+                    // Subtotal (nível intermediário): só formatos com applyToTotals, escala do próprio nível.
+                    const totalStyle = styleForTotalCell(formats, name, val, visibleByDepth[depth]?.[sIdx] ?? []);
+                    return (
+                      <td
+                        key={name}
+                        style={totalStyle}
+                        className="px-2.5 py-1 text-right font-mono text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap"
+                      >
+                        {fmtCell(val, name)}
+                      </td>
+                    );
+                  }
                   const fmt = getFieldFormat(formats, name, val, visibleBySeries[sIdx] ?? [], {
                     value: f => {
                       const i = seriesNames.indexOf(f);
@@ -256,6 +275,7 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
                         ? 'px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap'
                         : 'px-2.5 py-1 text-right font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 border-l border-slate-200 dark:border-slate-800 whitespace-nowrap'
                     }
+                    style={styleForTotalCell(formats, primaryY, rowTotalOf(node), rowTotalsByDepth[depth] ?? [])}
                   >
                     {fmtCell(rowTotalOf(node))}
                   </td>
@@ -264,9 +284,10 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
             );
           })}
         </tbody>
-        {/* Integração com a Frente H (feat/v0.10-condfmt2): quando `styleForTotalCell` existir em
-            conditionalFormat/apply.ts, aplicá-lo nas células de subtotal (linhas com depth < último nível
-            e coluna Total) e nos totais abaixo, como a Frente H fez na matriz antiga do VisualCard. */}
+        {/* v0.10 Frente H→G: formatação condicional dos totais/subtotais ligada —
+            `styleForTotalCell` (apply.ts) nos subtotais de cada nível, no total da
+            linha, nos totais de coluna abaixo e no total geral, cada grupo com a
+            própria escala (ver `rowTotalsByDepth`, `colTotalsVisible`, `[grandTotal]`). */}
         <tfoot className="bg-slate-100 dark:bg-slate-800 font-bold">
           <tr>
             <td className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-slate-900 dark:text-amber-300 border-t-2 border-r border-slate-300 dark:border-slate-700">
@@ -277,12 +298,16 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
                 key={name}
                 data-testid={`matrix-total-${name}`}
                 className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-900 dark:text-amber-300 border-t-2 border-slate-300 dark:border-slate-700 whitespace-nowrap"
+                style={styleForTotalCell(formats, name, data?.columnTotals[cIdx] ?? 0, colTotalsVisible)}
               >
                 {fmtCell(data?.columnTotals[cIdx] ?? 0, name)}
               </td>
             ))}
             {showTotalCol && (
-              <td className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-950 dark:text-amber-400 border-t-2 border-l border-slate-300 dark:border-slate-700 whitespace-nowrap">
+              <td
+                className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-950 dark:text-amber-400 border-t-2 border-l border-slate-300 dark:border-slate-700 whitespace-nowrap"
+                style={styleForTotalCell(formats, primaryY, grandTotal, [grandTotal])}
+              >
                 {fmtCell(grandTotal)}
               </td>
             )}

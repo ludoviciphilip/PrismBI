@@ -337,3 +337,53 @@ describe('Matriz com N níveis', () => {
     expect(screen.queryByTestId('hierarchical-matrix')).toBeNull();
   });
 });
+
+describe('Frente H→G: formatação condicional nos totais/subtotais da matriz hierárquica', () => {
+  const valueCell = (label: string) =>
+    Array.from(document.querySelectorAll('[data-testid="hierarchical-matrix"] tbody tr')).find(
+      tr => tr.querySelector('td span')?.textContent === label
+    )!.querySelectorAll('td')[1] as HTMLElement;
+
+  it('sem applyToTotals, a regra colore só os valores folha, não os subtotais nem o total geral', () => {
+    seed(
+      matrixVisual({
+        formatConfig: undefined,
+      } as any)
+    );
+    const v = getVisual();
+    v.formatConfig = {
+      showTitle: true,
+      conditionalFormats: [
+        { id: 'f1', target: 'background', applyTo: 'Clientes', mode: 'rules', rules: [{ operator: '>=', value: 2, color: '#ff0000' }] },
+      ],
+    };
+    useBiStore.setState(s => ({ pages: s.pages.map(p => ({ ...p, visuals: p.visuals.map(x => (x.id === 'v1' ? v : x)) })) }));
+    render(<LiveCard id="v1" />);
+    // "Sul" (subtotal, valor 3) não deve ficar vermelho: applyToTotals é falso por padrão.
+    expect(valueCell('Sul').style.backgroundColor).not.toBe('rgb(255, 0, 0)');
+    expect(screen.getByTestId('matrix-total-Clientes').style.backgroundColor).not.toBe('rgb(255, 0, 0)');
+    fireEvent.click(screen.getByRole('button', { name: 'Expandir Sul' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expandir POA' }));
+    // "L1" é folha (valor 2): deve colorir normalmente.
+    expect(valueCell('L1').style.backgroundColor).toBe('rgb(255, 0, 0)');
+  });
+
+  it('com applyToTotals, subtotais, total de linha, totais de coluna e total geral usam a escala própria', () => {
+    seed(matrixVisual());
+    const v = getVisual();
+    v.formatConfig = {
+      showTitle: true,
+      conditionalFormats: [
+        { id: 'f1', target: 'background', applyTo: 'Clientes', mode: 'rules', applyToTotals: true, rules: [{ operator: '>=', value: 3, color: '#00ff00' }] },
+      ],
+    };
+    useBiStore.setState(s => ({ pages: s.pages.map(p => ({ ...p, visuals: p.visuals.map(x => (x.id === 'v1' ? v : x)) })) }));
+    render(<LiveCard id="v1" />);
+    // "Sul" (subtotal de nível 0 = 3) entra na regra >=3.
+    expect(valueCell('Sul').style.backgroundColor).toBe('rgb(0, 255, 0)');
+    // "Norte" (subtotal de nível 0 = 2) não entra.
+    expect(valueCell('Norte').style.backgroundColor).not.toBe('rgb(0, 255, 0)');
+    // Total geral (4) >= 3.
+    expect(screen.getByTestId('matrix-total-Clientes').style.backgroundColor).toBe('rgb(0, 255, 0)');
+  });
+});
