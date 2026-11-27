@@ -54,7 +54,7 @@ import { tableToEtlSource } from '../services/etl/etlSource';
 import { getSampleDatasets, generateCalendarTable } from '../data/sampleDatasets';
 import { globalDataEngine } from '../engine/dataEngine';
 import { DaxEngine } from '../engine/daxEngine';
-import { saveProjectToStorage, loadProjectFromStorage, ProjectState } from '../engine/storage';
+import { saveProjectToStorage, loadProjectFromStorage, ProjectState, ensureProjectId, buildTableCacheMetas } from '../engine/storage';
 import { migrateProjectState, syncWhatIfWithModel } from '../engine/migrations';
 import { globalDuckDb } from '../engine/duckdbEngine';
 import { getEffectiveCanvasSize } from '../engine/shared/canvasPresets';
@@ -64,6 +64,8 @@ import {
   refreshTableNative,
   refreshPbipTables,
   dbRefreshImport,
+  projectCacheSave,
+  projectCacheLoad,
   NativeImportedTable,
   UpdateCheckResult,
 } from '../bridge/tauriBridge';
@@ -189,6 +191,9 @@ interface BiState {
   // Project Info
   projectName: string;
   setProjectName: (name: string) => void;
+  /** Id estável do projeto (v0.11+), usado só como chave do cache
+   * colunar nativo (`project_cache_*`). Nunca exibido/editável na UI. */
+  projectId?: string;
   lastSavedAt: string | null;
   dataVersion: number;
   sourcePbipPath: string | null;
@@ -3157,8 +3162,14 @@ export const useBiStore = create<BiState>((set, get) => {
     },
 
     getProjectState: () => {
+      let projectId = get().projectId;
+      if (!projectId) {
+        projectId = ensureProjectId({ projectId: undefined } as unknown as ProjectState).projectId;
+        set({ projectId });
+      }
       return {
         version: '1.0.0',
+        projectId,
         projectName: get().projectName,
         sourcePbipPath: get().sourcePbipPath,
         tables: get().tables,
@@ -3194,6 +3205,20 @@ export const useBiStore = create<BiState>((set, get) => {
       const res = await saveProjectToStorage(state);
       if (res.success) {
         set({ lastSavedAt: `Salvo às ${res.timestamp}` });
+        // Cache colunar nativo (melhor esforço, não bloqueia o save da
+        // sessão): grava as tabelas do DuckDB nativo ao lado dos
+        // metadados, para a próxima abertura não precisar reler as
+        // fontes (ver docs/V011.md §B e src-tauri/src/project_store).
+        if (isTauriRuntime() && state.projectId) {
+          const metas = buildTableCacheMetas(state.tables || []);
+          if (metas.length > 0) {
+            try {
+              await projectCacheSave(state.projectId, metas);
+            } catch (err) {
+              console.warn('Falha ao salvar o cache colunar do projeto (não bloqueante):', err);
+            }
+          }
+        }
       } else {
         console.error('Falha ao salvar projeto:', res.error);
         set({ lastSavedAt: 'Falha ao salvar' });
@@ -3228,6 +3253,7 @@ export const useBiStore = create<BiState>((set, get) => {
         language: (state.language as SupportedLocale) || get().language,
         currency: (state.currency as SupportedCurrency) || get().currency,
         projectName: state.projectName || 'Projeto InsightHub',
+        projectId: state.projectId || s.projectId,
         sourcePbipPath: state.sourcePbipPath ?? null,
         refreshStatus: null,
         dataVersion: s.dataVersion + 1,
@@ -3270,13 +3296,42 @@ export const useBiStore = create<BiState>((set, get) => {
         set(s => ({ dataVersion: s.dataVersion + 1 }))
       );
       // DuckDB é em memória: ao reabrir, tabelas maiores que a amostra
-      // (5.000 linhas) só existem como prévia. Recarrega das fontes em segundo
-      // plano para o modelo voltar a ter todas as linhas.
-      if (isTauriRuntime() && (state.tables || []).some(t => t.rowsTruncated)) {
-        setTimeout(() => {
-          void get().refreshAllData();
-        }, 0);
-      }
+      // (5.000 linhas) só existem como prévia. Se houver um cache colunar
+      // nativo válido (ver docs/V011.md §B), carrega dele direto — sem
+      // reler as fontes. Senão, cai no comportamento atual: recarrega as
+      // fontes em segundo plano (`refreshAllData`).
+      void (async () => {
+        if (!isTauriRuntime()) return;
+        const truncated = (state.tables || []).some(t => t.rowsTruncated);
+        const metas = buildTableCacheMetas(state.tables || []);
+        if (!state.projectId || metas.length === 0) {
+          if (truncated) void get().refreshAllData();
+          return;
+        }
+        try {
+          const outcome = await projectCacheLoad(state.projectId, metas);
+          if (outcome.loaded) {
+            set(s => ({
+              tables: s.tables.map(t => {
+                const cached = outcome.tables.find(ot => ot.tableName === t.duckdbTable);
+                if (!cached) return t;
+                return { ...t, rowsTruncated: false, totalRows: cached.totalRows };
+              }),
+              dataVersion: s.dataVersion + 1,
+              refreshStatus: {
+                type: 'success',
+                message: `Dados carregados do cache local (${outcome.totalRows.toLocaleString('pt-BR')} linhas).`,
+                timestamp: new Date().toLocaleTimeString('pt-BR'),
+              },
+            }));
+            return;
+          }
+          if (truncated) void get().refreshAllData();
+        } catch (err) {
+          console.warn('Falha ao consultar o cache colunar do projeto (lendo as fontes):', err);
+          if (truncated) void get().refreshAllData();
+        }
+      })();
     },
   };
 });
