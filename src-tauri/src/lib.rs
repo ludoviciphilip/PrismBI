@@ -310,6 +310,35 @@ fn query_visual_native(
 }
 
 #[tauri::command]
+fn dax_query_execute(
+    state: State<'_, AppState>,
+    query: String,
+    opts: Option<dax::query_view::DaxQueryOptions>,
+) -> Result<dax::query_view::DaxQueryExecuteResult, String> {
+    let guard = state
+        .dax_model
+        .lock()
+        .map_err(|_| "Lock DaxModel corrompido".to_string())?;
+    Ok(dax::query_view::execute_query(&guard, &query, &opts.unwrap_or_default()))
+}
+
+#[tauri::command]
+fn dax_validate(
+    state: State<'_, AppState>,
+    expression: String,
+    context: String,
+    table: Option<String>,
+) -> Result<dax::query_view::ValidationResult, String> {
+    let ctx = dax::query_view::ValidateContext::parse(&context)
+        .ok_or_else(|| format!("Contexto de validação desconhecido: '{}'.", context))?;
+    let guard = state
+        .dax_model
+        .lock()
+        .map_err(|_| "Lock DaxModel corrompido".to_string())?;
+    Ok(dax::query_view::validate_expression(&guard, &expression, ctx, table.as_deref()))
+}
+
+#[tauri::command]
 fn check_for_updates(
     state: State<'_, AppState>,
     current_version: String,
@@ -614,6 +643,8 @@ pub fn run() {
             evaluate_dax_native,
             evaluate_dax_batch_native,
             query_visual_native,
+            dax_query_execute,
+            dax_validate,
             check_for_updates,
             download_and_install_update,
             db_connect,

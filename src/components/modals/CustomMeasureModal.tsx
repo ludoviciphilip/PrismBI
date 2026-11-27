@@ -3,6 +3,7 @@ import { Sigma, CheckCircle2, AlertCircle, Sparkles, BookOpen, Trash2 } from 'lu
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { DaxEngine } from '../../engine/daxEngine';
+import { validateDaxFormula, UnifiedDaxValidationResult } from '../../engine/nativeDax';
 import { Measure } from '../../types/bi';
 import { formatValue, formatCurrency, formatPercent, formatNumber } from '../../engine/dataEngine';
 import { FormulaEditor } from '../shared/FormulaEditor';
@@ -68,15 +69,37 @@ export const CustomMeasureModal: React.FC = () => {
     }
   }, [customMeasureModalOpen, editingMeasureId, measures, tables]);
 
-  // Real-time DAX validation
-  const validation = useMemo(() => {
-    if (!customMeasureModalOpen) return { isValid: true, errorMessage: '' };
-    return DaxEngine.validate(formula, tables, measures);
+  // Real-time DAX validation + preview: native Rust (`dax_validate`) inside
+  // Tauri, TS engine fallback only in browser mode without Tauri (see
+  // `src/engine/nativeDax.ts`). `dax_validate` already evaluates the
+  // expression when it's valid, so one call covers both validation and the
+  // live preview value below.
+  const [validation, setValidation] = useState<UnifiedDaxValidationResult>({
+    isValid: true,
+    referencedTables: [],
+    referencedColumns: [],
+    referencedMeasures: [],
+    engine: 'ts-fallback',
+  });
+  useEffect(() => {
+    if (!customMeasureModalOpen) return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      validateDaxFormula(formula, tables, measures, 'measure').then((res) => {
+        if (!cancelled) setValidation(res);
+      });
+    }, 150);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [customMeasureModalOpen, formula, tables, measures]);
 
-  // Real-time evaluation preview & error tracking
   const previewState = useMemo(() => {
     if (!customMeasureModalOpen || !validation.isValid) return { value: null, error: null };
+    if (validation.engine === 'native') {
+      return { value: validation.sampleValue ?? null, error: null };
+    }
     try {
       const val = DaxEngine.evaluate(formula, tables, measures, []);
       return { value: val, error: null };

@@ -16,8 +16,7 @@ import { askData, summarize, daxAssist } from '../../services/aiClient';
 import { shouldPromptPrivacyConsent, hasConfiguredApiKey } from '../../services/aiConfig';
 import { buildSafeSchema } from '../../services/aiSchema';
 import { AiPrivacyModal } from './AiPrivacyModal';
-import { globalDataEngine } from '../../engine/dataEngine';
-import { DaxEngine } from '../../engine/daxEngine';
+import { evaluateMeasureDax } from '../../engine/nativeDax';
 
 export const AiAssistantModal: React.FC = () => {
   const {
@@ -114,14 +113,13 @@ export const AiAssistantModal: React.FC = () => {
 
       // Compute real metrics from existing measures or row counts
       const currentMetrics: Record<string, any> = {};
-      measures.slice(0, 10).forEach(m => {
+      for (const m of measures.slice(0, 10)) {
         try {
-          const val = DaxEngine.evaluateWithContext(m.formula, globalDataEngine);
-          currentMetrics[m.name] = val;
+          currentMetrics[m.name] = await evaluateMeasureDax(m.formula, tables, measures);
         } catch {
           currentMetrics[m.name] = 'Não avaliado';
         }
-      });
+      }
 
       const res = await summarize(datasetSummary, currentMetrics, tables, measures);
       setNarrativeResult(res);

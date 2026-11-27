@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Zap, CheckCircle2, AlertCircle, Code, Calendar, HelpCircle } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
-import { DaxEngine } from '../../engine/daxEngine';
+import { validateDaxFormula } from '../../engine/nativeDax';
 import { Measure } from '../../types/bi';
 import { QuickMeasureType, generateQuickMeasure } from '../../engine/expr/quickMeasures';
 
@@ -85,15 +85,23 @@ export const QuickMeasureModal: React.FC = () => {
     setCustomFormula(generated.formula);
   }, [calculationType, baseTable, baseMeasure, dateColumn, rollingMonths, yearEndDate, tables, measures, dateColumns]);
 
-  // Real-time DAX validation
-  const validationResult = useMemo(() => {
+  // Real-time DAX validation: native Rust (`dax_validate`) inside Tauri,
+  // TS engine fallback only in browser mode without Tauri.
+  const [validationResult, setValidationResult] = useState<{ isValid: boolean; errorMessage?: string }>({ isValid: true });
+  useEffect(() => {
     if (!customFormula.trim()) {
-      return { isValid: false, errorMessage: 'A fórmula não pode ficar vazia' };
+      setValidationResult({ isValid: false, errorMessage: 'A fórmula não pode ficar vazia' });
+      return;
     }
-    const res = DaxEngine.validate(customFormula, tables, measures);
-    return {
-      isValid: res.isValid,
-      errorMessage: res.errorMessage,
+    let cancelled = false;
+    const t = setTimeout(() => {
+      validateDaxFormula(customFormula, tables, measures, 'measure').then((res) => {
+        if (!cancelled) setValidationResult({ isValid: res.isValid, errorMessage: res.errorMessage });
+      });
+    }, 150);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
     };
   }, [customFormula, tables, measures]);
 

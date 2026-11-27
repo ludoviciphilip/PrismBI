@@ -11,6 +11,7 @@ pub mod query_planner;
 /// `query_planner.rs`; toda a lógica — árvore, subtotal por nível e a
 /// interseção linha×coluna — mora aqui).
 pub mod matrix_columns;
+pub mod query_view;
 #[cfg(test)]
 mod tests_duckdb_sync;
 

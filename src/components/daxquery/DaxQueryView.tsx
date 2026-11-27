@@ -30,7 +30,7 @@ import { DependencyGraphModal } from './DependencyGraphModal';
 import { DaxAiAssistantModal } from './DaxAiAssistantModal';
 import { DaxImportModal } from './DaxImportModal';
 import { formatNumber } from '../../engine/shared/formatter';
-import { evaluateDaxNative, isTauriRuntime } from '../../bridge/tauriBridge';
+import { daxQueryExecuteNative, isTauriRuntime, NativeDaxQueryResultSet, NativeDaxQueryColumn } from '../../bridge/tauriBridge';
 
 export const DaxQueryView: React.FC = () => {
   const {
@@ -94,85 +94,95 @@ export const DaxQueryView: React.FC = () => {
     setTimeout(() => setToastMsg(null), 4000);
   };
 
-  const handleExecuteQuery = () => {
+  const handleExecuteQuery = async () => {
     if (!activeTab || !activeTab.query.trim()) return;
 
     setIsRunning(true);
     setCurrentPage(1);
 
-    setTimeout(() => {
-      try {
-        const model = globalDataEngine;
-        const res = DaxEngine.executeDaxQuery(activeTab.query, model);
-        setQueryResult(res);
-        setActiveResultIndex(0);
-
-        // Record history
-        const rowCount = res.results.reduce((acc, r) => acc + (r.rowCount || 0), 0);
-        const historyItem: DaxQueryHistoryItem = {
-          id: `hist_${Date.now()}`,
-          timestamp: new Date().toLocaleTimeString('pt-BR'),
-          query: activeTab.query,
-          success: res.success,
-          durationMs: res.totalDurationMs,
-          rowCount,
-          error: res.error,
-        };
-        setHistory(prev => [historyItem, ...prev.slice(0, 19)]);
-
-        if (!res.success && res.error) {
-          showToast(`Erro na consulta: ${res.error}`, 'error');
-        }
-      } catch (err: any) {
-        showToast(err.message || 'Erro inesperado ao executar consulta DAX.', 'error');
-      } finally {
-        setIsRunning(false);
-      }
-    }, 20);
-  };
-
-  const handleEvaluateScalarRust = async () => {
-    if (!activeTab) return;
-    if (!isTauriRuntime()) {
-      showToast('Motor DAX nativo em Rust ativo apenas no app desktop Tauri.', 'error');
-      return;
-    }
-    const expr = activeTab.query
-      .replace(/^\s*EVALUATE\s+/i, '')
-      .replace(/^\s*\{\s*|\s*\}\s*$/g, '')
-      .trim();
-    const start = performance.now();
     try {
-      const res = await evaluateDaxNative(expr);
-      const durationMs = Number((performance.now() - start).toFixed(2));
-      setQueryResult({
-        success: true,
-        results: [
-          {
-            statementIndex: 0,
-            rowCount: 1,
-            columns: ['Resultado (Rust Nativo)'],
-            rows: [{ 'Resultado (Rust Nativo)': res.value ?? res.display }],
-            table: {
-              columns: ['Resultado (Rust Nativo)'],
-              rows: [{ 'Resultado (Rust Nativo)': res.value ?? res.display }],
-            },
-          },
-        ],
-        executionPlan: [
-          {
-            name: 'Motor DAX Nativo (Rust)',
-            durationMs,
-            details: 'Avaliação escalar executada diretamente no backend Rust.',
-            status: 'success',
-          },
-        ],
-        totalDurationMs: durationMs,
-      });
+      let res: DaxQueryExecutionResult;
+      if (isTauriRuntime()) {
+        // v0.11 Frente F: DEFINE/EVALUATE/ORDER BY/START AT executado no
+        // motor DAX nativo em Rust (`dax_query_execute`,
+        // src-tauri/src/dax/query_view/**).
+        const native = await daxQueryExecuteNative(activeTab.query);
+        if (native.error) {
+          res = {
+            success: false,
+            results: [],
+            executionPlan: [
+              { name: 'Motor DAX Nativo (Rust)', durationMs: native.elapsedMs, status: 'error', details: `Linha ${native.error.line}, coluna ${native.error.column}` },
+            ],
+            totalDurationMs: native.elapsedMs,
+            error: native.error.message,
+          };
+        } else {
+          res = {
+            success: true,
+            results: native.resultSets.map((rs: NativeDaxQueryResultSet, idx: number) => ({
+              statementIndex: idx,
+              rowCount: rs.rowCount,
+              columns: rs.columns.map((c: NativeDaxQueryColumn) => c.name),
+              rows: rs.rows.map((row: any[]) => {
+                const obj: Record<string, any> = {};
+                rs.columns.forEach((c: NativeDaxQueryColumn, i: number) => {
+                  obj[c.name] = row[i];
+                });
+                return obj;
+              }),
+              table: {
+                columns: rs.columns.map((c: NativeDaxQueryColumn) => c.name),
+                rows: rs.rows.map((row: any[]) => {
+                  const obj: Record<string, any> = {};
+                  rs.columns.forEach((c: NativeDaxQueryColumn, i: number) => {
+                    obj[c.name] = row[i];
+                  });
+                  return obj;
+                }),
+              },
+            })),
+            executionPlan: [
+              {
+                name: 'Motor DAX Nativo (Rust)',
+                durationMs: native.elapsedMs,
+                details: `${native.resultSets.length} EVALUATE, limite de linhas aplicado na UI (ver opts.rowLimit).`,
+                status: 'success',
+              },
+            ],
+            totalDurationMs: native.elapsedMs,
+          };
+        }
+      } else {
+        // Fallback TS: somente modo navegador sem Tauri (sem bridge nativa
+        // para executar `dax_query_execute`).
+        const model = globalDataEngine;
+        res = DaxEngine.executeDaxQuery(activeTab.query, model);
+      }
+
+      setQueryResult(res);
       setActiveResultIndex(0);
-      showToast(`Avaliado no Rust Nativo em ${durationMs} ms: ${res.display}`);
+
+      // Record history
+      const rowCount = res.results.reduce((acc, r) => acc + (r.rowCount || 0), 0);
+      const historyItem: DaxQueryHistoryItem = {
+        id: `hist_${Date.now()}`,
+        timestamp: new Date().toLocaleTimeString('pt-BR'),
+        query: activeTab.query,
+        success: res.success,
+        durationMs: res.totalDurationMs,
+        rowCount,
+        error: res.error,
+      };
+      setHistory(prev => [historyItem, ...prev.slice(0, 19)]);
+
+      if (!res.success && res.error) {
+        showToast(`Erro na consulta: ${res.error}`, 'error');
+      }
     } catch (err: any) {
-      showToast(`Erro Rust DAX: ${err?.message || err}`, 'error');
+      showToast(err.message || 'Erro inesperado ao executar consulta DAX.', 'error');
+    } finally {
+      setIsRunning(false);
     }
   };
 
@@ -332,17 +342,6 @@ export const DaxQueryView: React.FC = () => {
             <span>Executar</span>
             <kbd className="text-[10px] bg-slate-950/15 px-1 py-0.5 rounded font-mono">Ctrl+Enter</kbd>
           </button>
-
-          {isTauriRuntime() && (
-            <button
-              onClick={handleEvaluateScalarRust}
-              className="px-3 py-1.5 bg-emerald-50 dark:bg-emerald-600/20 hover:bg-emerald-100 dark:hover:bg-emerald-600/30 border border-emerald-300 dark:border-emerald-500/40 text-emerald-800 dark:text-emerald-300 text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer"
-              title="Avaliar expressão DAX diretamente no motor nativo em Rust"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-              <span>DAX Nativo (Rust)</span>
-            </button>
-          )}
 
           {/* Apply Definitions to Model */}
           <button
