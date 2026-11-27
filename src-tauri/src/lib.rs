@@ -182,7 +182,7 @@ fn open_pbip_project(
                         rows: t.rows.clone(),
                         column_types: vec![],
                         duckdb_table: Some(t.table_name.clone()),
-                        sort_by_columns,
+                        sort_by_columns, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                     }
                 })
                 .collect(),

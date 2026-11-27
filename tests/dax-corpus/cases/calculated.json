@@ -1,0 +1,71 @@
+{
+  "model": "calculated",
+  "category": "calculated",
+  "description": "Tabelas e colunas calculadas avaliadas em Rust (v0.11 Frente C): CALENDAR, ADDCOLUMNS, SUMMARIZE, UNION como tabela calculada; RELATED e EARLIER como coluna calculada; medida sobre uma tabela calculada. Modelo e valores derivados à mão em models/calculated.json (nunca copiados da saída de um motor).",
+  "cases": [
+    {
+      "id": "calculated.table.calendar_row_count",
+      "expr": "COUNTROWS(CalendarCalc)",
+      "expected": 10,
+      "source": "hand-derived",
+      "notes": "CalendarCalc = CALENDAR(DATE(2024,1,1), DATE(2024,1,10)) é uma tabela calculada (dax::calculated::materialize_calculated_tables). 10 dias inclusive (1 a 10 de janeiro de 2024)."
+    },
+    {
+      "id": "calculated.table.calendar_is_flagged_for_calendarauto",
+      "expr": "YEAR(MINX(CALENDARAUTO(), [Date]))",
+      "expected": 2024,
+      "source": "hand-derived",
+      "notes": "A única coluna de data IMPORTADA (não calculada) do modelo é Vendas[Data] (2024-01-05..2024-01-07); CALENDARAUTO deve ignorar CalendarCalc (is_calculated=true) ao varrer model.tables, então o ano mínimo do calendário fiscal padrão (fm=12) é 2024, não um ano fora da faixa de Vendas. Confere o fix do bug registrado em window.calendarauto.fiscal_july_days para este modelo também."
+    },
+    {
+      "id": "calculated.table.addcolumns_margin_sum",
+      "expr": "ROUND(SUMX(ProdutosComMargem, ProdutosComMargem[PrecoComMargem]), 1)",
+      "expected": 178.2,
+      "source": "hand-derived",
+      "notes": "ProdutosComMargem = ADDCOLUMNS(Produtos, \"PrecoComMargem\", Produtos[Preco]*1.1). Preços base: Caderno 10, Lapis 2, Mouse 50, Teclado 100. Com margem: 11, 2.2, 55, 110 -> soma = 178.2."
+    },
+    {
+      "id": "calculated.table.summarize_category_avg_sum",
+      "expr": "SUMX(CategoriasResumo, CategoriasResumo[PrecoMedio])",
+      "expected": 81,
+      "source": "hand-derived",
+      "notes": "CategoriasResumo = SUMMARIZE(Produtos, Produtos[Categoria], \"PrecoMedio\", AVERAGE(Produtos[Preco])). Papelaria: (10+2)/2=6. Informatica: (50+100)/2=75. Soma dos 2 grupos = 81."
+    },
+    {
+      "id": "calculated.table.summarize_category_count",
+      "expr": "COUNTROWS(CategoriasResumo)",
+      "expected": 2,
+      "source": "hand-derived",
+      "notes": "2 categorias distintas em Produtos (Papelaria, Informatica) -> SUMMARIZE agrupado por Categoria produz 2 linhas."
+    },
+    {
+      "id": "calculated.table.union_keeps_duplicates",
+      "expr": "COUNTROWS(UniaoProdutos)",
+      "expected": 5,
+      "source": "hand-derived",
+      "notes": "UniaoProdutos = UNION(FILTER(Produtos, Preco<=50), FILTER(Produtos, Preco>=50)). Preco<=50: Caderno(10), Lapis(2), Mouse(50) = 3 linhas. Preco>=50: Mouse(50), Teclado(100) = 2 linhas. UNION do DAX preserva duplicatas (não é um DISTINCT) -> Mouse aparece 2x -> total 3+2=5 linhas."
+    },
+    {
+      "id": "calculated.column.related_category_filters_sales",
+      "expr": "SUMX(FILTER(Vendas, Vendas[Categoria] = \"Papelaria\"), Vendas[Qtde])",
+      "expected": 8,
+      "source": "hand-derived",
+      "notes": "Vendas[Categoria] é coluna calculada = RELATED(Produtos[Categoria]) via o relacionamento Vendas[ProdutoID]->Produtos[ProdutoID]. Venda 1 (ProdutoID 1 = Caderno/Papelaria, Qtde 3) e Venda 3 (ProdutoID 2 = Lapis/Papelaria, Qtde 5) -> 3+5=8. Venda 2 (ProdutoID 3 = Mouse/Informatica) fica de fora."
+    },
+    {
+      "id": "calculated.column.earlier_cheaper_in_category",
+      "expr": "SUMX(Produtos, Produtos[MaisBaratosNaCategoria])",
+      "expected": 2,
+      "source": "hand-derived",
+      "notes": "Produtos[MaisBaratosNaCategoria] é coluna calculada = COUNTROWS(FILTER(Produtos, Categoria=EARLIER(Categoria) && Preco<EARLIER(Preco))). Caderno(10,Papelaria): 1 mais barato (Lapis=2). Lapis(2,Papelaria): 0. Mouse(50,Informatica): 0. Teclado(100,Informatica): 1 mais barato (Mouse=50). Soma = 1+0+0+1 = 2."
+    },
+    {
+      "id": "calculated.measure.sum_over_calculated_table",
+      "expr": "[Total Preco Com Margem]",
+      "expected": 178.2,
+      "tolerance": 1e-9,
+      "source": "hand-derived",
+      "notes": "Medida 'Total Preco Com Margem' = SUM(ProdutosComMargem[PrecoComMargem]) definida sobre a tabela calculada ProdutosComMargem (ver calculated.table.addcolumns_margin_sum para a soma 178.2 derivada à mão)."
+    }
+  ]
+}

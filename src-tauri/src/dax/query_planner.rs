@@ -924,7 +924,7 @@ mod tests {
                     make_row("B", 200.0),
                 ],
                 column_types: vec![],
-                sort_by_columns: Default::default(),
+                sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
             }],
             relationships: Vec::<DaxRelationshipInput>::new(),
             measures: vec![
@@ -1051,7 +1051,7 @@ mod tests {
                     ],
                     column_types: vec![Some("date".into()), Some("text".into()), Some("number".into())],
                     sort_by_columns: sort_by,
-                    ..Default::default()
+                    ..Default::default() 
                 },
                 DaxTableInput {
                     name: "dEstrutura".into(),
@@ -1063,7 +1063,7 @@ mod tests {
                     ],
                     column_types: vec![Some("text".into()), Some("number".into())],
                     sort_by_columns: cat_sort_by,
-                    ..Default::default()
+                    ..Default::default() 
                 },
                 DaxTableInput {
                     name: "fLanc".into(),
@@ -1077,7 +1077,7 @@ mod tests {
                         // "—" has NO rows in fLanc -> SUMX returns BLANK on all months -> row dropped
                     ],
                     column_types: vec![Some("date".into()), Some("text".into()), Some("number".into())],
-                    ..Default::default()
+                    ..Default::default() 
                 },
             ],
             relationships: vec![

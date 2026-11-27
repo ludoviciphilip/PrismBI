@@ -96,7 +96,7 @@ pub(super) fn eval_table_expr<'a>(
                 col_index.insert(column.to_lowercase(), 0);
                 let rows: Vec<Vec<DaxValue>> = values.into_iter().map(|v| vec![v]).collect();
                 let n = rows.len();
-                let synth = DaxTableData {
+                let synth = DaxTableData { is_calculated: false, 
                     name: tbl.name.clone(),
                     columns: vec![column.clone()],
                     col_index,
@@ -140,7 +140,7 @@ pub(super) fn eval_table_expr<'a>(
             let n = rows.len();
             // The result keeps the first table's columns, name and therefore lineage, so
             // `T[c]` references and context transition keep working on it when nested.
-            let synth = DaxTableData {
+            let synth = DaxTableData { is_calculated: false, 
                 name: t1.name.clone(),
                 columns: t1.columns.clone(),
                 col_index: t1.col_index.clone(),
@@ -234,7 +234,7 @@ pub(super) fn eval_table_expr<'a>(
             }
             let mut col_index = HashMap::new();
             col_index.insert("value".to_string(), 0);
-            let tbl = DaxTableData {
+            let tbl = DaxTableData { is_calculated: false, 
                 name: "GENERATESERIES".to_string(),
                 columns: vec!["Value".to_string()],
                 col_index,
@@ -253,7 +253,7 @@ pub(super) fn eval_table_expr<'a>(
 pub(super) fn synth_table(name: String, columns: Vec<String>, rows: Vec<Vec<DaxValue>>) -> DaxTableData {
     let col_index = columns.iter().enumerate().map(|(i, c)| (c.to_lowercase(), i)).collect();
     let col_types = vec![ColumnType::Text; columns.len()];
-    DaxTableData { name, columns, col_index, col_types, rows, sort_by_columns: HashMap::new() }
+    DaxTableData { name, columns, col_index, col_types, rows, sort_by_columns: HashMap::new(), is_calculated: false }
 }
 
 /// Column naming convention for synthetic tables whose columns come from *different* model
@@ -552,7 +552,7 @@ pub(super) fn eval_base_table_expr<'a>(
                     let mut rows: Vec<Vec<DaxValue>> = indices.iter().map(|&i| tbl.rows[i].clone()).collect();
                     rows.push(vec![DaxValue::Blank; tbl.columns.len()]);
                     let n = rows.len();
-                    let synth = DaxTableData {
+                    let synth = DaxTableData { is_calculated: false, 
                         name: tbl.name.clone(),
                         columns: tbl.columns.clone(),
                         col_index: tbl.col_index.clone(),
@@ -709,7 +709,7 @@ fn eval_multicol_table_fn<'a>(
         .map(|(i, c)| (c.to_lowercase(), i))
         .collect();
     let n = rows.len();
-    let synth = DaxTableData {
+    let synth = DaxTableData { is_calculated: false, 
         name: tbl.name.clone(),
         columns: qual_cols,
         col_index,
@@ -735,7 +735,7 @@ fn build_calendar_range(name: &str, range: Option<(i64, i64)>) -> Result<DaxTabl
                 .collect()
         }
     };
-    Ok(DaxTableData {
+    Ok(DaxTableData { is_calculated: false, 
         name: name.to_string(),
         columns: vec!["Date".to_string()],
         col_index,
@@ -795,8 +795,20 @@ fn eval_calendarauto<'a>(
 
     let mut min_day: Option<i64> = None;
     let mut max_day: Option<i64> = None;
-    for tbl in model.tables.values() {
+    for (tkey, tbl) in model.tables.iter() {
+        // dax.guide/calendarauto: "CALENDARAUTO ignores calculated tables and
+        // calculated columns" -- a calculated table (CALENDAR/CALENDARAUTO/
+        // SUMMARIZE/... materialized, or a TMDL `calculated` partition) must
+        // never contribute to the min/max date scan, or CALENDARAUTO would
+        // see its own (or another calculated table's) generated date column.
+        if tbl.is_calculated {
+            continue;
+        }
+        let calc_cols = model.calculated_columns.get(tkey);
         for (cidx, cty) in tbl.col_types.iter().enumerate() {
+            if calc_cols.is_some_and(|set| set.contains(&tbl.columns[cidx].to_lowercase())) {
+                continue;
+            }
             if *cty != ColumnType::Date {
                 continue;
             }
@@ -963,7 +975,7 @@ fn eval_summarizecolumns<'a>(
         .iter()
         .map(|(t, c)| qualified_col_name(t, c))
         .collect();
-    let mut groups = DaxTableData {
+    let mut groups = DaxTableData { is_calculated: false, 
         name: "SUMMARIZECOLUMNS".to_string(),
         columns: columns.clone(),
         col_index: columns
@@ -998,7 +1010,7 @@ fn eval_summarizecolumns<'a>(
         }
         columns.extend(extensions.iter().map(|(n, _)| n.clone()));
         group_types.extend(vec![ColumnType::Decimal; extensions.len()]);
-        groups = DaxTableData {
+        groups = DaxTableData { is_calculated: false, 
             name: "SUMMARIZECOLUMNS".to_string(),
             col_index: columns
                 .iter()

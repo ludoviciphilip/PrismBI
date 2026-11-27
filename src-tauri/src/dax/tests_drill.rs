@@ -64,7 +64,7 @@ fn stores_model() -> DaxModel {
             columns: vec!["Regiao".into(), "Cidade".into(), "Loja".into(), "Cliente".into(), "Valor".into()],
             rows,
             column_types: vec![],
-            sort_by_columns: Default::default(),
+            sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
         }],
         relationships: Vec::<DaxRelationshipInput>::new(),
         measures: vec![
@@ -233,7 +233,7 @@ fn dates_model() -> DaxModel {
             columns: vec!["Data".into(), "Valor".into()],
             rows: data.iter().map(|(d, v)| row(&[("Data", json!(d)), ("Valor", json!(v))])).collect(),
             column_types: vec![Some("date".into()), Some("number".into())],
-            sort_by_columns: Default::default(),
+            sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
         }],
         relationships: Vec::<DaxRelationshipInput>::new(),
         measures: vec![DaxMeasureInput {
