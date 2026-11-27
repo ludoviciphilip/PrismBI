@@ -7,6 +7,12 @@ pub mod lexer;
 pub mod parser;
 pub mod pushdown;
 pub mod query_planner;
+/// v0.11 Frente I: N níveis nas COLUNAS da matriz (gancho mínimo em
+/// `query_planner.rs`; toda a lógica — árvore, subtotal por nível e a
+/// interseção linha×coluna — mora aqui).
+pub mod matrix_columns;
+pub mod query_view;
+pub mod visual_calcs;
 #[cfg(test)]
 mod tests_duckdb_sync;
 
@@ -67,6 +73,16 @@ pub fn build_filter_context(filters: &[NativeFilterInput], model: &DaxModel) -> 
             .get_table(&f.table_id)
             .and_then(|t| t.get_col_idx(&f.column).map(|i| (t, i)))
             .and_then(|(t, i)| t.col_types.get(i).copied());
+        // v0.11 Frente H (item h): `between` (range slicers, relative-date
+        // windows) needs a [lo, hi] *range* test, not an IN-list of exactly
+        // the two endpoints — see `FilterContext::range_filters`.
+        if f.operator.as_deref() == Some("between") && f.values.len() >= 2 {
+            let a = DaxValue::from_json_as(&f.values[0], col_type).value_key();
+            let b = DaxValue::from_json_as(&f.values[1], col_type).value_key();
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            ctx.set_range_filter(&f.table_id, &f.column, lo, hi);
+            continue;
+        }
         let allowed: HashSet<ValueKey> = f
             .values
             .iter()
@@ -84,12 +100,19 @@ pub fn build_filter_context(filters: &[NativeFilterInput], model: &DaxModel) -> 
     ctx
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeFilterInput {
     pub table_id: String,
     pub column: String,
     pub values: Vec<JsonValue>,
+    /// v0.11 Frente H (item h): `"in"`/`None` = value-list membership (today's
+    /// only behavior); `"between"` = an inclusive range over `values[0]`..`values[1]`
+    /// (segmentador "Entre" and relative-date windows, which used to be
+    /// flattened into a 2-value IN list in `VisualCard.tsx`, losing the
+    /// operator — see `FilterContext::range_filters`).
+    #[serde(default)]
+    pub operator: Option<String>,
 }
 
 /// DAX engine 2.0 typed value. Storage stays row-based (`Vec<Vec<DaxValue>>`)
@@ -768,6 +791,10 @@ pub struct TupleFilter {
 pub struct FilterContext {
     /// table_lower -> col_lower -> allowed value keys
     pub filters: HashMap<String, HashMap<String, HashSet<ValueKey>>>,
+    /// v0.11 Frente H (item h): table_lower -> col_lower -> inclusive [lo, hi]
+    /// range (segmentador "Entre", relative-date windows). Kept separate from
+    /// `filters` because a range can't be expressed as a finite allowed set.
+    pub range_filters: HashMap<String, HashMap<String, (ValueKey, ValueKey)>>,
     /// Dynamic USERELATIONSHIP / CROSSFILTER overrides applied inside CALCULATE
     pub rel_overrides: Vec<RelOverride>,
     /// §2.3: multi-column tuple filters (see `TupleFilter`), on top of the
@@ -786,6 +813,15 @@ impl FilterContext {
         let c = col.to_lowercase();
         self.tuple_filters.retain(|tf| !(tf.table == t && tf.columns.contains(&c)));
         self.filters.entry(t).or_default().insert(c, allowed);
+    }
+
+    /// v0.11 Frente H (item h): inclusive range filter (`lo <= value <= hi`),
+    /// for the segmentador "Entre" and relative-date windows.
+    pub fn set_range_filter(&mut self, table: &str, col: &str, lo: ValueKey, hi: ValueKey) {
+        let t = table.to_lowercase();
+        let c = col.to_lowercase();
+        self.tuple_filters.retain(|tf| !(tf.table == t && tf.columns.contains(&c)));
+        self.range_filters.entry(t).or_default().insert(c, (lo, hi));
     }
 
     /// Replaces (or adds) the tuple filter with this exact `(table, columns)`
@@ -1066,7 +1102,7 @@ impl DaxModel {
         let Some(tbl) = self.get_table(target_table) else {
             return Vec::new();
         };
-        if ctx.filters.is_empty() && ctx.tuple_filters.is_empty() {
+        if ctx.filters.is_empty() && ctx.tuple_filters.is_empty() && ctx.range_filters.is_empty() {
             return (0..tbl.rows.len()).collect();
         }
 
@@ -1080,6 +1116,22 @@ impl DaxModel {
                         let keys = self.column_keys(tkey, tdata, cidx);
                         for (r_idx, k) in keys.iter().enumerate() {
                             if mask[r_idx] && !allowed.contains(k) {
+                                mask[r_idx] = false;
+                            }
+                        }
+                    }
+                }
+            }
+            // v0.11 Frente H (item h): inclusive range ("Entre"/relative-date).
+            // A BLANK value never satisfies a range (same as DAX: BLANK is
+            // excluded from `x >= lo && x <= hi` unless lo/hi themselves
+            // coerce it in, which we don't special-case here).
+            if let Some(col_ranges) = ctx.range_filters.get(tkey) {
+                for (ckey, (lo, hi)) in col_ranges {
+                    if let Some(cidx) = tdata.get_col_idx(ckey) {
+                        let keys = self.column_keys(tkey, tdata, cidx);
+                        for (r_idx, k) in keys.iter().enumerate() {
+                            if mask[r_idx] && (matches!(k, ValueKey::Blank) || k < lo || k > hi) {
                                 mask[r_idx] = false;
                             }
                         }
@@ -1168,6 +1220,7 @@ impl DaxModel {
             .keys()
             .cloned()
             .chain(ctx.tuple_filters.iter().map(|tf| tf.table.clone()))
+            .chain(ctx.range_filters.keys().cloned())
             .collect();
         let mut used_rels: HashSet<usize> = HashSet::new();
         let mut hops = 0usize;
@@ -1268,6 +1321,12 @@ impl DaxModel {
     }
 
     pub fn evaluate_dax(&self, expression: &str, ctx: &FilterContext) -> Result<DaxValue, String> {
+        // v0.11 Frente G: a fresh top-level evaluation starts a fresh window
+        // partition cache (`evaluator::window`'s `WINDOW_PARTITION_CACHE`) —
+        // see its doc comment. This keeps the cache's lifetime scoped to
+        // exactly one query/measure evaluation, never leaking a cached
+        // partition into an unrelated later evaluation.
+        evaluator::window::clear_window_partition_cache();
         let ast = parser::parse_dax(expression)?;
         evaluator::evaluate_ast(&ast, self, ctx, &[], &HashMap::new())
     }
@@ -1472,8 +1531,8 @@ mod propagation_tests {
             let model = snowflake();
             let ctx = build_filter_context(
                 &[
-                    NativeFilterInput { table_id: "d_Categoria".into(), column: "Nome".into(), values: vec![json!("A")] },
-                    NativeFilterInput { table_id: "d_Produto".into(), column: "Cor".into(), values: vec![json!("azul")] },
+                    NativeFilterInput { table_id: "d_Categoria".into(), column: "Nome".into(), values: vec![json!("A")], ..Default::default() },
+                    NativeFilterInput { table_id: "d_Produto".into(), column: "Cor".into(), values: vec![json!("azul")], ..Default::default() },
                 ],
                 &model,
             );
@@ -1548,8 +1607,8 @@ mod bench_tests {
 
         let ctx = build_filter_context(
             &[
-                NativeFilterInput { table_id: "Dim1".into(), column: "Grupo1".into(), values: vec![json!("Grupo1-7")] },
-                NativeFilterInput { table_id: "Dim2".into(), column: "Grupo2".into(), values: vec![json!("Grupo2-49")] }, // i%50==7 => (7i)%50==49: resultado não vazio
+                NativeFilterInput { table_id: "Dim1".into(), column: "Grupo1".into(), values: vec![json!("Grupo1-7")], ..Default::default() },
+                NativeFilterInput { table_id: "Dim2".into(), column: "Grupo2".into(), values: vec![json!("Grupo2-49")], ..Default::default() }, // i%50==7 => (7i)%50==49: resultado não vazio
             ],
             &model,
         );

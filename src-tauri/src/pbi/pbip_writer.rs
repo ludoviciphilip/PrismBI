@@ -132,6 +132,11 @@ pub struct ExportVisualPayload {
     /// (N níveis). O 1º espelha `x_axis_field` (não duplicado na exportação).
     #[serde(default)]
     pub matrix_row_fields: Vec<String>,
+    /// v0.11 Rodada 2 (Frente I): campos das COLUNAS de uma matriz hierárquica
+    /// (N níveis). O 1º espelha `legend_field` (não duplicado na exportação,
+    /// igual a `matrix_row_fields`/`x_axis_field`); vazio = só a legenda (1 nível).
+    #[serde(default)]
+    pub matrix_column_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -544,7 +549,17 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
                     format!("{}.{}", vis.table_id, leg)
                 };
                 let role = if vis.visual_type == "matrix" { "Columns" } else { "Series" };
-                query_state.insert(role.to_string(), json!({ "projections": [{ "queryRef": qref }] }));
+                // v0.11 Rodada 2 (Frente I): paridade com o bloco de `Rows` acima —
+                // `matrix_column_fields[1..]` (o 1º espelha `legend_field`) vira
+                // projeções extras na MESMA role "Columns".
+                let mut projections = vec![json!({ "queryRef": qref })];
+                if vis.visual_type == "matrix" {
+                    for f in vis.matrix_column_fields.iter().skip(1) {
+                        let fqref = if f.contains('.') { f.clone() } else { format!("{}.{}", vis.table_id, f) };
+                        projections.push(json!({ "queryRef": fqref }));
+                    }
+                }
+                query_state.insert(role.to_string(), json!({ "projections": projections }));
             }
 
             if !vis.y_axis_fields.is_empty() {
@@ -1641,9 +1656,10 @@ mod tests {
                         h: 300.0,
                         table_id: "f_Vendas".into(),
                         x_axis_field: Some("Regiao".into()),
-                        legend_field: None,
+                        legend_field: Some("Ano".into()),
                         y_axis_fields: vec!["Total".into()],
                         matrix_row_fields: vec!["Regiao".into(), "Cidade".into(), "Loja".into()],
+                        matrix_column_fields: vec!["Ano".into(), "Trimestre".into()],
                         ..Default::default()
                     },
                 ],
@@ -1662,6 +1678,9 @@ mod tests {
         assert_eq!(matrix.category_field.as_deref(), Some("f_Vendas.Regiao"));
         // Os níveis ALÉM do primeiro (Cidade, Loja) não podem se perder.
         assert_eq!(matrix.drill_fields, vec!["f_Vendas.Cidade".to_string(), "f_Vendas.Loja".to_string()]);
+        // v0.11 Rodada 2 (Frente I): o mesmo round-trip para as COLUNAS da matriz.
+        assert_eq!(matrix.legend_field.as_deref(), Some("f_Vendas.Ano"));
+        assert_eq!(matrix.legend_drill_fields, vec!["f_Vendas.Trimestre".to_string()]);
     }
 
     #[test]

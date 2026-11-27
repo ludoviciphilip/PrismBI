@@ -175,6 +175,11 @@ export interface Translations {
     drillthroughAction: string;
     drillthroughActionHint: string;
     drillthroughUnavailableHint: string;
+    /** v0.11 Rodada 2 (Frente I): alterna qual eixo da matriz os controles de
+     * drill/expandir afetam — paridade com "Linhas"/"Colunas" no Power BI Desktop. */
+    axisRows: string;
+    axisColumns: string;
+    switchAxisHint: string;
   };
   slicer: {
     searchPlaceholder: string;

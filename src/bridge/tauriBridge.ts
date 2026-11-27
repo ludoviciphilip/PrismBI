@@ -139,6 +139,9 @@ export interface PbiVisualMeta {
   valueFields: string[];
   /** v0.10 Frente G: projeções extras de Category/Rows (hierarquia). */
   drillFields?: string[];
+  /** v0.11 Rodada 2 (Frente I): projeções extras de Columns/Series/Legend
+   * (níveis extras das COLUNAS da matriz, depois de `legendField`). */
+  legendDrillFields?: string[];
   columnCount?: number | null;
   slicerMode?: string | null;
   actionType?: string | null;
@@ -273,6 +276,9 @@ export interface ExportPbipPayload {
       /** v0.10 Rodada 2 (seams H↔G): campos das linhas da matriz hierárquica
        * (N níveis). O 1º espelha xAxisField e não é duplicado na exportação. */
       matrixRowFields?: string[];
+      /** v0.11 Rodada 2 (Frente I): campos das COLUNAS da matriz hierárquica
+       * (N níveis). O 1º espelha legendField e não é duplicado na exportação. */
+      matrixColumnFields?: string[];
     }[];
   }[];
   themeName?: string | null;
@@ -591,6 +597,78 @@ export async function evaluateDaxNative(
   });
 }
 
+// ---------------------------------------------------------------------
+// v0.11 Frente F: DAX Query View (DEFINE/EVALUATE/ORDER BY) e validação de
+// expressões DAX no Rust (`dax_query_execute`/`dax_validate` em
+// src-tauri/src/dax/query_view/**). Sem fallback TS aqui: fora do Tauri
+// (modo navegador) os chamadores usam `DaxEngine`/`DaxQueryExecutor`
+// diretamente — ver `src/engine/nativeDax.ts`.
+// ---------------------------------------------------------------------
+
+export interface NativeDaxQueryColumn {
+  name: string;
+  daxType: 'text' | 'integer' | 'decimal' | 'currency' | 'date' | 'boolean';
+}
+
+export interface NativeDaxQueryResultSet {
+  columns: NativeDaxQueryColumn[];
+  rows: any[][];
+  displayRows: string[][];
+  rowCount: number;
+  truncated: boolean;
+}
+
+export interface NativeDaxQueryError {
+  message: string;
+  line: number;
+  column: number;
+}
+
+export interface NativeDaxQueryExecuteResult {
+  resultSets: NativeDaxQueryResultSet[];
+  elapsedMs: number;
+  error: NativeDaxQueryError | null;
+}
+
+export async function daxQueryExecuteNative(
+  query: string,
+  rowLimit?: number
+): Promise<NativeDaxQueryExecuteResult> {
+  return await invoke<NativeDaxQueryExecuteResult>('dax_query_execute', {
+    query,
+    opts: rowLimit != null ? { rowLimit } : null,
+  });
+}
+
+export type NativeDaxValidateContext = 'measure' | 'calculatedColumn' | 'calculatedTable' | 'visualCalc';
+
+export interface NativeDaxDiagnostic {
+  severity: 'error' | 'warning';
+  message: string;
+  line: number;
+  column: number;
+  length: number;
+}
+
+export interface NativeDaxValidationResult {
+  ok: boolean;
+  diagnostics: NativeDaxDiagnostic[];
+  resultType: string | null;
+  sampleValue: any;
+}
+
+export async function daxValidateNative(
+  expression: string,
+  context: NativeDaxValidateContext,
+  table?: string
+): Promise<NativeDaxValidationResult> {
+  return await invoke<NativeDaxValidationResult>('dax_validate', {
+    expression,
+    context,
+    table: table ?? null,
+  });
+}
+
 export interface NativeVisualQueryRequest {
   visualId: string;
   visualType: string;
@@ -599,7 +677,7 @@ export interface NativeVisualQueryRequest {
   legendField?: string;
   yAxisFields: string[];
   aggregation?: string;
-  filters: { tableId: string; column: string; values: any[] }[];
+  filters: { tableId: string; column: string; values: any[]; operator?: string }[];
   /** v0.10 Frente G: agrupamento do eixo por níveis (drill/expandir/hierarquia de data). */
   categoryLevels?: { field: string; datePart?: string | null }[];
   /** v0.10 Frente G: caminho de drill (entra no build_filter_context do Rust). */
@@ -609,6 +687,17 @@ export interface NativeVisualQueryRequest {
   matrixExpandDepth?: number;
   matrixExpanded?: unknown[][];
   matrixCollapsed?: unknown[][];
+  /** v0.11 Frente I: colunas da matriz (N níveis) e estado de expansão. */
+  matrixColumns?: { field: string; datePart?: string | null }[];
+  matrixColumnExpandDepth?: number;
+  matrixColumnExpanded?: unknown[][];
+  matrixColumnCollapsed?: unknown[][];
+  /** v0.11 Rodada 2, Frente E: Cálculos Visuais avaliados no Rust sobre a
+   * grade (categories/series) deste request — ver
+   * `src-tauri/src/dax/visual_calcs/formula.rs`. Com isso, visuais com
+   * Cálculos Visuais também usam o caminho nativo (não ficam mais de fora
+   * de `supportsNativeRustQuery` em `VisualCard.tsx`). */
+  visualCalculations?: { name: string; formula: string }[];
 }
 
 export interface NativeMatrixNodeDto {
@@ -619,6 +708,15 @@ export interface NativeMatrixNodeDto {
   hasChildren: boolean;
   expanded: boolean;
   children: NativeMatrixNodeDto[];
+}
+
+export interface NativeMatrixColumnNodeDto {
+  key: unknown;
+  label: string;
+  hasChildren: boolean;
+  expanded: boolean;
+  value: number | null;
+  children: NativeMatrixColumnNodeDto[];
 }
 
 export interface NativeVisualSeries {
@@ -641,13 +739,104 @@ export interface NativeVisualQueryResult {
   engine: 'duckdb' | 'rust-native' | string;
   /** v0.10 Frente G: chave de cada nível por categoria (alinhado com `categories`). */
   categoryKeys?: unknown[][];
-  matrix?: { rows: NativeMatrixNodeDto[]; columnTotals: (number | null)[]; grandTotal?: number | null } | null;
+  matrix?: {
+    rows: NativeMatrixNodeDto[];
+    columnTotals: (number | null)[];
+    grandTotal?: number | null;
+    /** v0.11 Frente I: árvore de colunas (presente só com `matrixColumns`). */
+    columnHeader?: NativeMatrixColumnNodeDto[] | null;
+  } | null;
 }
 
 export async function queryVisualNative(
   request: NativeVisualQueryRequest
 ): Promise<NativeVisualQueryResult> {
   return await invoke<NativeVisualQueryResult>('query_visual_native', { request });
+}
+
+// ===========================================================================
+// v0.11 Rodada 2, Frente E: table / scatter native queries (Tauri only). Used
+// by VisualCard.tsx instead of aggregating `table.rows` (a 5.000-row preview)
+// in JS — see docs/V011.md Rodada 2, Frente E. There is NO TS equivalent of
+// pagination/Top N/engine-computed total here: the browser-only fallback
+// (no Tauri runtime, e.g. the demo web app) keeps using
+// `globalDataEngine.queryVisualData` off the preview rows exactly as before.
+// ===========================================================================
+
+export interface NativeTableQueryRequest {
+  tableId: string;
+  groupFields?: string[];
+  rawFields?: string[];
+  valueFields?: string[];
+  aggregation?: string;
+  filters?: { tableId: string; column: string; values: unknown[]; operator?: string }[];
+  sortField?: string;
+  /** v0.11 Rodada 2, Frente E: sort by a DIFFERENT column's values (Power BI's
+   * "Classificar por coluna"); must also be present among groupFields/rawFields. */
+  sortByColumn?: string;
+  sortOrder?: 'asc' | 'desc';
+  topN?: number;
+  offset?: number;
+  limit?: number;
+}
+
+export interface NativeTableQueryResult {
+  columns: string[];
+  rows: { values: unknown[] }[];
+  totalRowCount: number;
+  totalRow?: { values: unknown[] } | null;
+  /** v0.11 Rodada 2, Frente E: min/max over the FULL result (not just the
+   * returned page) per numeric column — feeds conditional-formatting
+   * gradients without the client ever seeing every row. */
+  columnMinMax?: Record<string, [number, number]>;
+  queryTimeMs: number;
+  engine: string;
+}
+
+/** v0.11 Rodada 2, Frente E: native "table" query over ALL rows (no 5.000-row
+ * preview cap), with the total row computed by the engine and server-side
+ * sort/Top N/pagination. Only call when `isTauriRuntime()`. */
+export async function queryTableNative(
+  request: NativeTableQueryRequest
+): Promise<NativeTableQueryResult> {
+  return await invoke<NativeTableQueryResult>('query_table_native', { request });
+}
+
+export interface NativeScatterQueryRequest {
+  tableId: string;
+  detailField: string;
+  xField: string;
+  yField: string;
+  sizeField?: string;
+  legendField?: string;
+  aggregation?: string;
+  filters?: { tableId: string; column: string; values: unknown[]; operator?: string }[];
+  maxPoints?: number;
+}
+
+export interface NativeScatterPointDto {
+  label: string;
+  x: number | null;
+  y: number | null;
+  size: number | null;
+  legend: string | null;
+}
+
+export interface NativeScatterQueryResult {
+  points: NativeScatterPointDto[];
+  totalPoints: number;
+  sampled: boolean;
+  queryTimeMs: number;
+  engine: string;
+}
+
+/** v0.11 Rodada 2, Frente E: native "scatter" query with deterministic
+ * Power-BI-style point sampling (default ~3.500 points). Only call when
+ * `isTauriRuntime()`. */
+export async function queryScatterNative(
+  request: NativeScatterQueryRequest
+): Promise<NativeScatterQueryResult> {
+  return await invoke<NativeScatterQueryResult>('query_scatter_native', { request });
 }
 
 export async function pickFolderDialog(title = 'Selecionar pasta de destino'): Promise<string | null> {

@@ -139,6 +139,10 @@ pub struct PbiVisualMeta {
     /// nos gráficos, níveis seguintes das linhas na matriz).
     #[serde(default)]
     pub drill_fields: Vec<String>,
+    /// v0.11 Rodada 2 (Frente I): projeções extras de Columns/Series/Legend
+    /// (níveis seguintes das COLUNAS da matriz, depois de `legend_field`).
+    #[serde(default)]
+    pub legend_drill_fields: Vec<String>,
     #[serde(default)]
     pub column_count: Option<u32>,
     #[serde(default)]
@@ -576,6 +580,7 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
                     legend_field,
                     value_fields,
                     drill_fields,
+                    legend_drill_fields: Vec::new(),
                     column_count: None,
                     slicer_mode: None,
                     action_type: None,

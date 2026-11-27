@@ -250,6 +250,29 @@ export interface VisualDataConfig {
    * normalmente não grava aqui). */
   matrixExpansion?: { depth: number; expanded: string[]; collapsed: string[] };
   // --- fim Bloco G ---
+  // --- Bloco I (v0.11 Rodada 2, "Níveis nas colunas da matriz") ---
+  /** Matriz: campos das COLUNAS (N níveis), como `matrixRowFields` para as linhas.
+   * Migração (src/engine/migrations/matrixColumns.ts): a legenda antiga
+   * (`legendField`) vira o 1º nível quando este campo ainda não existe. */
+  matrixColumnFields?: string[];
+  /** Indicadores (Bookmarks) restauram a expansão das colunas (mesmo formato
+   * de `matrixExpansion`, eixo independente). Não persistido fora de um indicador. */
+  matrixColumnExpansion?: { depth: number; expanded: string[]; collapsed: string[] };
+  /** Qual eixo da matriz os controles de drill (cabeçalho ao passar o mouse) afetam
+   * — paridade com o botão "Linhas"/"Colunas" do cabeçalho do visual no Power BI
+   * Desktop. Padrão 'rows'. */
+  matrixDrillAxis?: 'rows' | 'columns';
+  /** Opções de formato da matriz (aba Formatar → Totais/Subtotais), paridade com
+   * o Power BI Desktop. Cada array é indexado pelo nível (0 = topo). */
+  matrixFormat?: {
+    /** Subtotal de linha ligado/desligado por nível (`matrixRowFields`). */
+    rowSubtotals?: boolean[];
+    /** Subtotal de coluna ligado/desligado por nível (`matrixColumnFields`). */
+    columnSubtotals?: boolean[];
+    /** Posição dos totais: antes (topo/esquerda) ou depois (padrão) dos filhos. */
+    totalPosition?: 'first' | 'last';
+  };
+  // --- fim Bloco I ---
   kpiTarget?: number;
   kpiComparisonField?: string;
   visualCalculations?: VisualCalculation[];

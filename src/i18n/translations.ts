@@ -173,6 +173,9 @@ export const translations: Record<SupportedLanguage, Translations> = {
       drillthroughAction: 'Drill-through',
       drillthroughActionHint: 'Detalhar este ponto em outra página',
       drillthroughUnavailableHint: 'Drill-through indisponível em níveis de data ou rótulos concatenados',
+      axisRows: 'Linhas',
+      axisColumns: 'Colunas',
+      switchAxisHint: 'Alternar entre os controles de Linhas e Colunas',
     },
     slicer: {
       searchPlaceholder: 'Buscar item',
@@ -465,6 +468,9 @@ export const translations: Record<SupportedLanguage, Translations> = {
       drillthroughAction: 'Drill-through',
       drillthroughActionHint: 'See the details of this point on another page',
       drillthroughUnavailableHint: 'Drill-through is unavailable on date levels or concatenated labels',
+      axisRows: 'Rows',
+      axisColumns: 'Columns',
+      switchAxisHint: 'Switch between Rows and Columns controls',
     },
     slicer: {
       searchPlaceholder: 'Search item',
@@ -757,6 +763,9 @@ export const translations: Record<SupportedLanguage, Translations> = {
       drillthroughAction: 'Drill-through',
       drillthroughActionHint: 'Detallar este punto en otra página',
       drillthroughUnavailableHint: 'Drill-through no disponible en niveles de fecha o etiquetas concatenadas',
+      axisRows: 'Filas',
+      axisColumns: 'Columnas',
+      switchAxisHint: 'Alternar entre los controles de Filas y Columnas',
     },
     slicer: {
       searchPlaceholder: 'Buscar elemento',

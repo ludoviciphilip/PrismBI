@@ -330,6 +330,7 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
     let mut legend_field: Option<String> = None;
     let mut value_fields = Vec::new();
     let mut drill_fields: Vec<String> = Vec::new();
+    let mut legend_drill_fields: Vec<String> = Vec::new();
 
     if let Some(qstate) = visual_obj
         .get("query")
@@ -380,12 +381,15 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
                         drill_fields.push(qualified);
                     }
                 } else if role_l == "series" || role_l == "columns" || role_l == "legend" {
+                    let qualified = match &tbl {
+                        Some(t) if !t.eq_ignore_ascii_case("medidas") => format!("{}.{}", t, fld),
+                        _ => fld,
+                    };
                     if legend_field.is_none() {
-                        let qualified = match &tbl {
-                            Some(t) if !t.eq_ignore_ascii_case("medidas") => format!("{}.{}", t, fld),
-                            _ => fld,
-                        };
                         legend_field = Some(qualified);
+                    } else if mapped_type == "matrix" && !legend_drill_fields.contains(&qualified) {
+                        // v0.11 Rodada 2 (Frente I): projeções seguintes = níveis extras das colunas da matriz.
+                        legend_drill_fields.push(qualified);
                     }
                 } else if role_l == "y"
                     || role_l == "y2"
@@ -473,6 +477,7 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
         legend_field,
         value_fields,
         drill_fields,
+        legend_drill_fields,
         column_count,
         slicer_mode,
         action_type,

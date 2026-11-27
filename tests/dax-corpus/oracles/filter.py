@@ -213,8 +213,11 @@ EXPECTED["filter.table.summarize_countrows_categories"] = len({prod_by_id[r["Pro
 EXPECTED["filter.table.addcolumns_countrows"] = len({p["Categoria"] for p in d_produto})
 EXPECTED["filter.table.selectcolumns_countrows_no_dedup"] = len(d_produto)
 EXPECTED["filter.table.union_countrows_no_dedup"] = len({p["Categoria"] for p in d_produto}) + len({c["Cidade"] for c in d_cliente})
-EXPECTED["filter.table.intersect_countrows_no_overlap"] = len(
-    {p["Categoria"] for p in d_produto} & {c["Cidade"] for c in d_cliente}
+EXPECTED["filter.table.intersect_countrows_no_overlap"] = (
+    # COUNTROWS of an empty table is BLANK, not 0 (dax.guide/COUNTROWS).
+    None
+    if not ({p["Categoria"] for p in d_produto} & {c["Cidade"] for c in d_cliente})
+    else len({p["Categoria"] for p in d_produto} & {c["Cidade"] for c in d_cliente})
 )
 EXPECTED["filter.table.except_countrows_removes_papelaria"] = len({p["Categoria"] for p in d_produto} - {"Papelaria"})
 EXPECTED["filter.table.crossjoin_countrows"] = len(d_produto) * len(d_cliente)

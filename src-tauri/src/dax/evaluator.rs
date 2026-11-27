@@ -14,7 +14,7 @@ mod row;
 mod scalar;
 mod table;
 mod time;
-mod window;
+pub(crate) mod window;
 
 use filter::*;
 use row::*;
@@ -25,6 +25,46 @@ use time::*;
 pub struct RowContext<'a> {
     pub table: &'a DaxTableData,
     pub row_idx: usize,
+}
+
+// v0.11 Frente H (item i): a measure that (directly or transitively)
+// references itself would recurse forever through the `[Measure]` branch
+// below and blow the stack (a hard crash, not a DAX error). DAX itself
+// detects this and raises a clear "circular dependency" error instead; this
+// thread-local depth counter mirrors that without threading a depth
+// parameter through every `evaluate_ast` call site in the codebase. The
+// limit (64) is far above any legitimate measure-reference chain but well
+// below the point where the real call stack would overflow.
+thread_local! {
+    static MEASURE_DEPTH: std::cell::Cell<u32> = std::cell::Cell::new(0);
+}
+const MAX_MEASURE_DEPTH: u32 = 64;
+
+struct MeasureDepthGuard;
+impl Drop for MeasureDepthGuard {
+    fn drop(&mut self) {
+        MEASURE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// Increments the measure-recursion depth, returning a guard that
+/// decrements it again on drop (including on early `?` return), or an
+/// error once `MAX_MEASURE_DEPTH` is exceeded — the signal a circular
+/// measure reference tripped the guard instead of the real call stack.
+fn enter_measure(name: &str) -> Result<MeasureDepthGuard, String> {
+    let depth = MEASURE_DEPTH.with(|d| {
+        let next = d.get() + 1;
+        d.set(next);
+        next
+    });
+    if depth > MAX_MEASURE_DEPTH {
+        MEASURE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+        return Err(format!(
+            "Dependência circular detectada ao avaliar a medida '{}' (profundidade > {})",
+            name, MAX_MEASURE_DEPTH
+        ));
+    }
+    Ok(MeasureDepthGuard)
 }
 
 /// Evaluates a top-level DAX **table** expression (CALENDAR, CALENDARAUTO,
@@ -83,6 +123,7 @@ pub fn evaluate_ast(
             }
             // 2. Check measure
             if let Some(measure) = model.get_measure(name) {
+                let _guard = enter_measure(name)?;
                 let effective_ctx = apply_context_transition(model, ctx, row_stack);
                 let parsed = parse_dax(&measure.formula)?;
                 return evaluate_ast(&parsed, model, &effective_ctx, &[], &HashMap::new());
@@ -382,7 +423,7 @@ mod tests {
     /// tipo da coluna (ver `build_filter_context`).
     fn typed_keys(model: &DaxModel, table: &str, col: &str, raw: &str) -> std::collections::HashSet<crate::dax::ValueKey> {
         let ctx = crate::dax::build_filter_context(
-            &[crate::dax::NativeFilterInput { table_id: table.into(), column: col.into(), values: vec![serde_json::Value::String(raw.into())] }],
+            &[crate::dax::NativeFilterInput { table_id: table.into(), column: col.into(), values: vec![serde_json::Value::String(raw.into())], ..Default::default() }],
             model,
         );
         ctx.filters[&table.to_lowercase()][&col.to_lowercase()].clone()

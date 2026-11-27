@@ -1,0 +1,48 @@
+[
+  {
+    "name": "evaluate_row_literal",
+    "request": { "query": "EVALUATE ROW(\"X\", 1+2)", "opts": null },
+    "response": {
+      "resultSets": [
+        {
+          "columns": [{ "name": "X", "daxType": "integer" }],
+          "rows": [[3]],
+          "displayRows": [["3"]],
+          "rowCount": 1,
+          "truncated": false
+        }
+      ],
+      "elapsedMs": 0,
+      "error": null
+    }
+  },
+  {
+    "name": "define_measure_override",
+    "request": {
+      "query": "DEFINE MEASURE Vendas[Total Scoped] = [Total Vendas] * 2 EVALUATE ROW(\"T\", [Total Scoped])",
+      "opts": null
+    },
+    "response": {
+      "resultSets": [
+        {
+          "columns": [{ "name": "T", "daxType": "integer" }],
+          "rows": [[270]],
+          "displayRows": [["270"]],
+          "rowCount": 1,
+          "truncated": false
+        }
+      ],
+      "elapsedMs": 0,
+      "error": null
+    }
+  },
+  {
+    "name": "syntax_error_has_position",
+    "request": { "query": "EVALUATE ROW(\"X\", 1 +)", "opts": null },
+    "response": {
+      "resultSets": [],
+      "elapsedMs": 0,
+      "error": { "message": "Expressão inesperada: RParen", "line": 1, "column": 10 }
+    }
+  }
+]

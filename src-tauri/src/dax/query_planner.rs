@@ -60,6 +60,29 @@ pub struct NativeVisualQueryRequest {
     /// Caminhos recolhidos individualmente (−), vencem `matrix_expand_depth`.
     #[serde(default)]
     pub matrix_collapsed: Vec<Vec<JsonValue>>,
+    /// v0.11 Frente I: níveis nas COLUNAS da matriz (N níveis). Com 1+ nível,
+    /// `matrix.columnHeader` traz a árvore de colunas (subtotal por nível,
+    /// avaliado pelo motor no contexto da própria coluna) e `rows[].values`
+    /// passa a ter 1 valor por coluna VISÍVEL (folha ou subtotal recolhido),
+    /// na mesma ordem de `matrix.columnHeader` achatado (DFS).
+    #[serde(default)]
+    pub matrix_columns: Vec<NativeGroupLevel>,
+    /// Nós de coluna com profundidade < este valor vêm expandidos.
+    #[serde(default)]
+    pub matrix_column_expand_depth: usize,
+    /// Caminhos (chaves de cada nível de coluna) expandidos individualmente (+).
+    #[serde(default)]
+    pub matrix_column_expanded: Vec<Vec<JsonValue>>,
+    /// Caminhos de coluna recolhidos individualmente (−).
+    #[serde(default)]
+    pub matrix_column_collapsed: Vec<Vec<JsonValue>>,
+    /// v0.11 Rodada 2, Frente E: Cálculos Visuais avaliados no Rust sobre a
+    /// grade (`categories`/`series`) já computada por este request — ver
+    /// `dax::visual_calcs::formula`. Fica fora de `supportsNativeRustQuery`
+    /// em `VisualCard.tsx` até esta ligação existir; com ela, visuais com
+    /// Cálculos Visuais também passam a usar o caminho nativo.
+    #[serde(default)]
+    pub visual_calculations: Vec<crate::dax::visual_calcs::formula::NativeVisualCalcRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +132,398 @@ pub struct NativeMatrixResult {
     pub column_totals: Vec<Option<f64>>,
     /// Com legenda: total geral da medida principal (canto inferior direito).
     pub grand_total: Option<f64>,
+    /// v0.11 Frente I: árvore de colunas (presente só quando `matrix_columns`
+    /// não está vazio). `rows[].values` fica alinhado com a ordem DFS das
+    /// colunas VISÍVEIS desta árvore (ver `matrix_columns::pivot_matrix_columns`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_header: Option<Vec<crate::dax::matrix_columns::NativeMatrixColumnNode>>,
+}
+
+// ===========================================================================
+// v0.11 Rodada 2, Frente E: native "table" visual query.
+//
+// Replaces the TS path (`src/engine/query/planner.ts` + `dataEngine.ts`,
+// called from `VisualCard.tsx`) which aggregates `table.rows` — a preview
+// capped at `PREVIEW_ROW_LIMIT` (5000) for DuckDB-backed tables, hence the
+// "amostra de 5.000 linhas" warning. This path instead runs over EVERY row
+// via `model.get_visible_row_indices` (which reads the full DuckDB-backed
+// `Table`, not the capped preview), with the total row evaluated by the
+// engine (measure in the *total* filter context, never a sum of the
+// returned page), server-side sort, Top N, and offset/limit pagination so
+// a 10M-row table never crosses the Tauri IPC boundary in one shot.
+// ===========================================================================
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTableQueryRequest {
+    pub table_id: String,
+    /// Group-by columns ("resumir" in Power BI). Empty = raw/detail rows
+    /// ("não resumir"): one row per underlying fact row.
+    #[serde(default)]
+    pub group_fields: Vec<String>,
+    /// Detail columns shown as-is when `group_fields` is empty.
+    #[serde(default)]
+    pub raw_fields: Vec<String>,
+    /// Measure (or column+aggregation) columns, evaluated in each row's context.
+    #[serde(default)]
+    pub value_fields: Vec<String>,
+    pub aggregation: Option<String>,
+    #[serde(default)]
+    pub filters: Vec<NativeFilterInput>,
+    /// Name of a column in `columns` (below) to sort the full result by,
+    /// before Top N / pagination — mirrors the table's `sortByColumn`.
+    pub sort_field: Option<String>,
+    /// v0.11 Rodada 2, Frente E: mirrors the TS `sortRows({ sortByColumn })` —
+    /// when set AND present among `columns` (group/raw/value fields), rows
+    /// are ordered by THIS column's values instead of `sort_field`'s own
+    /// (e.g. a "Mês" text column sorted by a hidden "MêsNúmero"). The
+    /// caller must include it as a raw/group field for this to take effect,
+    /// exactly like the TS `sortBy in sample` guard in `visualSort.ts`.
+    #[serde(default)]
+    pub sort_by_column: Option<String>,
+    #[serde(default)]
+    pub sort_order: String, // "asc" | "desc", default asc
+    /// Keep only the first N rows after sorting (0 = no Top N).
+    #[serde(default)]
+    pub top_n: usize,
+    /// Pagination window applied after sort + Top N.
+    #[serde(default)]
+    pub offset: usize,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTableRow {
+    /// One JSON value per entry of `NativeTableQueryResult::columns`, in order.
+    pub values: Vec<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTableQueryResult {
+    pub columns: Vec<String>,
+    /// The requested page (`offset..offset+limit`) of the sorted/Top-N'd result.
+    pub rows: Vec<NativeTableRow>,
+    /// Total number of rows AFTER grouping/Top N but BEFORE pagination, so the
+    /// frontend can page/scroll without ever receiving the full set.
+    pub total_row_count: usize,
+    /// Value columns in the total row, each evaluated by the engine in the
+    /// TOTAL filter context (NOT a client-side sum of the returned page).
+    pub total_row: Option<NativeTableRow>,
+    /// v0.11 Rodada 2, Frente E: min/max of EVERY row of the result (not just
+    /// the returned page) for each numeric column — conditional-formatting
+    /// gradients (`styleForTotalCell`/`getFieldFormat`) need the TRUE
+    /// min/max of the full set, not just what happens to be on the current
+    /// page. Keyed by column name (see `columns`); absent for non-numeric
+    /// columns or columns with no numeric values at all.
+    #[serde(default)]
+    pub column_min_max: HashMap<String, (f64, f64)>,
+    pub query_time_ms: f64,
+    pub engine: String,
+}
+
+fn cmp_json_for_sort(a: &JsonValue, b: &JsonValue) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a.as_f64(), b.as_f64()) {
+        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+        _ => a
+            .as_str()
+            .unwrap_or_default()
+            .cmp(b.as_str().unwrap_or_default()),
+    }
+}
+
+/// Builds grouped table rows recursively, one `group_fields` level at a
+/// time, so each level's distinct values are only those actually present
+/// under the levels above it (never a full cross product).
+fn build_grouped_table_rows(
+    model: &DaxModel,
+    req: &NativeTableQueryRequest,
+    ctx: &FilterContext,
+    levels: &[String],
+    acc: &mut Vec<JsonValue>,
+    out: &mut Vec<Vec<JsonValue>>,
+) {
+    if levels.is_empty() {
+        let agg = req.aggregation.as_deref().unwrap_or("SUM");
+        let mut row = acc.clone();
+        for vf in &req.value_fields {
+            row.push(
+                eval_field_opt(model, ctx, &req.table_id, vf, agg)
+                    .map(JsonValue::from)
+                    .unwrap_or(JsonValue::Null),
+            );
+        }
+        out.push(row);
+        return;
+    }
+    let fake_req = NativeVisualQueryRequest {
+        table_id: req.table_id.clone(),
+        ..Default::default()
+    };
+    let (tbl_name, col_name, groups) = collect_groups(
+        model,
+        &fake_req,
+        ctx,
+        &NativeGroupLevel { field: levels[0].clone(), date_part: None },
+    );
+    for g in groups {
+        if g.label.is_empty() {
+            continue;
+        }
+        let mut ctx2 = ctx.clone();
+        ctx2.set_column_filter(&tbl_name, &col_name, g.allowed.clone());
+        acc.push(g.key.clone());
+        build_grouped_table_rows(model, req, &ctx2, &levels[1..], acc, out);
+        acc.pop();
+    }
+}
+
+/// Executes a native "table" visual query over ALL rows of the model (no
+/// 5.000-row preview cap). See module header above for the design.
+pub fn execute_table_query(
+    model: &DaxModel,
+    req: &NativeTableQueryRequest,
+) -> Result<NativeTableQueryResult, String> {
+    let t0 = Instant::now();
+    let base_ctx = build_filter_context(&req.filters, model);
+
+    let (columns, mut all_rows): (Vec<String>, Vec<Vec<JsonValue>>) = if !req.group_fields.is_empty() {
+        let mut cols = req.group_fields.clone();
+        cols.extend(req.value_fields.iter().cloned());
+        let mut out = Vec::new();
+        build_grouped_table_rows(model, req, &base_ctx, &req.group_fields, &mut Vec::new(), &mut out);
+        (cols, out)
+    } else {
+        // Raw/detail rows ("não resumir"): one row per visible fact row.
+        let mut cols = req.raw_fields.clone();
+        cols.extend(req.value_fields.iter().cloned());
+        let tbl = model
+            .get_table(&req.table_id)
+            .ok_or_else(|| format!("tabela '{}' não encontrada", req.table_id))?;
+        let raw_idx: Vec<Option<usize>> = req.raw_fields.iter().map(|f| tbl.get_col_idx(f)).collect();
+        let mut out = Vec::new();
+        for r_idx in model.get_visible_row_indices(&tbl.name, &base_ctx) {
+            let mut row = Vec::with_capacity(cols.len());
+            for cidx in &raw_idx {
+                row.push(match cidx {
+                    Some(c) => tbl.rows[r_idx][*c].to_json(),
+                    None => JsonValue::Null,
+                });
+            }
+            // Value fields in raw mode show the row's own column value when
+            // it IS a plain column (no aggregation makes sense per-row);
+            // measures fall back to the table-wide total context — a known
+            // gap, see docs/V011.md Rodada 2 Frente E report.
+            for vf in &req.value_fields {
+                let clean = vf.trim().trim_start_matches('Σ').trim();
+                if let Some(c) = tbl.get_col_idx(clean) {
+                    row.push(tbl.rows[r_idx][c].to_json());
+                } else {
+                    row.push(
+                        eval_field_opt(model, &base_ctx, &req.table_id, clean, req.aggregation.as_deref().unwrap_or("SUM"))
+                            .map(JsonValue::from)
+                            .unwrap_or(JsonValue::Null),
+                    );
+                }
+            }
+            out.push(row);
+        }
+        (cols, out)
+    };
+
+    if let Some(sort_field) = req.sort_field.as_deref() {
+        let effective_sort_col = req
+            .sort_by_column
+            .as_deref()
+            .filter(|c| columns.iter().any(|col| col == c))
+            .unwrap_or(sort_field);
+        if let Some(sort_idx) = columns.iter().position(|c| c == effective_sort_col) {
+            let desc = req.sort_order.eq_ignore_ascii_case("desc");
+            all_rows.sort_by(|a, b| {
+                let ord = cmp_json_for_sort(&a[sort_idx], &b[sort_idx]);
+                if desc { ord.reverse() } else { ord }
+            });
+        }
+    }
+
+    if req.top_n > 0 && all_rows.len() > req.top_n {
+        all_rows.truncate(req.top_n);
+    }
+
+    let total_row_count = all_rows.len();
+    let mut column_min_max: HashMap<String, (f64, f64)> = HashMap::new();
+    for (cidx, col) in columns.iter().enumerate() {
+        let mut min: Option<f64> = None;
+        let mut max: Option<f64> = None;
+        for row in &all_rows {
+            if let Some(n) = row.get(cidx).and_then(JsonValue::as_f64) {
+                min = Some(min.map_or(n, |m| m.min(n)));
+                max = Some(max.map_or(n, |m| m.max(n)));
+            }
+        }
+        if let (Some(min), Some(max)) = (min, max) {
+            column_min_max.insert(col.clone(), (min, max));
+        }
+    }
+    let offset = req.offset.min(all_rows.len());
+    let end = req.limit.map(|l| (offset + l).min(all_rows.len())).unwrap_or(all_rows.len());
+    let page: Vec<NativeTableRow> = all_rows[offset..end]
+        .iter()
+        .cloned()
+        .map(|values| NativeTableRow { values })
+        .collect();
+
+    let agg = req.aggregation.as_deref().unwrap_or("SUM");
+    let total_row = if !req.value_fields.is_empty() {
+        let mut vals = vec![JsonValue::Null; req.group_fields.len().max(req.raw_fields.len())];
+        for vf in &req.value_fields {
+            vals.push(
+                eval_field_opt(model, &base_ctx, &req.table_id, vf, agg)
+                    .map(JsonValue::from)
+                    .unwrap_or(JsonValue::Null),
+            );
+        }
+        Some(NativeTableRow { values: vals })
+    } else {
+        None
+    };
+
+    Ok(NativeTableQueryResult {
+        columns,
+        rows: page,
+        total_row_count,
+        total_row,
+        column_min_max,
+        query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
+        engine: "rust-native".to_string(),
+    })
+}
+
+// ===========================================================================
+// v0.11 Rodada 2, Frente E: native "scatter" visual query, with Power-BI-style
+// deterministic sampling (default cap mirrors Power BI's ~3.500 points) so a
+// detail field with millions of distinct values never ships every point
+// over IPC. Sampling is a fixed stride over the sorted point list, so the
+// same input always yields the same sampled subset (no RNG).
+// ===========================================================================
+
+pub const SCATTER_DEFAULT_MAX_POINTS: usize = 3500;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeScatterQueryRequest {
+    pub table_id: String,
+    /// Field with one point per distinct value (Power BI's "Detalhes").
+    pub detail_field: String,
+    pub x_field: String,
+    pub y_field: String,
+    pub size_field: Option<String>,
+    pub legend_field: Option<String>,
+    pub aggregation: Option<String>,
+    #[serde(default)]
+    pub filters: Vec<NativeFilterInput>,
+    /// 0 = use `SCATTER_DEFAULT_MAX_POINTS`.
+    #[serde(default)]
+    pub max_points: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeScatterPoint {
+    pub label: String,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub size: Option<f64>,
+    pub legend: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeScatterQueryResult {
+    pub points: Vec<NativeScatterPoint>,
+    pub total_points: usize,
+    pub sampled: bool,
+    pub query_time_ms: f64,
+    pub engine: String,
+}
+
+pub fn execute_scatter_query(
+    model: &DaxModel,
+    req: &NativeScatterQueryRequest,
+) -> Result<NativeScatterQueryResult, String> {
+    let t0 = Instant::now();
+    let base_ctx = build_filter_context(&req.filters, model);
+    let agg = req.aggregation.as_deref().unwrap_or("SUM");
+
+    let fake_req = NativeVisualQueryRequest {
+        table_id: req.table_id.clone(),
+        ..Default::default()
+    };
+    let (tbl_name, col_name, groups) = collect_groups(
+        model,
+        &fake_req,
+        &base_ctx,
+        &NativeGroupLevel { field: req.detail_field.clone(), date_part: None },
+    );
+
+    let mut all_points = Vec::with_capacity(groups.len());
+    for g in groups {
+        if g.label.is_empty() {
+            continue;
+        }
+        let mut ctx2 = base_ctx.clone();
+        ctx2.set_column_filter(&tbl_name, &col_name, g.allowed.clone());
+        let x = eval_field_opt(model, &ctx2, &req.table_id, &req.x_field, agg);
+        let y = eval_field_opt(model, &ctx2, &req.table_id, &req.y_field, agg);
+        let size = req
+            .size_field
+            .as_deref()
+            .and_then(|sf| eval_field_opt(model, &ctx2, &req.table_id, sf, agg));
+        let legend = req.legend_field.as_deref().and_then(|lf| {
+            let (lt, lc) = resolve_table_and_col(model, &req.table_id, lf);
+            let tbl = model.get_table(&lt)?;
+            let cidx = tbl.get_col_idx(&lc)?;
+            model
+                .get_visible_row_indices(&tbl.name, &ctx2)
+                .first()
+                .map(|&i| tbl.rows[i][cidx].as_display_string())
+        });
+        all_points.push(NativeScatterPoint { label: g.label, x, y, size, legend });
+    }
+
+    let total_points = all_points.len();
+    let max_points = if req.max_points == 0 { SCATTER_DEFAULT_MAX_POINTS } else { req.max_points };
+    let sampled = total_points > max_points;
+    let points = if sampled {
+        // Deterministic fixed-stride sample: evenly spread across the
+        // (already deterministically ordered) point list, always picking
+        // index 0 and walking by a float step to land close to `max_points`
+        // samples without any randomness.
+        let step = total_points as f64 / max_points as f64;
+        let mut out = Vec::with_capacity(max_points);
+        let mut i = 0.0f64;
+        let mut seen = std::collections::HashSet::new();
+        while out.len() < max_points && (i as usize) < total_points {
+            let idx = i as usize;
+            if seen.insert(idx) {
+                out.push(all_points[idx].clone());
+            }
+            i += step;
+        }
+        out
+    } else {
+        all_points
+    };
+
+    Ok(NativeScatterQueryResult {
+        points,
+        total_points,
+        sampled,
+        query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
+        engine: "rust-native".to_string(),
+    })
 }
 
 pub(crate) fn resolve_table_and_col(model: &DaxModel, default_table: &str, raw_field: &str) -> (String, String) {
@@ -144,7 +559,7 @@ fn eval_field_value(
 /// Like `eval_field_value`, but `None` when the result is BLANK (a measure
 /// returning BLANK, or an implicit aggregation over no non-blank cells), so
 /// grouped queries can drop rows with no data, as Power BI does.
-fn eval_field_opt(
+pub(crate) fn eval_field_opt(
     model: &DaxModel,
     ctx: &FilterContext,
     default_table: &str,
@@ -168,10 +583,16 @@ fn eval_field_opt(
     let non_zero = |n: f64| if n == 0.0 { None } else { Some(n) };
     match agg.to_uppercase().as_str() {
         "COUNT" => non_zero(visible.iter().filter(|&&i| !tbl.rows[i][cidx].is_blank()).count() as f64),
+        // v0.11 Frente H (item e; fix(dax)): DISTINCTCOUNT counts a stored
+        // BLANK as one of its distinct values (dax.guide: "DISTINCTCOUNT
+        // counts a blank value in the column as one of the values"), unlike
+        // plain `COUNT(DISTINCT ...)` SQL semantics. This implicit-visual-
+        // aggregation path used to filter blanks out before counting,
+        // undercounting by one whenever the column has at least one blank
+        // cell among non-blank ones.
         "DISTINCTCOUNT" => non_zero(
             visible
                 .iter()
-                .filter(|&&i| !tbl.rows[i][cidx].is_blank())
                 .map(|&i| tbl.rows[i][cidx].canonical_key())
                 .collect::<HashSet<_>>()
                 .len() as f64,
@@ -201,6 +622,369 @@ fn eval_field_opt(
     }
 }
 
+/// v0.11 Frente G: single-pass vectorized group-by for the common shape of
+/// `execute_visual_query_dax`'s "standard grouped series" branch — one
+/// category column, one or more plain (non-measure) numeric columns, a
+/// simple aggregation, all on the SAME table as the category, and NO
+/// relationships in the model at all.
+///
+/// The generic path (kept as the fallback for every other shape — measures,
+/// cross-table y fields, any relationship) calls `get_visible_row_indices`
+/// once per distinct category value, and that function rebuilds a full
+/// `Vec<bool>` mask for *every* table in the model on every call: with C
+/// categories and N rows that's O(C·N) row visits. Profiling the 10M-row
+/// `bench_pushdown_vs_dax_10_million_rows` bench (see `docs/RUST_ENGINE_2.md`
+/// §5) showed this dominates the 16.7s query time — 100 categories × 10M
+/// rows ≈ 1e9 row visits, matching the measured cost almost exactly.
+///
+/// With no relationships, filtering column X on table T is independent per
+/// row, so one pass over the base table's own visible rows (computed ONCE),
+/// bucketed by category value into typed accumulators, is exactly equivalent
+/// to the per-category filtered aggregation — O(N) total instead of O(C·N).
+/// Returns `None` (falls back to the generic path) for anything outside this
+/// shape; never silently approximates.
+fn try_vectorized_group_agg(
+    model: &DaxModel,
+    base_ctx: &FilterContext,
+    cat_tbl_name: &str,
+    cat_col: &str,
+    y_names: &[String],
+    req_table_id: &str,
+    agg: &str,
+) -> Option<(Vec<String>, Vec<Vec<Option<f64>>>)> {
+    // Relationship propagation can make a column filter on one table affect
+    // visibility on another (or even loop back onto itself via a
+    // bidirectional edge touching the same table through a different path).
+    // Keeping this fast path to models with zero relationships sidesteps all
+    // of that: correctness stays trivially provable instead of re-deriving
+    // `get_visible_row_indices`'s propagation rules here.
+    if !model.relationships.is_empty() {
+        return None;
+    }
+    let agg_u = agg.to_ascii_uppercase();
+    if !matches!(agg_u.as_str(), "SUM" | "COUNT" | "DISTINCTCOUNT" | "MIN" | "MAX" | "AVG" | "AVERAGE") {
+        return None;
+    }
+    let tbl = model.get_table(cat_tbl_name)?;
+    let cat_cidx = tbl.get_col_idx(cat_col)?;
+
+    let mut y_cidx: Vec<usize> = Vec::with_capacity(y_names.len());
+    for y in y_names {
+        if model.get_measure(y).is_some() {
+            return None;
+        }
+        let (y_tbl, y_col) = resolve_table_and_col(model, req_table_id, y);
+        if !y_tbl.eq_ignore_ascii_case(cat_tbl_name) {
+            return None;
+        }
+        y_cidx.push(tbl.get_col_idx(&y_col)?);
+    }
+    let n_y = y_cidx.len();
+
+    #[derive(Clone)]
+    struct Acc {
+        sum: f64,
+        count: u64,
+        min: f64,
+        max: f64,
+        distinct: HashSet<ValueKey>,
+    }
+    impl Default for Acc {
+        fn default() -> Self {
+            Acc { sum: 0.0, count: 0, min: f64::INFINITY, max: f64::NEG_INFINITY, distinct: HashSet::new() }
+        }
+    }
+
+    let visible = model.get_visible_row_indices(&tbl.name, base_ctx);
+    let mut groups: HashMap<ValueKey, usize> = HashMap::new();
+    let mut labels: Vec<String> = Vec::new();
+    let mut sort_keys: Vec<ValueKey> = Vec::new();
+    let mut accs: Vec<Vec<Acc>> = Vec::new();
+
+    for r_idx in visible {
+        let catv = &tbl.rows[r_idx][cat_cidx];
+        let key = catv.value_key();
+        let gidx = *groups.entry(key.clone()).or_insert_with(|| {
+            let idx = labels.len();
+            let disp = catv.as_display_string();
+            labels.push(if disp.is_empty() { "Sem dados".to_string() } else { disp });
+            sort_keys.push(row_sort_key_opt(tbl, cat_cidx, r_idx).unwrap_or_else(|| key.clone()));
+            accs.push(vec![Acc::default(); n_y]);
+            idx
+        });
+        let row_accs = &mut accs[gidx];
+        for (yi, &cidx) in y_cidx.iter().enumerate() {
+            let v = &tbl.rows[r_idx][cidx];
+            // DISTINCTCOUNT counts BLANK as one distinct value, like Power BI
+            // and the generic path (`eval_field_opt`, v0.11 Frente H item e).
+            if agg_u == "DISTINCTCOUNT" {
+                row_accs[yi].distinct.insert(v.value_key());
+                continue;
+            }
+            if v.is_blank() {
+                continue;
+            }
+            match agg_u.as_str() {
+                "COUNT" => row_accs[yi].count += 1,
+                "DISTINCTCOUNT" => {
+                    row_accs[yi].distinct.insert(v.value_key());
+                }
+                _ => {
+                    if let Some(n) = v.as_f64() {
+                        let a = &mut row_accs[yi];
+                        a.sum += n;
+                        a.count += 1;
+                        if n < a.min {
+                            a.min = n;
+                        }
+                        if n > a.max {
+                            a.max = n;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut order: Vec<usize> = (0..labels.len()).collect();
+    order.sort_by(|&a, &b| sort_keys[a].cmp(&sort_keys[b]).then_with(|| labels[a].cmp(&labels[b])));
+
+    let mut out_cats = Vec::with_capacity(order.len());
+    let mut grid: Vec<Vec<Option<f64>>> = Vec::with_capacity(order.len());
+    for gi in order {
+        let row: Vec<Option<f64>> = accs[gi]
+            .iter()
+            .map(|a| match agg_u.as_str() {
+                "COUNT" => (a.count > 0).then(|| a.count as f64),
+                "DISTINCTCOUNT" => (!a.distinct.is_empty()).then(|| a.distinct.len() as f64),
+                "AVG" | "AVERAGE" => (a.count > 0).then(|| a.sum / a.count as f64),
+                "MIN" => (a.count > 0).then_some(a.min),
+                "MAX" => (a.count > 0).then_some(a.max),
+                _ => (a.count > 0).then_some(a.sum),
+            })
+            .collect();
+        if row.iter().any(Option::is_some) {
+            out_cats.push(labels[gi].clone());
+            grid.push(row);
+        }
+    }
+    Some((out_cats, grid))
+}
+
+/// v0.11 Frente G (Rodada 2): the star-schema sibling of
+/// `try_vectorized_group_agg` — category column on a DIMENSION, y-fields on
+/// a FACT table related to it by a single active 1:N relationship (the
+/// classic Power BI star: fact + dimensions, category coming from a
+/// dimension). Still O(N) total instead of O(categorias·N): one pass over
+/// the dimension's visible rows builds a `ValueKey -> dim row index` map,
+/// then one pass over the fact's visible rows resolves each row's category
+/// through its FK via that map (instead of calling
+/// `get_visible_row_indices` once per distinct category).
+///
+/// Scope, kept deliberately narrow so correctness stays provable without
+/// re-deriving `get_visible_row_indices`'s general N-relationship
+/// propagation:
+/// - The model has EXACTLY one relationship, period (no other dimension to
+///   reason about).
+/// - It is active, single-direction (`cross_filter_direction == "single"`;
+///   "both" would also let the fact's own filters propagate back onto the
+///   dimension, which this function doesn't attempt to reproduce), with the
+///   category's table as the "to" (one) side and the y-fields' table as the
+///   "from" (many) side.
+/// - `base_ctx` carries no `rel_overrides` (USERELATIONSHIP/CROSSFILTER):
+///   those would need the *effective* relationship state, not the static
+///   one read here.
+/// - y-fields are plain columns (not measures) on the fact table.
+///
+/// Semantics preserved (see `docs/RUST_ENGINE_2.md` §5 Rodada 2):
+/// - Key matching uses the normalized `ValueKey` (`value_key()`), same as
+///   every other filter/join comparison in this engine — not the raw
+///   `DaxValue` or any string form.
+/// - A BLANK FK matches a dimension row whose key column is itself BLANK
+///   (both normalize to `ValueKey::Blank`); no special-casing needed, it
+///   falls out of the hashmap lookup, and groups under THAT row's category
+///   (not necessarily blank — the relationship key and the category column
+///   can differ).
+/// - An orphan fact row (FK matches no VISIBLE dimension row at all — no
+///   key, blank or otherwise, equals it) is DROPPED, never surfacing as a
+///   category — not even "Sem dados". This matches the engine's existing,
+///   already-tested baseline for the generic per-category loop and the
+///   pushdown SQL translation it must agree with
+///   (`dax::pushdown::tests_differential::grouped_sum_matches_dax_with_blanks_blank_member_and_orphan_fk`:
+///   "the orphan Valor never appears"); a dimension row with a genuinely
+///   BLANK *category* value, by contrast, groups under "Sem dados" like any
+///   other blank category value. Filtering the dimension also drops any
+///   fact row whose matching dim row got filtered out, for the same reason
+///   (it no longer appears in `dim_key_to_row`) — this falls out for free
+///   because `get_visible_row_indices(fact, ctx)` already excludes a fact
+///   row whose key isn't among the FILTERED dimension's allowed keys
+///   whenever the dimension itself carries a direct/range/tuple filter —
+///   see that function's dimension->fact propagation step.
+/// - Filters on EITHER table (direct column, range, or tuple) are honored
+///   because both the dimension's and the fact's visible-row sets come
+///   from the model's own `get_visible_row_indices`, not reimplemented here.
+///
+/// Returns `None` (falls back to the generic per-category loop) for
+/// anything outside this shape; never silently approximates.
+fn try_vectorized_star_group_agg(
+    model: &DaxModel,
+    base_ctx: &FilterContext,
+    cat_tbl_name: &str,
+    cat_col: &str,
+    y_names: &[String],
+    req_table_id: &str,
+    agg: &str,
+) -> Option<(Vec<String>, Vec<Vec<Option<f64>>>)> {
+    let agg_u = agg.to_ascii_uppercase();
+    if !matches!(agg_u.as_str(), "SUM" | "COUNT" | "DISTINCTCOUNT" | "MIN" | "MAX" | "AVG" | "AVERAGE") {
+        return None;
+    }
+    if !base_ctx.rel_overrides.is_empty() {
+        return None;
+    }
+    if model.relationships.len() != 1 {
+        return None;
+    }
+    let rel = &model.relationships[0];
+    if !rel.is_active || !rel.cross_filter_direction.eq_ignore_ascii_case("single") {
+        return None;
+    }
+    if !rel.to_table.eq_ignore_ascii_case(cat_tbl_name) {
+        return None;
+    }
+
+    let dim_tbl = model.get_table(cat_tbl_name)?;
+    let cat_cidx = dim_tbl.get_col_idx(cat_col)?;
+    let dim_key_cidx = dim_tbl.get_col_idx(&rel.to_column)?;
+
+    let fact_tbl = model.get_table(&rel.from_table)?;
+    // Fact and category table must be distinct: that's the no-relationship
+    // fast path's job (`try_vectorized_group_agg`), not this one.
+    if fact_tbl.name.eq_ignore_ascii_case(&dim_tbl.name) {
+        return None;
+    }
+    let fact_fk_cidx = fact_tbl.get_col_idx(&rel.from_column)?;
+
+    let mut y_cidx: Vec<usize> = Vec::with_capacity(y_names.len());
+    for y in y_names {
+        if model.get_measure(y).is_some() {
+            return None;
+        }
+        let (y_tbl, y_col) = resolve_table_and_col(model, req_table_id, y);
+        if !y_tbl.eq_ignore_ascii_case(&fact_tbl.name) {
+            return None;
+        }
+        y_cidx.push(fact_tbl.get_col_idx(&y_col)?);
+    }
+    let n_y = y_cidx.len();
+
+    #[derive(Clone)]
+    struct Acc {
+        sum: f64,
+        count: u64,
+        min: f64,
+        max: f64,
+        distinct: HashSet<ValueKey>,
+    }
+    impl Default for Acc {
+        fn default() -> Self {
+            Acc { sum: 0.0, count: 0, min: f64::INFINITY, max: f64::NEG_INFINITY, distinct: HashSet::new() }
+        }
+    }
+
+    // Pass 1: visible dimension rows -> key(relationship column) -> row index.
+    let visible_dim = model.get_visible_row_indices(&dim_tbl.name, base_ctx);
+    let mut dim_key_to_row: HashMap<ValueKey, usize> = HashMap::with_capacity(visible_dim.len());
+    for r_idx in visible_dim {
+        dim_key_to_row.insert(dim_tbl.rows[r_idx][dim_key_cidx].value_key(), r_idx);
+    }
+
+    // Pass 2: visible fact rows (already reflects both tables' filters and
+    // the dimension->fact propagation step of `get_visible_row_indices`),
+    // resolved to a category via the FK -> dim-row map above.
+    let visible_fact = model.get_visible_row_indices(&fact_tbl.name, base_ctx);
+    let mut groups: HashMap<ValueKey, usize> = HashMap::new();
+    let mut labels: Vec<String> = Vec::new();
+    let mut sort_keys: Vec<ValueKey> = Vec::new();
+    let mut accs: Vec<Vec<Acc>> = Vec::new();
+
+    for r_idx in visible_fact {
+        let fk_key = fact_tbl.rows[r_idx][fact_fk_cidx].value_key();
+        // Orphan FK (matches no visible dimension row, by normalized key —
+        // a literal BLANK FK matching a dimension row whose key is ITSELF
+        // BLANK is a real match, not an orphan, and falls through to the
+        // `Some` arm below): dropped, never surfaces as a category, not even
+        // "Sem dados" — matches the engine's already-tested baseline
+        // (`dax::pushdown::tests_differential::grouped_sum_matches_dax_with_blanks_blank_member_and_orphan_fk`:
+        // "the orphan Valor never appears"). Only a dimension row with a
+        // genuinely BLANK *category* value groups under "Sem dados".
+        let Some(&dr) = dim_key_to_row.get(&fk_key) else { continue };
+        let v = &dim_tbl.rows[dr][cat_cidx];
+        let group_key = v.value_key();
+        let disp = v.as_display_string();
+        let sort_key = row_sort_key_opt(dim_tbl, cat_cidx, dr).unwrap_or_else(|| group_key.clone());
+
+        let gidx = *groups.entry(group_key).or_insert_with(|| {
+            let idx = labels.len();
+            labels.push(if disp.is_empty() { "Sem dados".to_string() } else { disp });
+            sort_keys.push(sort_key);
+            accs.push(vec![Acc::default(); n_y]);
+            idx
+        });
+        let row_accs = &mut accs[gidx];
+        for (yi, &cidx) in y_cidx.iter().enumerate() {
+            let v = &fact_tbl.rows[r_idx][cidx];
+            if agg_u == "DISTINCTCOUNT" {
+                row_accs[yi].distinct.insert(v.value_key());
+                continue;
+            }
+            if v.is_blank() {
+                continue;
+            }
+            match agg_u.as_str() {
+                "COUNT" => row_accs[yi].count += 1,
+                _ => {
+                    if let Some(n) = v.as_f64() {
+                        let a = &mut row_accs[yi];
+                        a.sum += n;
+                        a.count += 1;
+                        if n < a.min {
+                            a.min = n;
+                        }
+                        if n > a.max {
+                            a.max = n;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut order: Vec<usize> = (0..labels.len()).collect();
+    order.sort_by(|&a, &b| sort_keys[a].cmp(&sort_keys[b]).then_with(|| labels[a].cmp(&labels[b])));
+
+    let mut out_cats = Vec::with_capacity(order.len());
+    let mut grid: Vec<Vec<Option<f64>>> = Vec::with_capacity(order.len());
+    for gi in order {
+        let row: Vec<Option<f64>> = accs[gi]
+            .iter()
+            .map(|a| match agg_u.as_str() {
+                "COUNT" => (a.count > 0).then(|| a.count as f64),
+                "DISTINCTCOUNT" => (!a.distinct.is_empty()).then(|| a.distinct.len() as f64),
+                "AVG" | "AVERAGE" => (a.count > 0).then(|| a.sum / a.count as f64),
+                "MIN" => (a.count > 0).then_some(a.min),
+                "MAX" => (a.count > 0).then_some(a.max),
+                _ => (a.count > 0).then_some(a.sum),
+            })
+            .collect();
+        if row.iter().any(Option::is_some) {
+            out_cats.push(labels[gi].clone());
+            grid.push(row);
+        }
+    }
+    Some((out_cats, grid))
+}
+
 pub fn execute_visual_query(
     model: &DaxModel,
     req: &NativeVisualQueryRequest,
@@ -221,20 +1005,32 @@ pub fn execute_visual_query_with_conn(
     let t0 = Instant::now();
     let agg = req.aggregation.as_deref().unwrap_or("SUM");
 
-    if let Some(conn) = conn {
+    let mut result = if let Some(conn) = conn {
         if crate::dax::pushdown::pushdown_enabled() {
             match crate::dax::pushdown::try_pushdown(model, conn, req, agg, t0) {
-                Ok(result) => return Ok(result),
+                Ok(result) => Ok(result),
                 Err(reason) => {
                     eprintln!(
                         "pushdown: fallback para o motor DAX (visual '{}'): {}",
                         req.visual_id, reason
                     );
+                    execute_visual_query_dax(model, req, t0)
                 }
             }
+        } else {
+            execute_visual_query_dax(model, req, t0)
         }
+    } else {
+        execute_visual_query_dax(model, req, t0)
+    }?;
+
+    // v0.11 Rodada 2, Frente E: evaluated last, over whatever categories/series
+    // the chosen path (pushdown or DAX engine) produced — see
+    // `dax::visual_calcs::formula::apply_to_result`.
+    if !req.visual_calculations.is_empty() {
+        crate::dax::visual_calcs::formula::apply_to_result(&req.visual_calculations, &mut result)?;
     }
-    execute_visual_query_dax(model, req, t0)
+    Ok(result)
 }
 
 fn execute_visual_query_dax(
@@ -338,7 +1134,14 @@ fn execute_visual_query_dax(
 
     // 4a. Frente G: matriz com N níveis (subtotal por nível avaliado pelo motor)
     if !req.matrix_rows.is_empty() {
-        return Ok(execute_matrix_query(model, req, &base_ctx, agg, t0));
+        let mut res = execute_matrix_query(model, req, &base_ctx, agg, t0);
+        // v0.11 Frente I: gancho mínimo — toda a lógica de N níveis nas colunas
+        // (árvore, subtotal por nível e a interseção linha×coluna) mora em
+        // `matrix_columns.rs`; aqui só decide SE ela roda.
+        if !req.matrix_columns.is_empty() {
+            crate::dax::matrix_columns::pivot_matrix_columns(model, req, &base_ctx, agg, &mut res);
+        }
+        return Ok(res);
     }
 
     // 4b. Frente G: eixo por níveis (drill / expandir todos os níveis / hierarquia de data)
@@ -410,22 +1213,33 @@ fn execute_visual_query_dax(
         .iter()
         .map(|yf| yf.trim().trim_start_matches('Σ').trim().to_string())
         .collect();
-    let mut kept_cats: Vec<String> = Vec::with_capacity(cat_entries.len());
-    let mut grid: Vec<Vec<Option<f64>>> = Vec::with_capacity(cat_entries.len());
-    for (cat_label, cat_key) in &cat_entries {
-        let mut cctx = base_ctx.clone();
-        let mut s = HashSet::new();
-        s.insert(cat_key.clone());
-        cctx.set_column_filter(&cat_tbl_name, &cat_col, s);
-        let row_vals: Vec<Option<f64>> = y_names
-            .iter()
-            .map(|clean_y| eval_field_opt(model, &cctx, &req.table_id, clean_y, agg))
-            .collect();
-        if row_vals.iter().any(Option::is_some) {
-            kept_cats.push(cat_label.clone());
-            grid.push(row_vals);
+    let (kept_cats, grid) = if let Some(fast) =
+        try_vectorized_group_agg(model, &base_ctx, &cat_tbl_name, &cat_col, &y_names, &req.table_id, agg)
+    {
+        fast
+    } else if let Some(fast) =
+        try_vectorized_star_group_agg(model, &base_ctx, &cat_tbl_name, &cat_col, &y_names, &req.table_id, agg)
+    {
+        fast
+    } else {
+        let mut kept_cats: Vec<String> = Vec::with_capacity(cat_entries.len());
+        let mut grid: Vec<Vec<Option<f64>>> = Vec::with_capacity(cat_entries.len());
+        for (cat_label, cat_key) in &cat_entries {
+            let mut cctx = base_ctx.clone();
+            let mut s = HashSet::new();
+            s.insert(cat_key.clone());
+            cctx.set_column_filter(&cat_tbl_name, &cat_col, s);
+            let row_vals: Vec<Option<f64>> = y_names
+                .iter()
+                .map(|clean_y| eval_field_opt(model, &cctx, &req.table_id, clean_y, agg))
+                .collect();
+            if row_vals.iter().any(Option::is_some) {
+                kept_cats.push(cat_label.clone());
+                grid.push(row_vals);
+            }
         }
-    }
+        (kept_cats, grid)
+    };
 
     let mut out_series = Vec::with_capacity(y_names.len());
     for (y_idx, clean_y) in y_names.into_iter().enumerate() {
@@ -533,7 +1347,7 @@ fn merge_drill_filter(model: &DaxModel, filters: &mut Vec<NativeFilterInput>, ne
             table_id: new.table_id,
             column: new.column,
             values,
-        }),
+         ..Default::default() }),
     }
 }
 
@@ -555,7 +1369,7 @@ fn build_query_context(model: &DaxModel, req: &NativeVisualQueryRequest) -> Filt
                 table_id: tbl_name,
                 column: col,
                 values,
-            },
+             ..Default::default() },
         );
     }
     build_filter_context(&filters, model)
@@ -610,16 +1424,18 @@ fn collect_sorted_entries(
     vec.into_iter().map(|(_, label, vkey)| (label, vkey)).collect()
 }
 
-struct LevelGroup {
-    key: JsonValue,
-    label: String,
-    allowed: HashSet<ValueKey>,
+/// v0.11 Frente I: `pub(crate)` para que `matrix_columns.rs` reutilize o mesmo
+/// agrupamento de nível (sem reimplementar a enumeração de valores distintos).
+pub(crate) struct LevelGroup {
+    pub(crate) key: JsonValue,
+    pub(crate) label: String,
+    pub(crate) allowed: HashSet<ValueKey>,
 }
 
 /// Valores distintos de um nível visíveis em `ctx`, em ordem (chave tipada ou
 /// `sortByColumn` configurada; partes de data em ordem numérica). Cada grupo
 /// carrega o conjunto de valores brutos da coluna que ele representa.
-fn collect_groups(
+pub(crate) fn collect_groups(
     model: &DaxModel,
     req: &NativeVisualQueryRequest,
     ctx: &FilterContext,
@@ -928,6 +1744,7 @@ fn execute_matrix_query(
             rows,
             column_totals,
             grand_total,
+            column_header: None,
         }),
     }
 }
@@ -935,6 +1752,10 @@ fn execute_matrix_query(
 #[cfg(test)]
 #[path = "tests_drill.rs"]
 mod drill_tests;
+
+#[cfg(test)]
+#[path = "query_planner_star_bench.rs"]
+mod star_bench;
 
 
 #[cfg(test)]
@@ -1036,7 +1857,7 @@ mod tests {
                     table_id: "fVendas".into(),
                     column: "Categoria".into(),
                     values: vec![serde_json::json!("A")],
-                }],
+                 ..Default::default() }],
                 ..Default::default()
             },
         )
@@ -1061,6 +1882,482 @@ mod tests {
         .unwrap();
         assert_eq!(col_res.categories, vec!["A", "B"]);
         assert_eq!(col_res.series[0].data, vec![Some(150.0), Some(200.0)]);
+    }
+
+    /// v0.11 Frente G: `try_vectorized_group_agg`'s fast path (no relationships,
+    /// plain column y-fields on the same table as the category) must agree
+    /// EXACTLY with the generic per-category `eval_field_opt` loop it replaces —
+    /// BLANK, text categories and dates included. The model below has no
+    /// relationships, so the fast path is live for every one of these cases
+    /// (`try_vectorized_group_agg` returns `Some`, never `None`).
+    fn no_rel_model_for_fastpath_diff() -> DaxModel {
+        use serde_json::json;
+        let row_map = |pairs: &[(&str, serde_json::Value)]| -> serde_json::Map<String, serde_json::Value> {
+            pairs.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect()
+        };
+        let mut model = DaxModel::new();
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![DaxTableInput {
+                name: "fFast".into(),
+                columns: vec!["Categoria".into(), "Valor".into(), "Qtd".into(), "Data".into()],
+                rows: vec![
+                    row_map(&[("Categoria", json!("A")), ("Valor", json!(100.0)), ("Qtd", json!(2)), ("Data", json!("2026-01-10"))]),
+                    row_map(&[("Categoria", json!("A")), ("Valor", json!(50.0)), ("Qtd", json!(1)), ("Data", json!("2026-02-10"))]),
+                    // BLANK Valor: must not count toward SUM/COUNT/AVG/MIN/MAX,
+                    // and must not break DISTINCTCOUNT either.
+                    row_map(&[("Categoria", json!("A")), ("Valor", json!(null)), ("Qtd", json!(2)), ("Data", json!(null))]),
+                    row_map(&[("Categoria", json!("B")), ("Valor", json!(200.0)), ("Qtd", json!(5)), ("Data", json!("2026-01-10"))]),
+                    row_map(&[("Categoria", json!("B")), ("Valor", json!(200.0)), ("Qtd", json!(5)), ("Data", json!("2026-03-01"))]),
+                    // BLANK category: Power BI groups these under "Sem dados".
+                    row_map(&[("Categoria", json!(null)), ("Valor", json!(9.0)), ("Qtd", json!(1)), ("Data", json!("2026-01-10"))]),
+                ],
+                column_types: vec![Some("text".into()), Some("number".into()), Some("number".into()), Some("date".into())],
+                sort_by_columns: Default::default(),
+                ..Default::default()
+            }],
+            relationships: Vec::<DaxRelationshipInput>::new(),
+            measures: vec![],
+        });
+        assert!(model.relationships.is_empty());
+        model
+    }
+
+    /// Runs the generic per-category loop (copy of the fallback branch's logic,
+    /// without going through `try_vectorized_group_agg`) so the comparison
+    /// below never compares the fast path against itself.
+    fn generic_group_agg(
+        model: &DaxModel,
+        base_ctx: &FilterContext,
+        cat_tbl_name: &str,
+        cat_col: &str,
+        y_names: &[String],
+        req_table_id: &str,
+        agg: &str,
+    ) -> (Vec<String>, Vec<Vec<Option<f64>>>) {
+        let cat_entries = collect_sorted_entries(model, cat_tbl_name, cat_col, base_ctx, true);
+        let mut kept_cats = Vec::new();
+        let mut grid = Vec::new();
+        for (cat_label, cat_key) in &cat_entries {
+            let mut cctx = base_ctx.clone();
+            let mut s = HashSet::new();
+            s.insert(cat_key.clone());
+            cctx.set_column_filter(cat_tbl_name, cat_col, s);
+            let row_vals: Vec<Option<f64>> = y_names
+                .iter()
+                .map(|clean_y| eval_field_opt(model, &cctx, req_table_id, clean_y, agg))
+                .collect();
+            if row_vals.iter().any(Option::is_some) {
+                kept_cats.push(cat_label.clone());
+                grid.push(row_vals);
+            }
+        }
+        (kept_cats, grid)
+    }
+
+    #[test]
+    fn fast_path_matches_generic_path_for_sum_count_min_max_avg_distinctcount() {
+        let model = no_rel_model_for_fastpath_diff();
+        let base_ctx = FilterContext::default();
+        let y_names = vec!["Valor".to_string(), "Qtd".to_string()];
+        for agg in ["SUM", "COUNT", "MIN", "MAX", "AVG", "AVERAGE", "DISTINCTCOUNT"] {
+            let fast = try_vectorized_group_agg(&model, &base_ctx, "fFast", "Categoria", &y_names, "fFast", agg)
+                .unwrap_or_else(|| panic!("fast path must fire (no relationships) for agg {agg}"));
+            let generic = generic_group_agg(&model, &base_ctx, "fFast", "Categoria", &y_names, "fFast", agg);
+            assert_eq!(fast, generic, "mismatch for agg {agg}");
+        }
+    }
+
+    #[test]
+    fn fast_path_matches_generic_path_with_a_pre_existing_filter() {
+        let model = no_rel_model_for_fastpath_diff();
+        let filters = vec![NativeFilterInput {
+            table_id: "fFast".into(),
+            column: "Data".into(),
+            values: vec![serde_json::json!("2026-01-10")],
+            operator: None,
+        }];
+        let base_ctx = build_filter_context(&filters, &model);
+        let y_names = vec!["Valor".to_string()];
+        for agg in ["SUM", "COUNT", "MIN", "MAX", "AVERAGE", "DISTINCTCOUNT"] {
+            let fast = try_vectorized_group_agg(&model, &base_ctx, "fFast", "Categoria", &y_names, "fFast", agg).unwrap();
+            let generic = generic_group_agg(&model, &base_ctx, "fFast", "Categoria", &y_names, "fFast", agg);
+            assert_eq!(fast, generic, "mismatch for agg {agg} with a date filter");
+        }
+    }
+
+    #[test]
+    fn fast_path_bails_out_when_a_relationship_exists_or_a_y_field_is_a_measure() {
+        // Relationship present: the sample model from the first test has a
+        // measure "Receita" and no relationships either, so exercise both
+        // bail-out conditions directly instead.
+        let model = no_rel_model_for_fastpath_diff();
+        let base_ctx = FilterContext::default();
+        // Unsupported aggregation keyword -> None.
+        assert!(try_vectorized_group_agg(&model, &base_ctx, "fFast", "Categoria", &["Valor".to_string()], "fFast", "MEDIAN").is_none());
+
+        // A measure as a y-field -> None (fast path never touches measures).
+        let mut with_measure = no_rel_model_for_fastpath_diff();
+        with_measure.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![],
+            relationships: vec![],
+            measures: vec![DaxMeasureInput {
+                name: "TotalValor".into(),
+                table_name: "fFast".into(),
+                formula: "SUM(fFast[Valor])".into(),
+            }],
+        });
+        assert!(
+            try_vectorized_group_agg(&with_measure, &base_ctx, "fFast", "Categoria", &["TotalValor".to_string()], "fFast", "SUM")
+                .is_none()
+        );
+    }
+
+    /// v0.11 Frente G (Rodada 2): star-schema model for
+    /// `try_vectorized_star_group_agg`'s differential tests. `dCategoria`
+    /// is the "one" side (CatID is its key, Categoria the displayed
+    /// category); `fFast` is the "many" side (CatID is the FK).
+    ///
+    /// Deliberately exercises every corner called out in the task brief:
+    /// - dim row 3 has a BLANK key (CatID=null) — fact row 5's BLANK FK
+    ///   must match it by normalized key, landing in category
+    ///   "BlankKeyDim" (BLANK matching BLANK; a real match, not the
+    ///   dropped-orphan case below).
+    /// - dim row 4 has a BLANK category value (Categoria=null) — groups
+    ///   under "Sem dados".
+    /// - fact row 4 (CatID=999) matches NO dim row at all — a true orphan,
+    ///   and must be DROPPED entirely (never surfaces as a category, not
+    ///   even "Sem dados" — matches the engine's existing, already-tested
+    ///   baseline in `dax::pushdown::tests_differential::grouped_sum_matches_dax_with_blanks_blank_member_and_orphan_fk`).
+    /// - fact row 6 has a BLANK `Valor` (must not count toward
+    ///   SUM/COUNT/MIN/MAX/AVG, must not break DISTINCTCOUNT) while its
+    ///   `Qtd` is present — exercises the per-cell BLANK handling the
+    ///   no-relationship fast path already covers, inside the "Sem dados"
+    ///   group (dim row 4's blank category; row 6 is its ONLY member once
+    ///   the orphan row 4 is correctly dropped).
+    fn star_model_for_fastpath_diff() -> DaxModel {
+        use serde_json::json;
+        let row_map = |pairs: &[(&str, serde_json::Value)]| -> serde_json::Map<String, serde_json::Value> {
+            pairs.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect()
+        };
+        let mut model = DaxModel::new();
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput {
+                    name: "dCategoria".into(),
+                    columns: vec!["CatID".into(), "Categoria".into()],
+                    rows: vec![
+                        row_map(&[("CatID", json!(1)), ("Categoria", json!("A"))]),
+                        row_map(&[("CatID", json!(2)), ("Categoria", json!("B"))]),
+                        // BLANK key: a fact row with a BLANK FK must match THIS
+                        // row (BLANK == BLANK), not the orphan/blank-member bucket.
+                        row_map(&[("CatID", json!(null)), ("Categoria", json!("BlankKeyDim"))]),
+                        // BLANK category value: groups under "Sem dados".
+                        row_map(&[("CatID", json!(4)), ("Categoria", json!(null))]),
+                    ],
+                    column_types: vec![Some("number".into()), Some("text".into())],
+                    ..Default::default()
+                },
+                DaxTableInput {
+                    name: "fFast".into(),
+                    columns: vec!["CatID".into(), "Valor".into(), "Qtd".into(), "Data".into()],
+                    rows: vec![
+                        row_map(&[("CatID", json!(1)), ("Valor", json!(100.0)), ("Qtd", json!(2)), ("Data", json!("2026-01-10"))]),
+                        row_map(&[("CatID", json!(1)), ("Valor", json!(50.0)), ("Qtd", json!(1)), ("Data", json!("2026-02-10"))]),
+                        row_map(&[("CatID", json!(2)), ("Valor", json!(200.0)), ("Qtd", json!(5)), ("Data", json!("2026-01-10"))]),
+                        // Orphan: no dim row has CatID=999.
+                        row_map(&[("CatID", json!(999)), ("Valor", json!(9.0)), ("Qtd", json!(1)), ("Data", json!("2026-01-10"))]),
+                        // BLANK FK: must match dim row 3 (BLANK key), not the orphan bucket.
+                        row_map(&[("CatID", json!(null)), ("Valor", json!(7.0)), ("Qtd", json!(1)), ("Data", json!("2026-01-10"))]),
+                        // Matches dim row 4 (blank category); Valor itself BLANK here.
+                        row_map(&[("CatID", json!(4)), ("Valor", json!(null)), ("Qtd", json!(3)), ("Data", json!("2026-03-01"))]),
+                    ],
+                    column_types: vec![Some("number".into()), Some("number".into()), Some("number".into()), Some("date".into())],
+                    ..Default::default()
+                },
+            ],
+            relationships: vec![DaxRelationshipInput {
+                from_table: "fFast".into(),
+                from_column: "CatID".into(),
+                to_table: "dCategoria".into(),
+                to_column: "CatID".into(),
+                cross_filter_direction: "single".into(),
+                is_active: true,
+            }],
+            measures: vec![],
+        });
+        model
+    }
+
+    /// Independent oracle for the star shape: a plain nested loop (no
+    /// hashmap short-cut, no reuse of `try_vectorized_star_group_agg`),
+    /// relying only on `get_visible_row_indices` for the filtering
+    /// primitive (the thing the task calls "a propagação atual" — the
+    /// current, already-tested propagation rules — not something this
+    /// test re-derives). Catches bugs the fast path's own hashmap could
+    /// hide (e.g. key collisions) because it resolves each fact row's
+    /// category by SCANNING every visible dim row, not via `dim_key_to_row`.
+    fn oracle_star_group_agg(
+        model: &DaxModel,
+        base_ctx: &FilterContext,
+        dim_name: &str,
+        dim_key_col: &str,
+        cat_col: &str,
+        fact_name: &str,
+        fk_col: &str,
+        y_names: &[String],
+        agg: &str,
+    ) -> (Vec<String>, Vec<Vec<Option<f64>>>) {
+        let agg_u = agg.to_ascii_uppercase();
+        let dim = model.get_table(dim_name).unwrap();
+        let dim_key_cidx = dim.get_col_idx(dim_key_col).unwrap();
+        let cat_cidx = dim.get_col_idx(cat_col).unwrap();
+        let fact = model.get_table(fact_name).unwrap();
+        let fk_cidx = fact.get_col_idx(fk_col).unwrap();
+        let y_cidx: Vec<usize> = y_names.iter().map(|y| fact.get_col_idx(y).unwrap()).collect();
+
+        let visible_dim = model.get_visible_row_indices(dim_name, base_ctx);
+        let visible_fact = model.get_visible_row_indices(fact_name, base_ctx);
+
+        let mut by_label: HashMap<String, Vec<Vec<f64>>> = HashMap::new();
+        let mut by_label_distinct: HashMap<String, Vec<HashSet<ValueKey>>> = HashMap::new();
+        for &fr in &visible_fact {
+            let fk_key = fact.rows[fr][fk_cidx].value_key();
+            // Linear scan (no hashmap) for the matching visible dim row.
+            // Orphan (no match at all) -> drop the row entirely, same
+            // correction as the fast path: matches the engine's existing
+            // tested baseline (orphan fact rows never surface, not even
+            // under "Sem dados"; only a genuinely blank dim CATEGORY does).
+            let Some(&dr) = visible_dim.iter().find(|&&dr| dim.rows[dr][dim_key_cidx].value_key() == fk_key) else {
+                continue;
+            };
+            let disp = dim.rows[dr][cat_cidx].as_display_string();
+            let label = if disp.is_empty() { "Sem dados".to_string() } else { disp };
+            let nums = by_label.entry(label.clone()).or_insert_with(|| vec![Vec::new(); y_cidx.len()]);
+            let distincts = by_label_distinct.entry(label).or_insert_with(|| vec![HashSet::new(); y_cidx.len()]);
+            for (yi, &cidx) in y_cidx.iter().enumerate() {
+                let v = &fact.rows[fr][cidx];
+                distincts[yi].insert(v.value_key());
+                if !v.is_blank() {
+                    if let Some(n) = v.as_f64() {
+                        nums[yi].push(n);
+                    }
+                }
+            }
+        }
+
+        let mut labels: Vec<String> = by_label.keys().cloned().collect();
+        labels.sort();
+        let mut out_cats = Vec::new();
+        let mut grid = Vec::new();
+        for label in labels {
+            let nums = &by_label[&label];
+            let distincts = &by_label_distinct[&label];
+            let row: Vec<Option<f64>> = (0..y_cidx.len())
+                .map(|yi| match agg_u.as_str() {
+                    "COUNT" => (!nums[yi].is_empty()).then(|| nums[yi].len() as f64),
+                    "DISTINCTCOUNT" => (!distincts[yi].is_empty()).then(|| distincts[yi].len() as f64),
+                    "AVG" | "AVERAGE" => (!nums[yi].is_empty()).then(|| nums[yi].iter().sum::<f64>() / nums[yi].len() as f64),
+                    "MIN" => nums[yi].iter().copied().fold(None, |acc: Option<f64>, n| Some(acc.map_or(n, |a| a.min(n)))),
+                    "MAX" => nums[yi].iter().copied().fold(None, |acc: Option<f64>, n| Some(acc.map_or(n, |a| a.max(n)))),
+                    _ => (!nums[yi].is_empty()).then(|| nums[yi].iter().sum()),
+                })
+                .collect();
+            if row.iter().any(Option::is_some) {
+                out_cats.push(label);
+                grid.push(row);
+            }
+        }
+        // Sort output the same way the fast path does (by category label,
+        // since none of these columns has a sortByColumn): keep insertion
+        // order aligned by re-sorting both oracle and fast-path results by
+        // label before comparing, done by the caller via `sort_by_label`.
+        (out_cats, grid)
+    }
+
+    /// Both the fast path and the oracle order categories independently
+    /// (fast path by `ValueKey`/label, oracle by label only); sort by label
+    /// before comparing so ordering differences (when no sortByColumn and
+    /// value types mix, e.g. "A"/"B"/"Sem dados"/"BlankKeyDim") don't cause
+    /// a spurious mismatch — the task only requires the SAME set of
+    /// (category, values), not a specific tie-break between differently
+    /// ordered equal-rank implementations.
+    fn sort_by_label(cats: Vec<String>, grid: Vec<Vec<Option<f64>>>) -> Vec<(String, Vec<Option<f64>>)> {
+        let mut paired: Vec<(String, Vec<Option<f64>>)> = cats.into_iter().zip(grid).collect();
+        paired.sort_by(|a, b| a.0.cmp(&b.0));
+        paired
+    }
+
+    #[test]
+    fn star_fast_path_matches_oracle_for_all_seven_aggregations() {
+        let model = star_model_for_fastpath_diff();
+        let base_ctx = FilterContext::default();
+        let y_names = vec!["Valor".to_string(), "Qtd".to_string()];
+        for agg in ["SUM", "COUNT", "MIN", "MAX", "AVG", "AVERAGE", "DISTINCTCOUNT"] {
+            let fast = try_vectorized_star_group_agg(&model, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", agg)
+                .unwrap_or_else(|| panic!("star fast path must fire for agg {agg}"));
+            let oracle = oracle_star_group_agg(&model, &base_ctx, "dCategoria", "CatID", "Categoria", "fFast", "CatID", &y_names, agg);
+            assert_eq!(
+                sort_by_label(fast.0, fast.1),
+                sort_by_label(oracle.0, oracle.1),
+                "mismatch for agg {agg}"
+            );
+        }
+    }
+
+    #[test]
+    fn star_fast_path_matches_oracle_with_a_dimension_filter() {
+        // Filter the dimension to A/B only: BlankKeyDim and the blank-category
+        // dim row drop out, and with them the blank member — the orphan fact
+        // row (CatID=999) and the blank-FK row must ALSO disappear (filtering
+        // the dimension excludes the blank member too, per VertiPaq).
+        let model = star_model_for_fastpath_diff();
+        let filters = vec![NativeFilterInput {
+            table_id: "dCategoria".into(),
+            column: "Categoria".into(),
+            values: vec![serde_json::json!("A"), serde_json::json!("B")],
+            operator: None,
+        }];
+        let base_ctx = build_filter_context(&filters, &model);
+        let y_names = vec!["Valor".to_string()];
+        for agg in ["SUM", "COUNT", "MIN", "MAX", "AVERAGE", "DISTINCTCOUNT"] {
+            let fast = try_vectorized_star_group_agg(&model, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", agg).unwrap();
+            let oracle = oracle_star_group_agg(&model, &base_ctx, "dCategoria", "CatID", "Categoria", "fFast", "CatID", &y_names, agg);
+            assert_eq!(sort_by_label(fast.0, fast.1), sort_by_label(oracle.0, oracle.1), "mismatch for agg {agg} with a dim filter");
+            // Explicit sanity check: no "Sem dados" / "BlankKeyDim" category survives.
+            let (cats, _) = try_vectorized_star_group_agg(&model, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", agg).unwrap();
+            assert!(!cats.contains(&"Sem dados".to_string()));
+            assert!(!cats.contains(&"BlankKeyDim".to_string()));
+        }
+    }
+
+    #[test]
+    fn star_fast_path_matches_oracle_with_a_fact_filter() {
+        // Filter the FACT table directly (Data = 2026-01-10): drops fact
+        // rows 2 and 6, keeps the orphan (row 4) and the blank-FK row (row 5)
+        // since the dimension itself carries no filter.
+        let model = star_model_for_fastpath_diff();
+        let filters = vec![NativeFilterInput {
+            table_id: "fFast".into(),
+            column: "Data".into(),
+            values: vec![serde_json::json!("2026-01-10")],
+            operator: None,
+        }];
+        let base_ctx = build_filter_context(&filters, &model);
+        let y_names = vec!["Valor".to_string(), "Qtd".to_string()];
+        for agg in ["SUM", "COUNT", "MIN", "MAX", "AVG", "AVERAGE", "DISTINCTCOUNT"] {
+            let fast = try_vectorized_star_group_agg(&model, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", agg).unwrap();
+            let oracle = oracle_star_group_agg(&model, &base_ctx, "dCategoria", "CatID", "Categoria", "fFast", "CatID", &y_names, agg);
+            assert_eq!(sort_by_label(fast.0, fast.1), sort_by_label(oracle.0, oracle.1), "mismatch for agg {agg} with a fact filter");
+        }
+    }
+
+    #[test]
+    fn star_fast_path_bails_out_for_two_relationships_bidirectional_or_measures() {
+        let base_ctx = FilterContext::default();
+        let y_names = vec!["Valor".to_string()];
+
+        // Two relationships in the model: bail out (narrow, provable scope only).
+        let mut two_rel = star_model_for_fastpath_diff();
+        two_rel.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput { name: "dOutro".into(), columns: vec!["Id".into()], rows: vec![], ..Default::default() },
+            ],
+            relationships: vec![
+                DaxRelationshipInput {
+                    from_table: "fFast".into(),
+                    from_column: "CatID".into(),
+                    to_table: "dCategoria".into(),
+                    to_column: "CatID".into(),
+                    cross_filter_direction: "single".into(),
+                    is_active: true,
+                },
+                DaxRelationshipInput {
+                    from_table: "fFast".into(),
+                    from_column: "CatID".into(),
+                    to_table: "dOutro".into(),
+                    to_column: "Id".into(),
+                    cross_filter_direction: "single".into(),
+                    is_active: true,
+                },
+            ],
+            measures: vec![],
+        });
+        assert!(try_vectorized_star_group_agg(&two_rel, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", "SUM").is_none());
+
+        // Bidirectional relationship: bail out (this function never
+        // reproduces fact -> dim back-propagation).
+        let mut both_dir = star_model_for_fastpath_diff();
+        both_dir.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![],
+            relationships: vec![DaxRelationshipInput {
+                from_table: "fFast".into(),
+                from_column: "CatID".into(),
+                to_table: "dCategoria".into(),
+                to_column: "CatID".into(),
+                cross_filter_direction: "both".into(),
+                is_active: true,
+            }],
+            measures: vec![],
+        });
+        assert!(try_vectorized_star_group_agg(&both_dir, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", "SUM").is_none());
+
+        // Inactive relationship: bail out.
+        let mut inactive = star_model_for_fastpath_diff();
+        inactive.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![],
+            relationships: vec![DaxRelationshipInput {
+                from_table: "fFast".into(),
+                from_column: "CatID".into(),
+                to_table: "dCategoria".into(),
+                to_column: "CatID".into(),
+                cross_filter_direction: "single".into(),
+                is_active: false,
+            }],
+            measures: vec![],
+        });
+        assert!(try_vectorized_star_group_agg(&inactive, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", "SUM").is_none());
+
+        // y-field is a measure: bail out.
+        let mut with_measure = star_model_for_fastpath_diff();
+        with_measure.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![],
+            relationships: vec![],
+            measures: vec![DaxMeasureInput {
+                name: "TotalValor".into(),
+                table_name: "fFast".into(),
+                formula: "SUM(fFast[Valor])".into(),
+            }],
+        });
+        assert!(
+            try_vectorized_star_group_agg(&with_measure, &base_ctx, "dCategoria", "Categoria", &["TotalValor".to_string()], "fFast", "SUM")
+                .is_none()
+        );
+    }
+
+    /// v0.11 Frente G (Rodada 2): run the star differential ~64 times with a
+    /// FRESH model (and therefore a fresh `HashMap` every time — Rust's
+    /// default hasher is randomly seeded per-process but the insertion
+    /// ORDER of `dim_key_to_row`/`groups` still depends on each run's
+    /// specific HashMap internal bucket layout for that run) to catch any
+    /// result that accidentally depends on HashMap iteration order rather
+    /// than being sorted deterministically before being returned.
+    #[test]
+    fn star_fast_path_matches_oracle_across_many_fresh_models_hashmap_order() {
+        for i in 0..64 {
+            let model = star_model_for_fastpath_diff();
+            let base_ctx = FilterContext::default();
+            let y_names = vec!["Valor".to_string(), "Qtd".to_string()];
+            for agg in ["SUM", "COUNT", "MIN", "MAX", "AVG", "AVERAGE", "DISTINCTCOUNT"] {
+                let fast = try_vectorized_star_group_agg(&model, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", agg)
+                    .unwrap_or_else(|| panic!("run {i}: star fast path must fire for agg {agg}"));
+                let oracle = oracle_star_group_agg(&model, &base_ctx, "dCategoria", "CatID", "Categoria", "fFast", "CatID", &y_names, agg);
+                assert_eq!(
+                    sort_by_label(fast.0, fast.1),
+                    sort_by_label(oracle.0, oracle.1),
+                    "run {i}: mismatch for agg {agg}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1199,5 +2496,286 @@ mod tests {
         assert_eq!(mx.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), vec!["Receita", "ZeroReal"]);
         assert_eq!(mx.rows[0].values, vec![Some(-1000.0), None, Some(-2500.0)]);
         assert_eq!(mx.rows[1].values, vec![None, Some(0.0), None]);
+    }
+
+    // ===== v0.11 Rodada 2, Frente E: native table / scatter =====
+
+    #[test]
+    fn test_native_table_query_grouped_sort_total_over_all_rows() {
+        let model = sample_model();
+        let res = execute_table_query(
+            &model,
+            &NativeTableQueryRequest {
+                table_id: "fVendas".into(),
+                group_fields: vec!["Categoria".into()],
+                value_fields: vec!["Receita".into()],
+                aggregation: Some("SUM".into()),
+                sort_field: Some("Receita".into()),
+                sort_order: "desc".into(),
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.columns, vec!["Categoria", "Receita"]);
+        // B=200 > A=150(100+50) -> sorted desc by Receita
+        assert_eq!(res.rows.len(), 2);
+        assert_eq!(res.rows[0].values, vec![JsonValue::from("B"), JsonValue::from(200.0)]);
+        assert_eq!(res.rows[1].values, vec![JsonValue::from("A"), JsonValue::from(150.0)]);
+        assert_eq!(res.total_row_count, 2);
+        // Total row: engine measure in TOTAL context (350), not a sum of the page's two rows re-added
+        assert_eq!(res.total_row.unwrap().values.last().unwrap(), &JsonValue::from(350.0));
+        assert_eq!(res.engine, "rust-native");
+    }
+
+    #[test]
+    fn test_native_table_query_raw_rows_topn_and_pagination() {
+        let model = sample_model();
+        // Raw ("não resumir"): one row per fact row, sorted by raw Valor asc, Top 2.
+        let res = execute_table_query(
+            &model,
+            &NativeTableQueryRequest {
+                table_id: "fVendas".into(),
+                raw_fields: vec!["Categoria".into()],
+                value_fields: vec!["Valor".into()],
+                sort_field: Some("Valor".into()),
+                sort_order: "asc".into(),
+                top_n: 2,
+                offset: 0,
+                limit: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.columns, vec!["Categoria", "Valor"]);
+        // After Top N=2 the universe is [50 (A), 100 (A)]; with limit=1 only the first page row comes back.
+        assert_eq!(res.total_row_count, 2);
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0].values[0], JsonValue::from("A"));
+        assert_eq!(res.rows[0].values[1].as_f64(), Some(50.0)); // raw column renders as an integer JSON number (50, not 50.0)
+        // Total row sums the RAW column over the full (unpaginated, pre-TopN) table via the engine: 100+50+200=350,
+        // never the client-visible page's 50.
+        assert_eq!(res.total_row.unwrap().values.last().unwrap(), &JsonValue::from(350.0));
+    }
+
+    #[test]
+    fn test_native_table_query_closed_form_total_over_20000_rows() {
+        // SUM(1..20000) = 20000*20001/2 = 200010000 (closed form), with every
+        // row read through `get_visible_row_indices` — never a 5.000-row preview.
+        let mut model = DaxModel::new();
+        let mut rows = Vec::with_capacity(20_000);
+        for i in 1..=20_000i64 {
+            let mut m = serde_json::Map::new();
+            m.insert("Categoria".into(), serde_json::Value::String("All".into()));
+            m.insert("Valor".into(), serde_json::json!(i));
+            rows.push(m);
+        }
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![DaxTableInput {
+                duckdb_table: None,
+                name: "fBig".into(),
+                columns: vec!["Categoria".into(), "Valor".into()],
+                rows,
+                column_types: vec![],
+                sort_by_columns: Default::default(),
+                is_calculated: false,
+                expression: None,
+                calculated_columns: ::std::collections::HashMap::new(),
+            }],
+            relationships: Vec::<DaxRelationshipInput>::new(),
+            measures: vec![DaxMeasureInput {
+                name: "Total".into(),
+                table_name: "fBig".into(),
+                formula: "SUM(fBig[Valor])".into(),
+            }],
+        });
+
+        let res = execute_table_query(
+            &model,
+            &NativeTableQueryRequest {
+                table_id: "fBig".into(),
+                group_fields: vec!["Categoria".into()],
+                value_fields: vec!["Total".into()],
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0].values, vec![JsonValue::from("All"), JsonValue::from(200_010_000.0)]);
+        assert_eq!(res.total_row.unwrap().values.last().unwrap(), &JsonValue::from(200_010_000.0));
+    }
+
+    #[test]
+    fn test_native_scatter_query_points_per_detail_value() {
+        let model = sample_model();
+        let res = execute_scatter_query(
+            &model,
+            &NativeScatterQueryRequest {
+                table_id: "fVendas".into(),
+                detail_field: "Categoria".into(),
+                x_field: "Qtd".into(),
+                y_field: "Receita".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.total_points, 2);
+        assert!(!res.sampled);
+        let mut by_label: HashMap<String, &NativeScatterPoint> =
+            res.points.iter().map(|p| (p.label.clone(), p)).collect();
+        let a = by_label.remove("A").unwrap();
+        assert_eq!(a.x, Some(2.0)); // COUNTROWS over A's 2 rows
+        assert_eq!(a.y, Some(150.0)); // SUM(Valor) over A's 2 rows (100+50)
+        let b = by_label.remove("B").unwrap();
+        assert_eq!(b.x, Some(1.0));
+        assert_eq!(b.y, Some(200.0));
+    }
+
+    #[test]
+    fn test_native_scatter_query_deterministic_sampling_caps_points() {
+        let mut model = DaxModel::new();
+        let mut rows = Vec::with_capacity(10);
+        for i in 0..10 {
+            let mut m = serde_json::Map::new();
+            m.insert("Categoria".into(), serde_json::Value::String(format!("C{i}")));
+            m.insert("Valor".into(), serde_json::json!(i as f64));
+            rows.push(m);
+        }
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![DaxTableInput {
+                duckdb_table: None,
+                name: "fPts".into(),
+                columns: vec!["Categoria".into(), "Valor".into()],
+                rows,
+                column_types: vec![],
+                sort_by_columns: Default::default(),
+                is_calculated: false,
+                expression: None,
+                calculated_columns: ::std::collections::HashMap::new(),
+            }],
+            relationships: Vec::<DaxRelationshipInput>::new(),
+            measures: vec![DaxMeasureInput {
+                name: "V".into(),
+                table_name: "fPts".into(),
+                formula: "SUM(fPts[Valor])".into(),
+            }],
+        });
+
+        let req = NativeScatterQueryRequest {
+            table_id: "fPts".into(),
+            detail_field: "Categoria".into(),
+            x_field: "V".into(),
+            y_field: "V".into(),
+            max_points: 3,
+            ..Default::default()
+        };
+        let res1 = execute_scatter_query(&model, &req).unwrap();
+        let res2 = execute_scatter_query(&model, &req).unwrap();
+        assert_eq!(res1.total_points, 10);
+        assert!(res1.sampled);
+        assert!(res1.points.len() <= 3);
+        // Deterministic: same input -> same sampled subset every time (no RNG).
+        assert_eq!(
+            res1.points.iter().map(|p| p.label.clone()).collect::<Vec<_>>(),
+            res2.points.iter().map(|p| p.label.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_native_table_query_column_min_max_over_full_result_not_page() {
+        let model = sample_model();
+        let res = execute_table_query(
+            &model,
+            &NativeTableQueryRequest {
+                table_id: "fVendas".into(),
+                group_fields: vec!["Categoria".into()],
+                value_fields: vec!["Receita".into()],
+                aggregation: Some("SUM".into()),
+                limit: Some(1), // page has only 1 row, but min/max must cover BOTH (A=150, B=200)
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.total_row_count, 2);
+        let (min, max) = res.column_min_max.get("Receita").copied().expect("Receita min/max");
+        assert_eq!((min, max), (150.0, 200.0));
+    }
+
+    #[test]
+    fn test_native_table_query_sort_by_column_overrides_sort_field() {
+        let model = sample_model();
+        // Sort by "Receita" (B=200 desc > A=150) instead of "Categoria"'s own
+        // alphabetical order — mirrors a hidden sortByColumn driving a text column.
+        let res = execute_table_query(
+            &model,
+            &NativeTableQueryRequest {
+                table_id: "fVendas".into(),
+                group_fields: vec!["Categoria".into()],
+                value_fields: vec!["Receita".into()],
+                aggregation: Some("SUM".into()),
+                sort_field: Some("Categoria".into()),
+                sort_by_column: Some("Receita".into()),
+                sort_order: "desc".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.rows[0].values[0], JsonValue::from("B"));
+        assert_eq!(res.rows[1].values[0], JsonValue::from("A"));
+    }
+
+    // ===== v0.11 Rodada 2, Frente E: visual calculations evaluated natively =====
+
+    #[test]
+    fn test_native_visual_query_applies_runningsum_visual_calculation() {
+        let model = sample_model();
+        let res = execute_visual_query(
+            &model,
+            &NativeVisualQueryRequest {
+                visual_id: "vc1".into(),
+                visual_type: "bar".into(),
+                table_id: "fVendas".into(),
+                x_axis_field: Some("Categoria".into()),
+                y_axis_fields: vec!["Receita".into()],
+                aggregation: Some("SUM".into()),
+                visual_calculations: vec![crate::dax::visual_calcs::formula::NativeVisualCalcRequest {
+                    name: "Acumulado".into(),
+                    formula: "RUNNINGSUM([Receita])".into(),
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.categories, vec!["A", "B"]);
+        let receita = res.series.iter().find(|s| s.name == "Receita").unwrap();
+        let acumulado = res.series.iter().find(|s| s.name == "Acumulado").unwrap();
+        // A=150, B=200 -> acumulado 150, 350 (hand-derived).
+        assert_eq!(receita.data, vec![Some(150.0), Some(200.0)]);
+        assert_eq!(acumulado.data, vec![Some(150.0), Some(350.0)]);
+    }
+
+    #[test]
+    fn test_native_visual_query_unknown_visual_calc_column_errors_clearly() {
+        let model = sample_model();
+        let err = execute_visual_query(
+            &model,
+            &NativeVisualQueryRequest {
+                visual_id: "vc2".into(),
+                visual_type: "bar".into(),
+                table_id: "fVendas".into(),
+                x_axis_field: Some("Categoria".into()),
+                y_axis_fields: vec!["Receita".into()],
+                aggregation: Some("SUM".into()),
+                visual_calculations: vec![crate::dax::visual_calcs::formula::NativeVisualCalcRequest {
+                    name: "Ruim".into(),
+                    formula: "RUNNINGSUM([NaoExiste])".into(),
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("Ruim"), "erro inesperado: {err}");
     }
 }

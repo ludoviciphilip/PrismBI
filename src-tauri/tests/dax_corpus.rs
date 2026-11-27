@@ -295,6 +295,7 @@ fn dax_corpus_rust_engine() {
                     table_id: f.table.clone(),
                     column: f.column.clone(),
                     values: f.values.clone(),
+                    operator: None,
                 })
                 .collect();
             let ctx = build_filter_context(&filters, model);
