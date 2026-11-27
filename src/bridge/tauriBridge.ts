@@ -608,6 +608,10 @@ export async function evaluateDaxNative(
 export interface NativeDaxQueryColumn {
   name: string;
   daxType: 'text' | 'integer' | 'decimal' | 'currency' | 'date' | 'boolean';
+  /** v0.11 Rodada 2 Frente F: model TMDL `formatString` for this column,
+   * when it traces back to a plain `Table[Column]` group-by (not a measure
+   * or extension column). See `dax::query_view::qexec::DaxQueryColumn`. */
+  formatString?: string;
 }
 
 export interface NativeDaxQueryResultSet {
