@@ -60,6 +60,22 @@ pub struct NativeVisualQueryRequest {
     /// Caminhos recolhidos individualmente (−), vencem `matrix_expand_depth`.
     #[serde(default)]
     pub matrix_collapsed: Vec<Vec<JsonValue>>,
+    /// v0.11 Frente I: níveis nas COLUNAS da matriz (N níveis). Com 1+ nível,
+    /// `matrix.columnHeader` traz a árvore de colunas (subtotal por nível,
+    /// avaliado pelo motor no contexto da própria coluna) e `rows[].values`
+    /// passa a ter 1 valor por coluna VISÍVEL (folha ou subtotal recolhido),
+    /// na mesma ordem de `matrix.columnHeader` achatado (DFS).
+    #[serde(default)]
+    pub matrix_columns: Vec<NativeGroupLevel>,
+    /// Nós de coluna com profundidade < este valor vêm expandidos.
+    #[serde(default)]
+    pub matrix_column_expand_depth: usize,
+    /// Caminhos (chaves de cada nível de coluna) expandidos individualmente (+).
+    #[serde(default)]
+    pub matrix_column_expanded: Vec<Vec<JsonValue>>,
+    /// Caminhos de coluna recolhidos individualmente (−).
+    #[serde(default)]
+    pub matrix_column_collapsed: Vec<Vec<JsonValue>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +125,11 @@ pub struct NativeMatrixResult {
     pub column_totals: Vec<Option<f64>>,
     /// Com legenda: total geral da medida principal (canto inferior direito).
     pub grand_total: Option<f64>,
+    /// v0.11 Frente I: árvore de colunas (presente só quando `matrix_columns`
+    /// não está vazio). `rows[].values` fica alinhado com a ordem DFS das
+    /// colunas VISÍVEIS desta árvore (ver `matrix_columns::pivot_matrix_columns`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_header: Option<Vec<crate::dax::matrix_columns::NativeMatrixColumnNode>>,
 }
 
 pub(crate) fn resolve_table_and_col(model: &DaxModel, default_table: &str, raw_field: &str) -> (String, String) {
@@ -144,7 +165,7 @@ fn eval_field_value(
 /// Like `eval_field_value`, but `None` when the result is BLANK (a measure
 /// returning BLANK, or an implicit aggregation over no non-blank cells), so
 /// grouped queries can drop rows with no data, as Power BI does.
-fn eval_field_opt(
+pub(crate) fn eval_field_opt(
     model: &DaxModel,
     ctx: &FilterContext,
     default_table: &str,
@@ -338,7 +359,14 @@ fn execute_visual_query_dax(
 
     // 4a. Frente G: matriz com N níveis (subtotal por nível avaliado pelo motor)
     if !req.matrix_rows.is_empty() {
-        return Ok(execute_matrix_query(model, req, &base_ctx, agg, t0));
+        let mut res = execute_matrix_query(model, req, &base_ctx, agg, t0);
+        // v0.11 Frente I: gancho mínimo — toda a lógica de N níveis nas colunas
+        // (árvore, subtotal por nível e a interseção linha×coluna) mora em
+        // `matrix_columns.rs`; aqui só decide SE ela roda.
+        if !req.matrix_columns.is_empty() {
+            crate::dax::matrix_columns::pivot_matrix_columns(model, req, &base_ctx, agg, &mut res);
+        }
+        return Ok(res);
     }
 
     // 4b. Frente G: eixo por níveis (drill / expandir todos os níveis / hierarquia de data)
@@ -610,16 +638,18 @@ fn collect_sorted_entries(
     vec.into_iter().map(|(_, label, vkey)| (label, vkey)).collect()
 }
 
-struct LevelGroup {
-    key: JsonValue,
-    label: String,
-    allowed: HashSet<ValueKey>,
+/// v0.11 Frente I: `pub(crate)` para que `matrix_columns.rs` reutilize o mesmo
+/// agrupamento de nível (sem reimplementar a enumeração de valores distintos).
+pub(crate) struct LevelGroup {
+    pub(crate) key: JsonValue,
+    pub(crate) label: String,
+    pub(crate) allowed: HashSet<ValueKey>,
 }
 
 /// Valores distintos de um nível visíveis em `ctx`, em ordem (chave tipada ou
 /// `sortByColumn` configurada; partes de data em ordem numérica). Cada grupo
 /// carrega o conjunto de valores brutos da coluna que ele representa.
-fn collect_groups(
+pub(crate) fn collect_groups(
     model: &DaxModel,
     req: &NativeVisualQueryRequest,
     ctx: &FilterContext,
@@ -928,6 +958,7 @@ fn execute_matrix_query(
             rows,
             column_totals,
             grand_total,
+            column_header: None,
         }),
     }
 }
