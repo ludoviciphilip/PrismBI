@@ -527,6 +527,7 @@ pub fn load_changed_tables(
 mod tests {
     use super::*;
     use duckdb::Connection;
+    use std::time::Instant;
 
     /// v0.11 Frente G (Rodada 2, item 4): `load_table_from_duckdb_arrow`
     /// (and the `load_table_from_duckdb_fast` wrapper around it) must
@@ -607,5 +608,56 @@ mod tests {
         assert_eq!(row_by_row.rows, arrow.rows);
         let sum: f64 = arrow.rows.iter().filter_map(|r| r[1].as_f64()).sum();
         assert_eq!(sum, 10_000.0 * 10_001.0 / 2.0);
+    }
+
+    fn vm_hwm_kb() -> Option<u64> {
+        std::fs::read_to_string("/proc/self/status").ok().and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmHWM:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|n| n.parse().ok())
+        })
+    }
+
+    /// v0.11 Frente G (Rodada 2, item 4): release-only before/after of the
+    /// load step itself (`load_table_from_duckdb` row-by-row vs
+    /// `load_table_from_duckdb_arrow` batched), 10M rows, 2 columns
+    /// (matches the shape `docs/V011.md`/`docs/RUST_ENGINE_2.md` §5 Rodada
+    /// 1 already measured at ~1.25s). Both are checked against the closed
+    /// form `SUM(i, i=1..N) = N(N+1)/2` so a faster-but-wrong loader can't
+    /// pass. Run via `cargo test --release --lib -- --ignored --nocapture
+    /// bench_load_arrow_vs_row_by_row_10_million_rows`.
+    #[test]
+    #[ignore]
+    fn bench_load_arrow_vs_row_by_row_10_million_rows() {
+        let n: i64 = 10_000_000;
+        let conn = Connection::open_in_memory().expect("open duckdb");
+        conn.execute_batch(&format!(
+            "CREATE TABLE big_load AS SELECT i AS Id, CAST(i AS DOUBLE) AS Valor FROM range(1, {}) AS t(i)",
+            n + 1
+        ))
+        .expect("seed big_load");
+        let declared: Vec<Option<String>> = vec![Some("number".into()), Some("number".into())];
+        let expected_sum = (n as f64) * (n as f64 + 1.0) / 2.0;
+
+        let hwm0 = vm_hwm_kb();
+        let t0 = Instant::now();
+        let row_by_row = load_table_from_duckdb(&conn, "big_load", &declared).expect("row-by-row load");
+        let row_elapsed = t0.elapsed();
+        let hwm1 = vm_hwm_kb();
+        let sum_rr: f64 = row_by_row.rows.iter().filter_map(|r| r[1].as_f64()).sum();
+        assert!((sum_rr - expected_sum).abs() < 1.0);
+        drop(row_by_row);
+
+        let t1 = Instant::now();
+        let arrow = load_table_from_duckdb_arrow(&conn, "big_load", &declared).expect("arrow load");
+        let arrow_elapsed = t1.elapsed();
+        let hwm2 = vm_hwm_kb();
+        let sum_arrow: f64 = arrow.rows.iter().filter_map(|r| r[1].as_f64()).sum();
+        assert!((sum_arrow - expected_sum).abs() < 1.0);
+
+        println!(
+            "bench_load_arrow_vs_row_by_row_10_million_rows: N={n}\n  row-by-row: {row_elapsed:?}, VmHWM {hwm0:?} -> {hwm1:?} KB\n  arrow:      {arrow_elapsed:?}, VmHWM -> {hwm2:?} KB"
+        );
     }
 }
