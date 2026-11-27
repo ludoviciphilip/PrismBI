@@ -111,7 +111,7 @@ pub struct NativeMatrixResult {
     pub grand_total: Option<f64>,
 }
 
-fn resolve_table_and_col(model: &DaxModel, default_table: &str, raw_field: &str) -> (String, String) {
+pub(crate) fn resolve_table_and_col(model: &DaxModel, default_table: &str, raw_field: &str) -> (String, String) {
     let clean = raw_field.trim();
     if let Some((t, c)) = clean.split_once('.') {
         if model.get_table(t).is_some() {
@@ -205,7 +205,43 @@ pub fn execute_visual_query(
     model: &DaxModel,
     req: &NativeVisualQueryRequest,
 ) -> Result<NativeVisualQueryResult, String> {
+    execute_visual_query_with_conn(model, req, None)
+}
+
+/// v0.11 Frente A: like `execute_visual_query`, but when `conn` is given and
+/// `VETROBI_PUSHDOWN` isn't `"0"`, first tries to translate the request into
+/// DuckDB SQL (see `dax::pushdown`). Any rejection (unsupported shape) or SQL
+/// error falls back to this function's normal DAX-engine path unchanged —
+/// pushdown never turns a working query into a hard error, only a slower one.
+pub fn execute_visual_query_with_conn(
+    model: &DaxModel,
+    req: &NativeVisualQueryRequest,
+    conn: Option<&duckdb::Connection>,
+) -> Result<NativeVisualQueryResult, String> {
     let t0 = Instant::now();
+    let agg = req.aggregation.as_deref().unwrap_or("SUM");
+
+    if let Some(conn) = conn {
+        if crate::dax::pushdown::pushdown_enabled() {
+            match crate::dax::pushdown::try_pushdown(model, conn, req, agg, t0) {
+                Ok(result) => return Ok(result),
+                Err(reason) => {
+                    eprintln!(
+                        "pushdown: fallback para o motor DAX (visual '{}'): {}",
+                        req.visual_id, reason
+                    );
+                }
+            }
+        }
+    }
+    execute_visual_query_dax(model, req, t0)
+}
+
+fn execute_visual_query_dax(
+    model: &DaxModel,
+    req: &NativeVisualQueryRequest,
+    t0: Instant,
+) -> Result<NativeVisualQueryResult, String> {
     let agg = req.aggregation.as_deref().unwrap_or("SUM");
     let base_ctx = build_query_context(model, req);
 

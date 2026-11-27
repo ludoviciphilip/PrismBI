@@ -489,7 +489,14 @@ export interface NativeVisualQueryResult {
   series: NativeVisualSeries[];
   summaryValue?: number | null;
   queryTimeMs: number;
-  engine: string;
+  /**
+   * v0.11 Frente A: qual motor respondeu esta consulta. `'duckdb'` = SQL
+   * pushdown (agregação/join/filtro traduzidos e executados no DuckDB,
+   * sem carregar as linhas no modelo DAX); `'rust-native'` = motor DAX em
+   * Rust (caminho de sempre; usado sempre que o pushdown não cobre a
+   * consulta ou falha). Mostrado pelo Performance Analyzer.
+   */
+  engine: 'duckdb' | 'rust-native' | string;
   /** v0.10 Frente G: chave de cada nível por categoria (alinhado com `categories`). */
   categoryKeys?: unknown[][];
   matrix?: { rows: NativeMatrixNodeDto[]; columnTotals: (number | null)[]; grandTotal?: number | null } | null;
