@@ -26,6 +26,8 @@ pub mod qvalidate;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_snippets;
+#[cfg(test)]
 mod tests_repro_rhino;
 #[cfg(test)]
 mod tests_real_rhino;

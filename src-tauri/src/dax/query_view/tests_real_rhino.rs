@@ -44,7 +44,7 @@ fn load_rhino() -> (DaxModel, DuckDbStore) {
     let mut freshly = HashMap::new();
     for t in &summary.tables {
         for meas in &t.measures {
-            measures.push(DaxMeasureInput { name: meas.name.clone(), table_name: t.name.clone(), formula: meas.expression.clone() });
+            measures.push(DaxMeasureInput { name: meas.name.clone(), table_name: t.name.clone(), formula: meas.expression.clone(), format_string: None });
         }
     }
     for lt in &summary.loaded_tables {

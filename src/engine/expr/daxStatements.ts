@@ -593,6 +593,17 @@ export class DaxQueryParser {
   private parseExpressionUntilBoundary(): { ast: ASTNode; rawFormula: string } {
     const exprTokens: Token[] = [];
     let depth = 0;
+    // v0.11 Rodada 2 (bugfix): a measure/column/var body is allowed to be a
+    // `VAR x = ... RETURN <expr>` block (that's exactly the shape most
+    // DAX_SNIPPETS time-intelligence/ranking snippets use). Without this
+    // flag, the boundary check below stopped at the body's OWN `VAR`
+    // keyword -- mistaking it for the next top-level DEFINE item -- and left
+    // `exprTokens` empty, so `DEFINE MEASURE t[x] = VAR a = ... RETURN ...`
+    // always failed with "Esperada expressão após '=' na definição" even
+    // though the Rust DAX Query View engine (`qparser.rs::scan_expr_span`)
+    // parses the exact same shape correctly via this same expect-RETURN
+    // tracking.
+    let expectReturn = false;
 
     while (!this.isAtEnd()) {
       const tok = this.peek();
@@ -600,13 +611,18 @@ export class DaxQueryParser {
       else if (tok.type === 'RPAREN' || tok.type === 'RBRACE') depth--;
 
       if (depth === 0) {
-        if (
-          this.checkKeyword('MEASURE') ||
-          this.checkKeyword('COLUMN') ||
-          this.checkKeyword('TABLE') ||
-          this.checkKeyword('VAR') ||
-          this.checkKeyword('FUNCTION') ||
-          this.checkKeyword('EVALUATE')
+        if (this.checkKeyword('VAR')) {
+          expectReturn = true;
+        } else if (this.checkKeyword('RETURN')) {
+          expectReturn = false;
+        } else if (
+          !expectReturn &&
+          (this.checkKeyword('MEASURE') ||
+            this.checkKeyword('COLUMN') ||
+            this.checkKeyword('TABLE') ||
+            this.checkKeyword('VAR') ||
+            this.checkKeyword('FUNCTION') ||
+            this.checkKeyword('EVALUATE'))
         ) {
           break;
         }

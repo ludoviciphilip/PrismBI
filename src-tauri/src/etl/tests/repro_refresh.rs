@@ -117,7 +117,7 @@ fn rhino_remove_steps_apply_then_refresh_all_returns() {
                 .tables
                 .iter()
                 .flat_map(|t| t.measures.iter())
-                .map(|m| DaxMeasureInput { name: m.name.clone(), table_name: m.table_name.clone(), formula: m.expression.clone() })
+                .map(|m| DaxMeasureInput { name: m.name.clone(), table_name: m.table_name.clone(), formula: m.expression.clone(), format_string: None })
                 .collect(),
         };
         let names: Vec<String> = payload.measures.iter().map(|m| m.name.clone()).collect();

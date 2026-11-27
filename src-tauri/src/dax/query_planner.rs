@@ -1785,16 +1785,12 @@ mod tests {
             }],
             relationships: Vec::<DaxRelationshipInput>::new(),
             measures: vec![
-                DaxMeasureInput {
-                    name: "Receita".into(),
+                DaxMeasureInput { name: "Receita".into(),
                     table_name: "fVendas".into(),
-                    formula: "SUM(fVendas[Valor])".into(),
-                },
-                DaxMeasureInput {
-                    name: "Qtd".into(),
+                    formula: "SUM(fVendas[Valor])".into(), format_string: None },
+                DaxMeasureInput { name: "Qtd".into(),
                     table_name: "fVendas".into(),
-                    formula: "COUNTROWS(fVendas)".into(),
-                },
+                    formula: "COUNTROWS(fVendas)".into(), format_string: None },
             ],
         });
         model
@@ -2000,11 +1996,9 @@ mod tests {
         with_measure.sync_from_payload(DaxModelSyncPayload {
             tables: vec![],
             relationships: vec![],
-            measures: vec![DaxMeasureInput {
-                name: "TotalValor".into(),
+            measures: vec![DaxMeasureInput { name: "TotalValor".into(),
                 table_name: "fFast".into(),
-                formula: "SUM(fFast[Valor])".into(),
-            }],
+                formula: "SUM(fFast[Valor])".into(), format_string: None }],
         });
         assert!(
             try_vectorized_group_agg(&with_measure, &base_ctx, "fFast", "Categoria", &["TotalValor".to_string()], "fFast", "SUM")
@@ -2322,11 +2316,9 @@ mod tests {
         with_measure.sync_from_payload(DaxModelSyncPayload {
             tables: vec![],
             relationships: vec![],
-            measures: vec![DaxMeasureInput {
-                name: "TotalValor".into(),
+            measures: vec![DaxMeasureInput { name: "TotalValor".into(),
                 table_name: "fFast".into(),
-                formula: "SUM(fFast[Valor])".into(),
-            }],
+                formula: "SUM(fFast[Valor])".into(), format_string: None }],
         });
         assert!(
             try_vectorized_star_group_agg(&with_measure, &base_ctx, "dCategoria", "Categoria", &["TotalValor".to_string()], "fFast", "SUM")
@@ -2431,11 +2423,9 @@ mod tests {
                     is_active: true,
                 },
             ],
-            measures: vec![DaxMeasureInput {
-                name: "DRE Valor".into(),
+            measures: vec![DaxMeasureInput { name: "DRE Valor".into(),
                 table_name: "fLanc".into(),
-                formula: "-SUMX(FILTER(fLanc, fLanc[Valor] >= 0), fLanc[Valor])".into(),
-            }],
+                formula: "-SUMX(FILTER(fLanc, fLanc[Valor] >= 0), fLanc[Valor])".into(), format_string: None }],
         });
 
         // Empty filter SUMX & unary negation must return Blank
@@ -2583,11 +2573,9 @@ mod tests {
                 calculated_columns: ::std::collections::HashMap::new(),
             }],
             relationships: Vec::<DaxRelationshipInput>::new(),
-            measures: vec![DaxMeasureInput {
-                name: "Total".into(),
+            measures: vec![DaxMeasureInput { name: "Total".into(),
                 table_name: "fBig".into(),
-                formula: "SUM(fBig[Valor])".into(),
-            }],
+                formula: "SUM(fBig[Valor])".into(), format_string: None }],
         });
 
         let res = execute_table_query(
@@ -2655,11 +2643,9 @@ mod tests {
                 calculated_columns: ::std::collections::HashMap::new(),
             }],
             relationships: Vec::<DaxRelationshipInput>::new(),
-            measures: vec![DaxMeasureInput {
-                name: "V".into(),
+            measures: vec![DaxMeasureInput { name: "V".into(),
                 table_name: "fPts".into(),
-                formula: "SUM(fPts[Valor])".into(),
-            }],
+                formula: "SUM(fPts[Valor])".into(), format_string: None }],
         });
 
         let req = NativeScatterQueryRequest {

@@ -629,5 +629,12 @@ export interface DaxSnippet {
   title: string;
   category: 'Time Intelligence' | 'Ranking' | 'ABC / Pareto' | 'Growth' | 'Security';
   description: string;
+  /** Illustrative-only example (fake table/measure names) kept for the
+   * tooltip/documentation. NEVER inserted directly into a query or formula
+   * editor -- see `src/engine/shared/snippetResolver.ts`'s
+   * `resolveDaxSnippet`, which rebuilds an equivalent snippet using the
+   * CURRENT model's real tables/columns/measures (v0.11 Rodada 2: the
+   * literal template used to reference tables like 'd_Calendario' that
+   * don't exist in a real project, so the inserted snippet never ran). */
   template: string;
 }

@@ -8,7 +8,7 @@
 
 🇺🇸 [Read in English](./README.md) • 🇧🇷 **Português (Brasil)**
 
-[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.10.0-f59e0b?style=flat-square)](./package.json)
+[![Versão](https://img.shields.io/badge/vers%C3%A3o-0.11.0-f59e0b?style=flat-square)](./package.json)
 [![CI](https://github.com/ludoviciphilip/VetroBI/actions/workflows/ci.yml/badge.svg)](https://github.com/ludoviciphilip/VetroBI/actions/workflows/ci.yml)
 [![Release](https://github.com/ludoviciphilip/VetroBI/actions/workflows/release.yml/badge.svg)](https://github.com/ludoviciphilip/VetroBI/actions/workflows/release.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
