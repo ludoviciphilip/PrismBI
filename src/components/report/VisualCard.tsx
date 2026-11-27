@@ -457,6 +457,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       .map(f => ({
         tableId: f.tableId,
         column: f.column,
+        // v0.11 Frente H (item h): `between` (segmentador "Entre" and
+        // relative-date windows) stores its range as `value: [from, to]`.
+        // Spreading it straight into `values` with `Array.isArray(f.value)`
+        // (the old code) silently turned the range into a 2-value IN list,
+        // losing the operator — a between filter would match only the two
+        // endpoints instead of everything in between. Carry `f.operator`
+        // through so the Rust side (`NativeFilterInput.operator`,
+        // `FilterContext::range_filters`) can apply it as a real range.
+        operator: f.operator,
         values: Array.isArray(f.value) ? f.value : f.value !== undefined && f.value !== '' ? [f.value] : [],
       }))
       .filter(f => f.values.length > 0);

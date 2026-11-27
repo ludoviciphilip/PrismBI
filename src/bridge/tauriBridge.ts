@@ -599,7 +599,7 @@ export interface NativeVisualQueryRequest {
   legendField?: string;
   yAxisFields: string[];
   aggregation?: string;
-  filters: { tableId: string; column: string; values: any[] }[];
+  filters: { tableId: string; column: string; values: any[]; operator?: string }[];
   /** v0.10 Frente G: agrupamento do eixo por níveis (drill/expandir/hierarquia de data). */
   categoryLevels?: { field: string; datePart?: string | null }[];
   /** v0.10 Frente G: caminho de drill (entra no build_filter_context do Rust). */
