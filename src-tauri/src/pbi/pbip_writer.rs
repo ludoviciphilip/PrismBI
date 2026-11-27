@@ -43,6 +43,14 @@ pub struct ExportTablePayload {
     pub is_hidden: Option<bool>,
     #[serde(default)]
     pub m_script: Option<String>,
+    /// True for a calculated table (TMDL `partition ... = calculated`):
+    /// writes `calculated_expression` as the partition's DAX source instead
+    /// of an `m`-mode partition. See `dax::calculated` / `pbi::tmdl` (import
+    /// side) for the matching round-trip.
+    #[serde(default)]
+    pub is_calculated: Option<bool>,
+    #[serde(default)]
+    pub calculated_expression: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -339,7 +347,18 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
             tmdl.push('\n');
         }
 
-        if let Some(ref m_code) = tbl.m_script.as_deref().filter(|s| !s.trim().is_empty()) {
+        if tbl.is_calculated.unwrap_or(false) {
+            // TMDL calculated partition (round-trips with `pbi::tmdl::parse_table_tmdl`,
+            // which sets `is_calculated_table = true` on `source_type.eq_ignore_ascii_case("calculated")`).
+            let expr = tbl.calculated_expression.as_deref().unwrap_or("");
+            tmdl.push_str(&format!("\tpartition {} = calculated\n\t\tmode: import\n\t\tsource =\n", quote_tmdl_ident(&tbl.name)));
+            tmdl.push_str("\t\t\t```\n");
+            for line in expr.lines() {
+                tmdl.push_str(&format!("\t\t\t{}\n", line));
+            }
+            tmdl.push_str("\t\t\t```\n");
+            tmdl.push('\n');
+        } else if let Some(ref m_code) = tbl.m_script.as_deref().filter(|s| !s.trim().is_empty()) {
             tmdl.push_str(&format!("\tpartition {} = m\n\t\tmode: import\n\t\tsource =\n", quote_tmdl_ident(&tbl.name)));
             for line in m_code.lines() {
                 tmdl.push_str(&format!("\t\t\t\t{}\n", line));
@@ -1156,6 +1175,47 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn test_pbip_round_trip_calculated_table_partition() {
+        // v0.11 Frente C: a calculated table (TMDL `partition ... = calculated`)
+        // round-trips through export -> TMDL -> import.
+        let dir = tempdir().unwrap();
+        let payload = ExportPbipPayload {
+            project_name: "Projeto Calculada".into(),
+            tables: vec![ExportTablePayload {
+                name: "CalendarioCalc".into(),
+                is_hidden: Some(false),
+                m_script: None,
+                columns: vec![ExportColumnPayload {
+                    name: "Date".into(),
+                    data_type: "date".into(),
+                    ..Default::default()
+                }],
+                is_calculated: Some(true),
+                calculated_expression: Some("CALENDAR(DATE(2024,1,1), DATE(2024,12,31))".into()),
+            }],
+            relationships: vec![],
+            measures: vec![],
+            pages: vec![],
+            theme_name: None,
+            theme_palette: None,
+            ..Default::default()
+        };
+        save_pbip_project(dir.path(), &payload).unwrap();
+        let tmdl_path = dir
+            .path()
+            .join("Projeto Calculada.SemanticModel")
+            .join("definition")
+            .join("tables")
+            .join("CalendarioCalc.tmdl");
+        let content = fs::read_to_string(&tmdl_path).expect("tmdl de tabela calculada deve existir");
+        assert!(content.contains("partition 'CalendarioCalc' = calculated") || content.contains("partition CalendarioCalc = calculated"));
+        let parsed = crate::pbi::tmdl::parse_table_tmdl(&content).expect("tmdl de tabela calculada deve parsear");
+        assert!(parsed.is_calculated, "tabela importada deve ficar marcada como calculada");
+        assert_eq!(parsed.partitions.len(), 1);
+        assert!(parsed.partitions[0].expression.contains("CALENDAR(DATE(2024,1,1), DATE(2024,12,31))"));
+    }
+
+    #[test]
     fn test_pbip_round_trip_save_and_reopen() {
         let dir = tempdir().unwrap();
         let payload = ExportPbipPayload {
@@ -1184,6 +1244,8 @@ mod tests {
                         expression: None,
                     },
                 ],
+                is_calculated: None,
+                calculated_expression: None,
             }],
             relationships: vec![],
             measures: vec![ExportMeasurePayload {
@@ -1300,6 +1362,8 @@ mod tests {
                     ExportColumnPayload { name: "Categoria".into(), data_type: "text".into(), ..Default::default() },
                     ExportColumnPayload { name: "Receita".into(), data_type: "currency".into(), ..Default::default() },
                 ],
+                is_calculated: None,
+                calculated_expression: None,
             }],
             relationships: vec![],
             measures: vec![],
@@ -1531,6 +1595,8 @@ mod tests {
                         expression: None,
                     },
                 ],
+                is_calculated: None,
+                calculated_expression: None,
             }],
             relationships: vec![],
             measures: vec![ExportMeasurePayload {

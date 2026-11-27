@@ -45,6 +45,7 @@ fn with_rows_like(tbl: &DaxTableData, rows: Vec<Vec<DaxValue>>) -> DaxTableData 
         col_types: tbl.col_types.clone(),
         rows,
         sort_by_columns: tbl.sort_by_columns.clone(),
+        is_calculated: tbl.is_calculated,
     }
 }
 
@@ -841,7 +842,7 @@ mod tests {
                     ],
                     duckdb_table: None,
                     column_types: vec![],
-                    sort_by_columns: Default::default(),
+                    sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
                 DaxTableInput {
                     name: "d_Mes".into(),
@@ -853,7 +854,7 @@ mod tests {
                     ],
                     duckdb_table: None,
                     column_types: vec![],
-                    sort_by_columns: Default::default(),
+                    sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
                 DaxTableInput {
                     name: "f_Vendas".into(),
@@ -868,7 +869,7 @@ mod tests {
                     ],
                     duckdb_table: None,
                     column_types: vec![],
-                    sort_by_columns: Default::default(),
+                    sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![

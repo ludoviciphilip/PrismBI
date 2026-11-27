@@ -1,0 +1,89 @@
+{
+  "description": "Modelo pequeno dedicado a tabelas e colunas calculadas (v0.11 Frente C): Produtos (4 linhas, 2 categorias) e Vendas (3 linhas) são tabelas base; CalendarCalc/ProdutosComMargem/CategoriasResumo/UniaoProdutos são tabelas calculadas (DAX table expression avaliada em Rust). Valores esperados derivados à mão em cases/calculated.json.",
+  "tables": [
+    {
+      "name": "Produtos",
+      "columns": [
+        { "name": "ProdutoID", "type": "number" },
+        { "name": "Produto", "type": "text" },
+        { "name": "Categoria", "type": "text" },
+        { "name": "Preco", "type": "number" }
+      ],
+      "rows": [
+        [1, "Caderno", "Papelaria", 10],
+        [2, "Lapis", "Papelaria", 2],
+        [3, "Mouse", "Informatica", 50],
+        [4, "Teclado", "Informatica", 100]
+      ]
+    },
+    {
+      "name": "Vendas",
+      "columns": [
+        { "name": "VendaID", "type": "number" },
+        { "name": "ProdutoID", "type": "number" },
+        { "name": "Data", "type": "date" },
+        { "name": "Qtde", "type": "number" }
+      ],
+      "rows": [
+        [1, 1, "2024-01-05", 3],
+        [2, 3, "2024-01-06", 1],
+        [3, 2, "2024-01-07", 5]
+      ]
+    },
+    {
+      "name": "CalendarCalc",
+      "calculated": true,
+      "expression": "CALENDAR(DATE(2024,1,1), DATE(2024,1,10))",
+      "columns": [
+        { "name": "Date", "type": "date" }
+      ]
+    },
+    {
+      "name": "ProdutosComMargem",
+      "calculated": true,
+      "expression": "ADDCOLUMNS(Produtos, \"PrecoComMargem\", Produtos[Preco] * 1.1)",
+      "columns": [
+        { "name": "ProdutoID", "type": "number" },
+        { "name": "Produto", "type": "text" },
+        { "name": "Categoria", "type": "text" },
+        { "name": "Preco", "type": "number" },
+        { "name": "PrecoComMargem", "type": "number" }
+      ]
+    },
+    {
+      "name": "CategoriasResumo",
+      "calculated": true,
+      "expression": "SUMMARIZE(Produtos, Produtos[Categoria], \"QtdeProdutos\", COUNTROWS(Produtos), \"PrecoMedio\", AVERAGE(Produtos[Preco]))",
+      "columns": [
+        { "name": "Categoria", "type": "text" },
+        { "name": "QtdeProdutos", "type": "number" },
+        { "name": "PrecoMedio", "type": "number" }
+      ]
+    },
+    {
+      "name": "UniaoProdutos",
+      "calculated": true,
+      "expression": "UNION(FILTER(Produtos, Produtos[Preco] <= 50), FILTER(Produtos, Produtos[Preco] >= 50))",
+      "columns": [
+        { "name": "ProdutoID", "type": "number" },
+        { "name": "Produto", "type": "text" },
+        { "name": "Categoria", "type": "text" },
+        { "name": "Preco", "type": "number" }
+      ]
+    }
+  ],
+  "relationships": [
+    { "from": "Vendas[ProdutoID]", "to": "Produtos[ProdutoID]", "crossFilter": "single", "active": true }
+  ],
+  "measures": [
+    { "table": "ProdutosComMargem", "name": "Total Preco Com Margem", "formula": "SUM(ProdutosComMargem[PrecoComMargem])" }
+  ],
+  "calculatedColumns": {
+    "Vendas": {
+      "Categoria": "RELATED(Produtos[Categoria])"
+    },
+    "Produtos": {
+      "MaisBaratosNaCategoria": "COUNTROWS(FILTER(Produtos, Produtos[Categoria] = EARLIER(Produtos[Categoria]) && Produtos[Preco] < EARLIER(Produtos[Preco])))"
+    }
+  }
+}

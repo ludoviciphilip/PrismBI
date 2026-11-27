@@ -27,6 +27,32 @@ pub struct RowContext<'a> {
     pub row_idx: usize,
 }
 
+/// Evaluates a top-level DAX **table** expression (CALENDAR, CALENDARAUTO,
+/// SUMMARIZE, SUMMARIZECOLUMNS, ADDCOLUMNS, UNION, FILTER, DISTINCT,
+/// DATATABLE, ...) into a materialized, owned `DaxTableData` — used by
+/// `dax::calculated` to build a calculated table from its DAX expression.
+/// `name` overrides the resulting table's name (the expression itself may
+/// carry the name of a source table, e.g. `FILTER(Sales, ...)`).
+pub fn evaluate_table_ast(
+    name: &str,
+    expr: &Expr,
+    model: &DaxModel,
+    ctx: &FilterContext,
+) -> Result<DaxTableData, String> {
+    let (teval, indices, _) = table::eval_table_expr(expr, model, ctx, &[], &HashMap::new())?;
+    let base = teval.as_ref();
+    let rows: Vec<Vec<DaxValue>> = indices.iter().map(|&i| base.rows[i].clone()).collect();
+    Ok(DaxTableData {
+        name: name.to_string(),
+        columns: base.columns.clone(),
+        col_index: base.col_index.clone(),
+        col_types: base.col_types.clone(),
+        rows,
+        sort_by_columns: HashMap::new(),
+        is_calculated: true,
+    })
+}
+
 pub fn evaluate_ast(
     expr: &Expr,
     model: &DaxModel,
@@ -393,10 +419,10 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "fLançamentos".into(), columns: vec!["Data".into(), "Valor".into(), "Categoria".into(), "Tipo".into()], rows: f_rows },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dCategorias".into(), columns: vec!["Categoria".into(), "Grupo DRE".into(), "DRE".into()], rows: cat_rows },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dEstrutura".into(), columns: vec!["Linha".into(), "Ordem".into()], rows: est_rows },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dCalendario".into(), columns: vec!["Data".into(), "Mês".into()], rows: cal_rows },
+                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "fLançamentos".into(), columns: vec!["Data".into(), "Valor".into(), "Categoria".into(), "Tipo".into()], rows: f_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dCategorias".into(), columns: vec!["Categoria".into(), "Grupo DRE".into(), "DRE".into()], rows: cat_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dEstrutura".into(), columns: vec!["Linha".into(), "Ordem".into()], rows: est_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dCalendario".into(), columns: vec!["Data".into(), "Mês".into()], rows: cal_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
             ],
             relationships: vec![
                 DaxRelationshipInput {
@@ -479,7 +505,7 @@ mod tests {
                         make_cal_row("2026-01-10"),
                         make_cal_row("2026-02-15"),
                         make_cal_row("2026-03-05"),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
                 DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fVendas".into(),
@@ -490,7 +516,7 @@ mod tests {
                         make_sale_row("2026-01-10", 300.0),
                         make_sale_row("2026-02-15", 400.0),
                         make_sale_row("2026-03-05", 500.0),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![DaxRelationshipInput {
@@ -582,7 +608,7 @@ mod tests {
             .map(|t| DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                 name: t.table_name.clone(),
                 columns: t.columns.iter().map(|c| c.name.clone()).collect(),
-                rows: t.rows.clone(),
+                rows: t.rows.clone(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
             })
             .collect();
         let rels_input: Vec<DaxRelationshipInput> = summary
@@ -731,12 +757,12 @@ mod tests {
                 DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dCalendario".into(),
                     columns: vec!["Data".into(), "Mês/Ano".into()],
-                    rows: cal_rows,
+                    rows: cal_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
                 DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fLanc".into(),
                     columns: vec!["Data".into(), "Valor".into()],
-                    rows: fact_rows,
+                    rows: fact_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![DaxRelationshipInput {
@@ -815,7 +841,7 @@ mod tests {
                         cal_row("2026-03-01", 2026, 3),
                         cal_row("2026-03-10", 2026, 3),
                         cal_row("2026-03-20", 2026, 3),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
                 DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fVendas".into(),
@@ -824,13 +850,13 @@ mod tests {
                         sale_row("2026-03-01", 3117.20),
                         sale_row("2026-03-10", 60000.00),
                         sale_row("2026-03-20", 65606.32),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
                 DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fAberturas".into(),
                     columns: vec!["Data".into(), "Saldo".into()],
                     // Only day 1 of month exists in fAberturas
-                    rows: vec![open_row("2026-03-01", 10000.0)],
+                    rows: vec![open_row("2026-03-01", 10000.0)], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![
@@ -879,7 +905,7 @@ mod tests {
                         serde_json::from_value(json!({"Data": "2026-02-15", "Trimestre": "T1"})).unwrap(),
                         serde_json::from_value(json!({"Data": "2026-04-05", "Trimestre": "T2"})).unwrap(),
                         serde_json::from_value(json!({"Data": "2026-04-30", "Trimestre": "T2"})).unwrap(),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
                 DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dClientes".into(),
@@ -887,7 +913,7 @@ mod tests {
                     rows: vec![
                         serde_json::from_value(json!({"Id": 1, "Nome": "Alpha"})).unwrap(),
                         serde_json::from_value(json!({"Id": 2, "Nome": "Beta"})).unwrap(),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
                 DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fPedidos".into(),
@@ -897,7 +923,7 @@ mod tests {
                         serde_json::from_value(json!({"DataPedido": "2026-02-15", "DataEntrega": "2026-04-30", "ClienteId": 2, "Valor": 300.0})).unwrap(),
                         serde_json::from_value(json!({"DataPedido": "2026-04-05", "DataEntrega": "2026-04-30", "ClienteId": 1, "Valor": 500.0})).unwrap(),
                         serde_json::from_value(json!({"DataPedido": "2026-04-30", "DataEntrega": "2026-04-30", "ClienteId": 2, "Valor": 700.0})).unwrap(),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![
@@ -1004,7 +1030,7 @@ mod tests {
                     rows: rows(json!([
                         {"ProdID": 1, "Valor": 10}, {"ProdID": 1, "Valor": 5},
                         {"ProdID": 2, "Valor": 20}, {"ProdID": 3, "Valor": 40}
-                    ])),
+                    ])), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
                 DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "p".into(),
@@ -1013,12 +1039,12 @@ mod tests {
                         {"ProdID": 1, "Cat": "A", "GrupoID": 1, "Preco": 3},
                         {"ProdID": 2, "Cat": "A", "GrupoID": 1, "Preco": 1},
                         {"ProdID": 3, "Cat": "B", "GrupoID": 2, "Preco": 2}
-                    ])),
+                    ])), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
                 DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "g".into(),
                     columns: vec!["GrupoID".into(), "Grupo".into()],
-                    rows: rows(json!([{"GrupoID": 1, "Grupo": "G1"}, {"GrupoID": 2, "Grupo": "G2"}])),
+                    rows: rows(json!([{"GrupoID": 1, "Grupo": "G1"}, {"GrupoID": 2, "Grupo": "G2"}])), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![rel("f", "ProdID", "p", "ProdID"), rel("p", "GrupoID", "g", "GrupoID")],
@@ -1198,7 +1224,7 @@ mod tests {
                         serde_json::json!({"Cat": "A", "Valor": 100}).as_object().unwrap().clone(),
                         serde_json::json!({"Cat": "B", "Valor": 250}).as_object().unwrap().clone(),
                         serde_json::json!({"Cat": "C", "Valor": 400}).as_object().unwrap().clone(),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
                 DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dGrupo".into(),
@@ -1206,7 +1232,7 @@ mod tests {
                     rows: vec![
                         serde_json::json!({"Nome": "A"}).as_object().unwrap().clone(),
                         serde_json::json!({"Nome": "C"}).as_object().unwrap().clone(),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![],
@@ -1277,7 +1303,7 @@ mod tests {
                         serde_json::json!({"Cat": "A", "Data": "2024-02-15", "Valor": 100}).as_object().unwrap().clone(),
                         serde_json::json!({"Cat": "B", "Data": "2024-08-10", "Valor": 250}).as_object().unwrap().clone(),
                         serde_json::json!({"Cat": "C", "Data": "2024-11-05", "Valor": 400}).as_object().unwrap().clone(),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![],

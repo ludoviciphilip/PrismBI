@@ -4,6 +4,7 @@ pub mod engine;
 pub mod etl;
 pub mod migrate_legacy;
 pub mod pbi;
+pub mod project_store;
 pub mod updater;
 
 // Coverage-only test modules for v0.10 round 1 (see docs/TEST_COVERAGE.md).
@@ -182,7 +183,7 @@ fn open_pbip_project(
                         rows: t.rows.clone(),
                         column_types: vec![],
                         duckdb_table: Some(t.table_name.clone()),
-                        sort_by_columns,
+                        sort_by_columns, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                     }
                 })
                 .collect(),
@@ -302,7 +303,10 @@ fn query_visual_native(
         .dax_model
         .lock()
         .map_err(|_| "Lock DaxModel corrompido".to_string())?;
-    dax::query_planner::execute_visual_query(&guard, &request)
+    // v0.11 Frente A: tenta o pushdown para o DuckDB antes do motor DAX (ver
+    // dax::pushdown); cai no caminho de sempre em qualquer rejeição/erro.
+    let conn = state.db.connection().lock().map_err(|_| "Lock DuckDB corrompido".to_string())?;
+    dax::query_planner::execute_visual_query_with_conn(&guard, &request, Some(&conn))
 }
 
 #[tauri::command]
@@ -501,6 +505,67 @@ fn credentials_get(state: State<'_, AppState>, key: String) -> Result<Option<Str
     state.credentials.get(&key)
 }
 
+// ---------------------------------------------------------------------
+// Cache colunar de projeto (v0.11 Frente B) — ver project_store::.
+// ---------------------------------------------------------------------
+
+/// Diretório-base para o cache de sessão interna (sem arquivo .insight
+/// salvo em disco): `<app_data_dir>/projects/<hash(project_key)>/`.
+/// Usa `dirs::data_dir()` diretamente (mesmo padrão de
+/// `migrate_legacy_app_dirs`), sem depender do `AppHandle`.
+fn app_cache_base_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("VetroBI")
+}
+
+#[tauri::command]
+fn project_cache_save(
+    state: State<'_, AppState>,
+    project_key: String,
+    tables: Vec<project_store::TableCacheMeta>,
+    dir: Option<String>,
+) -> Result<project_store::SaveOutcome, String> {
+    let base = app_cache_base_dir();
+    let cache_dir = project_store::resolve_cache_dir(&project_key, &base, dir.as_deref())?;
+    let conn = state.db.connection().lock().map_err(|_| "Lock DuckDB corrompido".to_string())?;
+    project_store::save_project_cache(&conn, &cache_dir, &tables, env!("CARGO_PKG_VERSION"))
+}
+
+#[tauri::command]
+fn project_cache_load(
+    state: State<'_, AppState>,
+    project_key: String,
+    tables: Vec<project_store::TableCacheMeta>,
+    dir: Option<String>,
+) -> Result<project_store::LoadOutcome, String> {
+    let base = app_cache_base_dir();
+    let cache_dir = project_store::resolve_cache_dir(&project_key, &base, dir.as_deref())?;
+    let conn = state.db.connection().lock().map_err(|_| "Lock DuckDB corrompido".to_string())?;
+    project_store::load_project_cache(&conn, &cache_dir, &tables)
+}
+
+#[tauri::command]
+fn project_cache_info(
+    project_key: String,
+    tables: Vec<project_store::TableCacheMeta>,
+    dir: Option<String>,
+) -> Result<project_store::CacheInfo, String> {
+    let base = app_cache_base_dir();
+    let cache_dir = project_store::resolve_cache_dir(&project_key, &base, dir.as_deref())?;
+    Ok(project_store::cache_info(&cache_dir, &tables))
+}
+
+#[tauri::command]
+fn project_cache_invalidate(
+    project_key: String,
+    dir: Option<String>,
+) -> Result<(), String> {
+    let base = app_cache_base_dir();
+    let cache_dir = project_store::resolve_cache_dir(&project_key, &base, dir.as_deref())?;
+    project_store::invalidate_cache(&cache_dir)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Migra dados do PrismBI (identifier antigo) para o VetroBI ANTES de
@@ -569,6 +634,10 @@ pub fn run() {
             etl::commands::etl_to_m,
             etl::commands::etl_from_m,
             etl::commands::etl_step_m,
+            project_cache_save,
+            project_cache_load,
+            project_cache_info,
+            project_cache_invalidate,
         ])
         .run(tauri::generate_context!())
         .expect("Erro ao executar VetroBI");

@@ -23,6 +23,10 @@ import { APP_VERSION } from '../version';
 export interface ProjectState {
   version: string;
   appVersion?: string;
+  /** Id estável do projeto, gerado uma vez e persistido (v0.11+). Usado
+   * só como chave para o cache colunar nativo (`project_cache_*`,
+   * ver src-tauri/src/project_store) — nunca como caminho de arquivo. */
+  projectId?: string;
   projectName: string;
   sourcePbipPath?: string | null;
   tables: Table[];
@@ -331,4 +335,91 @@ export function exportProjectToFile(state: ProjectState, fileName = 'Projeto_Ins
   setTimeout(() => {
     URL.revokeObjectURL(objectUrl);
   }, 1000);
+
+  // Salva também o cache colunar nativo (melhor esforço, em segundo
+  // plano): o .insight exportado é só os metadados; o cache colunar é
+  // quem permite reabrir sem reler as fontes (ver §B em docs/V011.md).
+  // Nunca bloqueia o download nem propaga erro — se falhar, a próxima
+  // abertura simplesmente releria as fontes (comportamento atual).
+  void saveProjectCacheBestEffort(normalized);
 }
+
+/** Dispara `project_cache_save` fora do Tauri runtime é um no-op; dentro
+ * dele, grava em segundo plano e nunca lança — falhas só geram um
+ * `console.warn`, porque o cache é um acelerador, não a fonte da verdade
+ * (os metadados + fontes originais continuam sendo a fonte da verdade). */
+export async function saveProjectCacheBestEffort(state: ProjectState): Promise<void> {
+  try {
+    const { isTauriRuntime, projectCacheSave } = await import('../bridge/tauriBridge');
+    if (!isTauriRuntime()) return;
+    if (!state.projectId) return;
+    const metas = buildTableCacheMetas(state.tables || []);
+    if (metas.length === 0) return;
+    await projectCacheSave(state.projectId, metas);
+  } catch (err) {
+    console.warn('Falha ao salvar o cache colunar do projeto (não bloqueante):', err);
+  }
+}
+
+// ---------------------------------------------------------------------
+// Cache colunar de projeto (v0.11 Frente B) — ver src-tauri/src/project_store
+// e bridge/tauriBridge.ts (projectCacheSave/Load/Info). O cache guarda uma
+// cópia materializada das tabelas (DuckDB nativo) ao lado dos metadados
+// acima, para reabrir sem reler as fontes. Este arquivo só monta a
+// identidade/assinatura do que entra no cache; quem chama o Tauri é o
+// useBiStore (saveProject/loadStateFromProject).
+// ---------------------------------------------------------------------
+
+/** Garante que o projeto tem um `projectId` estável, gerando um na
+ * primeira vez que for necessário (ex.: primeiro save depois do v0.11). */
+export function ensureProjectId(state: ProjectState): ProjectState {
+  if (state.projectId) return state;
+  const id =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `proj_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  return { ...state, projectId: id };
+}
+
+/** Assinatura estável do schema de uma tabela (nome+tipo de cada coluna,
+ * ordenada), usada para invalidar o cache quando o schema muda. */
+function columnsSignature(table: Table): string {
+  return (table.columns || [])
+    .map(c => `${c.name}:${c.dataType}`)
+    .sort()
+    .join('|');
+}
+
+/** Assinatura da fonte de uma tabela (sem segredos: nunca inclui senha,
+ * só o que já é público no projeto), usada para invalidar o cache quando
+ * a fonte muda (arquivo diferente, outra aba, outra query M, etc.). */
+function sourceSignature(table: Table): string {
+  const sc = table.sourceConfig;
+  if (!sc) return 'no-source';
+  const parts = [
+    sc.type,
+    sc.filePath || '',
+    sc.sheetName || '',
+    sc.url || '',
+    sc.pbipRoot || '',
+    sc.mScript || '',
+    sc.db ? `${sc.db.kind}:${JSON.stringify(sc.db.config || {})}:${JSON.stringify(sc.db.source || {})}` : '',
+  ];
+  return parts.join('|');
+}
+
+/** Monta a lista de metadados por tabela que o backend usa para validar
+ * (ou gravar) o cache colunar — ver `NativeTableCacheMeta` no bridge. */
+export function buildTableCacheMetas(
+  tables: Table[]
+): { name: string; columnsSignature: string; sourceSignature: string; rowCount: number }[] {
+  return tables
+    .filter(t => !!t.duckdbTable)
+    .map(t => ({
+      name: t.duckdbTable as string,
+      columnsSignature: columnsSignature(t),
+      sourceSignature: sourceSignature(t),
+      rowCount: t.totalRows ?? (t.rows ? t.rows.length : 0),
+    }));
+}
+

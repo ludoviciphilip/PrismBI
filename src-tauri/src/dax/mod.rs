@@ -1,9 +1,11 @@
 pub mod ast;
+pub mod calculated;
 pub mod duckdb_load;
 pub mod evaluator;
 pub mod functions;
 pub mod lexer;
 pub mod parser;
+pub mod pushdown;
 pub mod query_planner;
 #[cfg(test)]
 mod tests_duckdb_sync;
@@ -522,6 +524,14 @@ pub struct DaxTableData {
     pub rows: Vec<Vec<DaxValue>>,
     /// Map of lowercased column name -> sortByColumn name (e.g. "mês" -> "MêsNum").
     pub sort_by_columns: HashMap<String, String>,
+    /// True for a materialized calculated table (CALENDAR, CALENDARAUTO,
+    /// SUMMARIZE, ADDCOLUMNS, UNION, ..., or a TMDL `calculated` partition).
+    /// CALENDARAUTO must skip these when scanning `model.tables` for date
+    /// columns (dax.guide/calendarauto: "CALENDARAUTO ignores calculated
+    /// tables and calculated columns"). Defaults to `false`; synthetic
+    /// query-time tables (VALUES/FILTER/... intermediate results) are never
+    /// calculated *model* tables, so they also default to `false`.
+    pub is_calculated: bool,
 }
 
 impl DaxTableData {
@@ -575,6 +585,7 @@ impl DaxTableData {
             col_types,
             rows,
             sort_by_columns: HashMap::new(),
+            is_calculated: false,
         }
     }
 
@@ -699,6 +710,24 @@ pub struct DaxTableInput {
     /// Optional column name -> sortByColumn name metadata for chronological/custom ordering.
     #[serde(default)]
     pub sort_by_columns: HashMap<String, String>,
+    /// True for a calculated table (TMDL `calculated` partition / "Nova
+    /// tabela" with a DAX table expression). `rows`/`columns` are ignored;
+    /// the table is materialized from `expression` by
+    /// `calculated::materialize_calculated_tables`. CALENDARAUTO must skip
+    /// these tables when scanning for date columns (dax.guide/calendarauto).
+    #[serde(default)]
+    pub is_calculated: bool,
+    /// DAX table expression for a calculated table (CALENDAR, CALENDARAUTO,
+    /// SUMMARIZE, SUMMARIZECOLUMNS, ADDCOLUMNS, UNION, FILTER, DISTINCT,
+    /// DATATABLE, ...). Only meaningful when `is_calculated` is true.
+    #[serde(default)]
+    pub expression: Option<String>,
+    /// Calculated columns on this table: lowercased column name -> DAX row
+    /// expression (RELATED/RELATEDTABLE/EARLIER in scope). Values for these
+    /// columns in `rows` are ignored; they're computed per-row by
+    /// `calculated::materialize_calculated_columns`.
+    #[serde(default)]
+    pub calculated_columns: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -815,10 +844,25 @@ pub struct DaxModel {
     /// A propagação de filtros compara milhões de células por consulta; sem
     /// isso cada comparação de texto alocava um `to_lowercase()`.
     key_cache: HashMap<String, Vec<Vec<ValueKey>>>,
-    /// DuckDB version each DAX table key was last loaded at (only for
+    /// DuckDB version each DAX table key was last loaded at (só para
     /// `duckdb_table`-backed tables), so a repeated sync with the same
     /// version can reuse `tables`/`key_cache` instead of reloading.
     duckdb_table_versions: HashMap<String, u64>,
+    /// table_key (lowercase) -> set of calculated column names (lowercase)
+    /// on that table. CALENDARAUTO (and anything else honoring
+    /// "ignores calculated tables and calculated columns") must skip these.
+    pub calculated_columns: HashMap<String, HashSet<String>>,
+    /// Errors from materializing calculated tables/columns during the last
+    /// sync, keyed by `"table"` (table-level, e.g. a dependency cycle) or
+    /// `"table.column"` (a calculated column's DAX failed to evaluate).
+    /// Surfaced inline by the UI's formula editor (see `src/dax/calculated`).
+    pub calculated_errors: HashMap<String, String>,
+    /// v0.11 Frente A (pushdown): DAX table key (lowercase) -> the DuckDB
+    /// table name that physically backs it (`DaxTableInput::duckdb_table`).
+    /// Tables without a DuckDB source (sample data, manual entry...) have no
+    /// entry here, which is exactly the signal `pushdown` needs to bail out
+    /// to the DAX engine (no physical table to push SQL down to).
+    duckdb_table_names: HashMap<String, String>,
 }
 
 impl Default for DaxModel {
@@ -835,6 +879,9 @@ impl DaxModel {
             measures: HashMap::new(),
             key_cache: HashMap::new(),
             duckdb_table_versions: HashMap::new(),
+            calculated_columns: HashMap::new(),
+            calculated_errors: HashMap::new(),
+            duckdb_table_names: HashMap::new(),
         }
     }
 
@@ -875,8 +922,32 @@ impl DaxModel {
         let mut new_tables = HashMap::new();
         let mut new_key_cache = HashMap::new();
         let mut new_versions = HashMap::new();
+        // Calculated tables (TMDL `calculated` partition / "Nova tabela")
+        // aren't built from `rows`; they're materialized below, in
+        // dependency order, once every non-calculated table is in place.
+        let mut calc_table_inputs: Vec<crate::dax::calculated::CalcTableInput> = Vec::new();
+        // table_key -> (col_key -> expression), for every table (base or
+        // calculated) that has calculated columns.
+        let mut calc_column_inputs: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut new_duckdb_names = HashMap::new();
         for t in payload.tables {
             let key = t.name.to_lowercase();
+            if let Some(duckdb_name) = &t.duckdb_table {
+                new_duckdb_names.insert(key.clone(), duckdb_name.clone());
+            }
+            if !t.calculated_columns.is_empty() {
+                calc_column_inputs.insert(
+                    key.clone(),
+                    t.calculated_columns.iter().map(|(c, e)| (c.to_lowercase(), e.clone())).collect(),
+                );
+            }
+            if t.is_calculated {
+                calc_table_inputs.push(crate::dax::calculated::CalcTableInput {
+                    name: t.name.clone(),
+                    expression: t.expression.clone().unwrap_or_default(),
+                });
+                continue;
+            }
             let sort_by: HashMap<String, String> = t
                 .sort_by_columns
                 .iter()
@@ -921,19 +992,48 @@ impl DaxModel {
         self.tables = new_tables;
         self.key_cache = new_key_cache;
         self.duckdb_table_versions = new_versions;
+        self.duckdb_table_names = new_duckdb_names;
         self.relationships = payload.relationships;
         self.measures.clear();
         for m in payload.measures {
             self.measures.insert(m.name.to_lowercase(), m);
         }
+        self.calculated_columns = calc_column_inputs
+            .iter()
+            .map(|(t, cols)| (t.clone(), cols.keys().cloned().collect()))
+            .collect();
+        self.calculated_errors.clear();
+        let table_errors = crate::dax::calculated::materialize_calculated_tables(self, calc_table_inputs);
+        self.calculated_errors.extend(table_errors);
+        let column_errors = crate::dax::calculated::materialize_calculated_columns(self, &calc_column_inputs);
+        self.calculated_errors.extend(column_errors);
     }
 
     pub fn get_table(&self, name: &str) -> Option<&DaxTableData> {
         self.tables.get(&name.trim().to_lowercase())
     }
 
+    /// Inserts a freshly materialized calculated table (`dax::calculated`)
+    /// into the model, rebuilding its filter-key cache so later evaluations
+    /// (including dependent calculated tables/columns) see it immediately.
+    pub fn insert_calculated_table(&mut self, key: &str, data: DaxTableData) {
+        let cache = Self::build_key_cache(&data);
+        self.key_cache.insert(key.to_string(), cache);
+        self.tables.insert(key.to_string(), data);
+    }
+
     pub fn get_measure(&self, name: &str) -> Option<&DaxMeasureInput> {
         self.measures.get(&name.trim().to_lowercase())
+    }
+
+    /// v0.11 Frente A (pushdown): the DuckDB table name backing `dax_table`
+    /// (by its DAX model name, any case), if any. `None` means this table
+    /// has no physical DuckDB table (sample/manual data) and pushdown must
+    /// fall back to the DAX engine.
+    pub fn duckdb_table_name(&self, dax_table: &str) -> Option<&str> {
+        self.duckdb_table_names
+            .get(&dax_table.trim().to_lowercase())
+            .map(String::as_str)
     }
 
     /// §3 item 3 / blank member: true when some active many-to-one relationship
@@ -1316,7 +1416,7 @@ mod propagation_tests {
                     columns: vec!["CatID".into(), "Nome".into()],
                     rows: rows(&["CatID", "Nome"], &[&[json!(1), json!("A")], &[json!(2), json!("B")]]),
                     column_types: vec![],
-                    sort_by_columns: Default::default(),
+                    sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
                 DaxTableInput { duckdb_table: None,
                     name: "d_Produto".into(),
@@ -1330,7 +1430,7 @@ mod propagation_tests {
                         ],
                     ),
                     column_types: vec![],
-                    sort_by_columns: Default::default(),
+                    sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
                 DaxTableInput { duckdb_table: None,
                     name: "f_Vendas".into(),
@@ -1340,7 +1440,7 @@ mod propagation_tests {
                         &[&[json!(10), json!(1)], &[json!(11), json!(10)], &[json!(12), json!(100)]],
                     ),
                     column_types: vec![],
-                    sort_by_columns: Default::default(),
+                    sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![
@@ -1427,15 +1527,15 @@ mod bench_tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, name: "Dim1".into(), columns: vec!["Id".into(), "Grupo1".into()], rows: dim_rows("Grupo1"), column_types: vec![], sort_by_columns: Default::default() },
-                DaxTableInput { duckdb_table: None, name: "Dim2".into(), columns: vec!["Id".into(), "Grupo2".into()], rows: dim_rows("Grupo2"), column_types: vec![], sort_by_columns: Default::default() },
-                DaxTableInput { duckdb_table: None, name: "Dim3".into(), columns: vec!["Id".into(), "Grupo3".into()], rows: dim_rows("Grupo3"), column_types: vec![], sort_by_columns: Default::default() },
+                DaxTableInput { duckdb_table: None, name: "Dim1".into(), columns: vec!["Id".into(), "Grupo1".into()], rows: dim_rows("Grupo1"), column_types: vec![], sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { duckdb_table: None, name: "Dim2".into(), columns: vec!["Id".into(), "Grupo2".into()], rows: dim_rows("Grupo2"), column_types: vec![], sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { duckdb_table: None, name: "Dim3".into(), columns: vec!["Id".into(), "Grupo3".into()], rows: dim_rows("Grupo3"), column_types: vec![], sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
                 DaxTableInput { duckdb_table: None,
                     name: "Fato".into(),
                     columns: vec!["Dim1Id".into(), "Dim2Id".into(), "Dim3Id".into(), "Valor".into()],
                     rows: fact_rows,
                     column_types: vec![],
-                    sort_by_columns: Default::default(),
+                    sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![

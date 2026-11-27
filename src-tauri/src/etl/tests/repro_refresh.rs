@@ -89,7 +89,7 @@ fn rhino_remove_steps_apply_then_refresh_all_returns() {
                 columns: t.columns.iter().map(|c| c.name.clone()).collect(),
                 rows: t.rows.clone(),
                 column_types: t.columns.iter().map(|c| Some(c.data_type.clone())).collect(),
-                sort_by_columns: Default::default(),
+                sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
             })
             .collect();
         tables.push(DaxTableInput { duckdb_table: None,
@@ -97,7 +97,7 @@ fn rhino_remove_steps_apply_then_refresh_all_returns() {
             columns: applied.columns.iter().map(|c| c.name.clone()).collect(),
             rows: applied.rows.clone(),
             column_types: applied.columns.iter().map(|c| Some(c.data_type.clone())).collect(),
-            sort_by_columns: Default::default(),
+            sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
         });
         let payload = DaxModelSyncPayload {
             tables,

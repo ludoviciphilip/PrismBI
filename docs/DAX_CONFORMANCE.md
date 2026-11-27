@@ -3,21 +3,31 @@
 > Gerado por `scripts/dax-conformance-report.mjs` a partir de `tests/dax-corpus/`. Não edite à mão.
 > Cada caso tem resultado esperado conferido de forma independente dos motores.
 
-**Casos:** 403 · **Rust (principal):** 402/403 (99.8%) · **TypeScript (legado):** 361/403 (89.6%)
+**Casos:** 412 · **Rust (principal):** 412/412 (100.0%) · **TypeScript (legado):** 361/412 (87.6%)
 
 | Categoria | Casos | Rust | TS |
 | :--- | ---: | ---: | ---: |
+| calculated | 9 | 9 (100.0%) | 0 (0.0%) |
 | core | 49 | 49 (100.0%) | 48 (98.0%) |
 | filter | 82 | 82 (100.0%) | 60 (73.2%) |
 | scalar | 110 | 110 (100.0%) | 106 (96.4%) |
 | stats | 73 | 73 (100.0%) | 71 (97.3%) |
 | time | 69 | 69 (100.0%) | 69 (100.0%) |
-| window | 20 | 19 (95.0%) | 7 (35.0%) |
+| window | 20 | 20 (100.0%) | 7 (35.0%) |
 
-## Casos com falha (42)
+## Casos com falha (51)
 
 | Caso | Rust | TS |
 | :--- | :--- | :--- |
+| `calculated.column.earlier_cheaper_in_category` | ✅ | ❌ null |
+| `calculated.column.related_category_filters_sales` | ✅ | ❌ null |
+| `calculated.measure.sum_over_calculated_table` | ✅ | ❌ null |
+| `calculated.table.addcolumns_margin_sum` | ✅ | ❌ null |
+| `calculated.table.calendar_is_flagged_for_calendarauto` | ✅ | ❌ null |
+| `calculated.table.calendar_row_count` | ✅ | ❌ 0 |
+| `calculated.table.summarize_category_avg_sum` | ✅ | ❌ null |
+| `calculated.table.summarize_category_count` | ✅ | ❌ 0 |
+| `calculated.table.union_keeps_duplicates` | ✅ | ❌ 0 |
 | `core.rankx.client` | ✅ | ❌ 1 |
 | `filter.allselected.column_not_in_shadow_clears` | ✅ | ❌ 45 |
 | `filter.allselected.divide_share_three_selected` | ✅ | ❌ 1 |
@@ -47,7 +57,7 @@
 | `scalar.text.format.thousands_pattern` | ✅ | ❌ "1.234.567" |
 | `stats.rankx.blank_target_ranks_as_zero` | ✅ | ❌ null |
 | `stats.rankx.sum_without_calculate_ties_all` | ✅ | ❌ 8 |
-| `window.calendarauto.fiscal_july_days` | ❌ 1096 | ❌ 365 |
+| `window.calendarauto.fiscal_july_days` | ✅ | ❌ 365 |
 | `window.calendarauto.fiscal_july_start_year` | ✅ | ❌ null |
 | `window.index.last_in_partition` | ✅ | ❌ 215 |
 | `window.index.top_price_desc` | ✅ | ❌ 1135 |

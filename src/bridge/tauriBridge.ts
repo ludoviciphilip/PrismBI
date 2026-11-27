@@ -322,6 +322,17 @@ export interface DaxModelSyncPayload {
     rows: Record<string, any>[];
     columnTypes?: (string | null)[];
     sortByColumns?: Record<string, string>;
+    /** True for a calculated table ("Nova tabela" / TMDL `calculated`
+     * partition). `columns`/`rows` are ignored by the Rust side when set;
+     * see `expression`. */
+    isCalculated?: boolean;
+    /** DAX table expression for a calculated table (CALENDAR, ADDCOLUMNS,
+     * SUMMARIZE, UNION, FILTER, DISTINCT, DATATABLE, ...). */
+    expression?: string;
+    /** Calculated columns on this table: column name -> DAX row expression
+     * (RELATED/RELATEDTABLE/EARLIER in scope). Works for both calculated
+     * and regular (imported) tables -- this is "Nova coluna". */
+    calculatedColumns?: Record<string, string>;
   }[];
   relationships: {
     fromTable: string;
@@ -339,6 +350,95 @@ export function isTauriRuntime(): boolean {
     typeof window !== 'undefined' &&
     Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__)
   );
+}
+
+// ---------------------------------------------------------------------
+// Cache colunar de projeto (v0.11 Frente B) — ver src-tauri/src/project_store.
+// ---------------------------------------------------------------------
+
+export interface NativeTableCacheMeta {
+  name: string;
+  columnsSignature: string;
+  sourceSignature: string;
+  rowCount: number;
+}
+
+export interface NativeProjectCacheManifest {
+  formatVersion: number;
+  format: string;
+  appVersion: string;
+  createdAt: string;
+}
+
+export interface NativeProjectCacheSaveOutcome {
+  manifest: NativeProjectCacheManifest;
+  totalRows: number;
+  elapsedMs: number;
+  bytesOnDisk: number;
+}
+
+export interface NativeProjectCacheLoadOutcome {
+  loaded: boolean;
+  reason?: string | null;
+  tables: NativeImportedTable[];
+  totalRows: number;
+  elapsedMs: number;
+}
+
+export interface NativeProjectCacheInfo {
+  exists: boolean;
+  valid: boolean;
+  reason?: string | null;
+  formatVersion?: number | null;
+  totalRows: number;
+  tableCount: number;
+}
+
+/** Grava o cache colunar do projeto (tabelas já carregadas no DuckDB nativo). */
+export async function projectCacheSave(
+  projectKey: string,
+  tables: NativeTableCacheMeta[],
+  dir?: string | null
+): Promise<NativeProjectCacheSaveOutcome> {
+  return await invoke<NativeProjectCacheSaveOutcome>('project_cache_save', {
+    projectKey,
+    tables,
+    dir: dir ?? null,
+  });
+}
+
+/** Carrega as tabelas do cache no DuckDB nativo, se válido (ver `tables`). */
+export async function projectCacheLoad(
+  projectKey: string,
+  tables: NativeTableCacheMeta[],
+  dir?: string | null
+): Promise<NativeProjectCacheLoadOutcome> {
+  return await invoke<NativeProjectCacheLoadOutcome>('project_cache_load', {
+    projectKey,
+    tables,
+    dir: dir ?? null,
+  });
+}
+
+/** Só inspeciona o cache (existe? válido?) sem carregar nada no DuckDB. */
+export async function projectCacheInfo(
+  projectKey: string,
+  tables: NativeTableCacheMeta[],
+  dir?: string | null
+): Promise<NativeProjectCacheInfo> {
+  return await invoke<NativeProjectCacheInfo>('project_cache_info', {
+    projectKey,
+    tables,
+    dir: dir ?? null,
+  });
+}
+
+/** Remove o cache colunar do projeto (ex.: ao descartar ou forçar rebuild). */
+export async function projectCacheInvalidate(
+  projectKey: string,
+  dir?: string | null
+): Promise<void> {
+  await invoke<void>('project_cache_invalidate', { projectKey, dir: dir ?? null });
 }
 
 export async function getNativeEngineInfo(): Promise<NativeEngineInfo> {
@@ -439,6 +539,48 @@ export async function syncModelToRust(payload: DaxModelSyncPayload): Promise<num
   return await invoke<number>('sync_model_to_rust', { payload });
 }
 
+/** v0.11 Frente C: "Nova tabela" (guia Modelagem). Builds a calculated-table
+ * entry on top of `currentPayload` and re-syncs the whole model (there's no
+ * dedicated Tauri command -- `sync_model_to_rust` already materializes
+ * calculated tables from `isCalculated`/`expression`, in dependency order,
+ * with cycle detection; see `dax::calculated` on the Rust side). Any
+ * materialization error for `name` lands in the model's `calculatedErrors`
+ * and should be surfaced inline by the formula editor (not thrown here).
+ */
+export async function createCalculatedTable(
+  currentPayload: DaxModelSyncPayload,
+  name: string,
+  expression: string
+): Promise<number> {
+  const tables = currentPayload.tables.filter((t) => t.name.toLowerCase() !== name.toLowerCase());
+  tables.push({ name, columns: [], rows: [], isCalculated: true, expression });
+  return await syncModelToRust({ ...currentPayload, tables });
+}
+
+/** v0.11 Frente C: "Nova coluna" (guia Modelagem / painel Dados). Adds or
+ * replaces a calculated column's DAX expression on `tableName` and re-syncs.
+ * Works on both calculated and regular (imported) tables; RELATED,
+ * RELATEDTABLE and EARLIER are evaluated through the normal row-context
+ * stack on the Rust side.
+ */
+export async function addCalculatedColumn(
+  currentPayload: DaxModelSyncPayload,
+  tableName: string,
+  columnName: string,
+  expression: string
+): Promise<number> {
+  const tables = currentPayload.tables.map((t) => {
+    if (t.name.toLowerCase() !== tableName.toLowerCase()) return t;
+    const columns = t.columns.includes(columnName) ? t.columns : [...t.columns, columnName];
+    return {
+      ...t,
+      columns,
+      calculatedColumns: { ...(t.calculatedColumns ?? {}), [columnName]: expression },
+    };
+  });
+  return await syncModelToRust({ ...currentPayload, tables });
+}
+
 export async function evaluateDaxNative(
   expression: string,
   filters?: { tableId: string; column: string; values: any[] }[]
@@ -489,7 +631,14 @@ export interface NativeVisualQueryResult {
   series: NativeVisualSeries[];
   summaryValue?: number | null;
   queryTimeMs: number;
-  engine: string;
+  /**
+   * v0.11 Frente A: qual motor respondeu esta consulta. `'duckdb'` = SQL
+   * pushdown (agregação/join/filtro traduzidos e executados no DuckDB,
+   * sem carregar as linhas no modelo DAX); `'rust-native'` = motor DAX em
+   * Rust (caminho de sempre; usado sempre que o pushdown não cobre a
+   * consulta ou falha). Mostrado pelo Performance Analyzer.
+   */
+  engine: 'duckdb' | 'rust-native' | string;
   /** v0.10 Frente G: chave de cada nível por categoria (alinhado com `categories`). */
   categoryKeys?: unknown[][];
   matrix?: { rows: NativeMatrixNodeDto[]; columnTotals: (number | null)[]; grandTotal?: number | null } | null;

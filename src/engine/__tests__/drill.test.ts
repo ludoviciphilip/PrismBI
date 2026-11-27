@@ -24,6 +24,8 @@ import {
   MatrixExpansion,
   buildHoverFilters,
   buildPathFilters,
+  describeDrillFilterSpec,
+  describeDrillFilterSpecs,
 } from '../drill';
 import { DataType, VisualDataConfig } from '../../types/bi';
 
@@ -297,5 +299,35 @@ describe('expansão da matriz', () => {
   it('matrixPathId é estável e distingue número de texto', () => {
     expect(matrixPathId([2024, 'Q1'])).toBe(matrixPathId([2024, 'Q1']));
     expect(matrixPathId([2024])).not.toBe(matrixPathId(['2024']));
+  });
+});
+
+// v0.11 Frente D: descrição legível de um filtro de drill (cross-filter por data
+// drillada / rótulo concatenado) para o painel de Filtros.
+describe('describeDrillFilterSpec/describeDrillFilterSpecs', () => {
+  it('descreve um nível de data com a legenda e o rótulo formatado da parte', () => {
+    const levels = [{ field: 'Data', datePart: 'quarter' as const, caption: 'Trimestre' }];
+    expect(describeDrillFilterSpec(levels, { field: 'Data', datePart: 'quarter', value: 2 })).toBe('Trimestre: Trim 2');
+  });
+
+  it('descreve um campo comum (sem parte de data) usando a legenda do nível', () => {
+    const levels = [{ field: 'Regiao', caption: 'Região' }];
+    expect(describeDrillFilterSpec(levels, { field: 'Regiao', value: 'Sul' })).toBe('Região: Sul');
+  });
+
+  it('cai no próprio nome do campo quando não acha o nível (caso defensivo)', () => {
+    expect(describeDrillFilterSpec([], { field: 'Produto', value: 'X' })).toBe('Produto: X');
+  });
+
+  it('concatena ancestrais + nível atual com " · " (caminho completo de um ponto drillado)', () => {
+    const levels = [
+      { field: 'Data', datePart: 'year' as const, caption: 'Ano' },
+      { field: 'Data', datePart: 'quarter' as const, caption: 'Trimestre' },
+    ];
+    const specs = [
+      { field: 'Data', datePart: 'year' as const, value: 2024 },
+      { field: 'Data', datePart: 'quarter' as const, value: 2 },
+    ];
+    expect(describeDrillFilterSpecs(levels, specs)).toBe('Ano: 2024 · Trimestre: Trim 2');
   });
 });

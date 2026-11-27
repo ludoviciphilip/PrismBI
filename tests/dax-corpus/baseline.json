@@ -1,5 +1,14 @@
 {
   "rust": [
+    "calculated.column.earlier_cheaper_in_category",
+    "calculated.column.related_category_filters_sales",
+    "calculated.measure.sum_over_calculated_table",
+    "calculated.table.addcolumns_margin_sum",
+    "calculated.table.calendar_is_flagged_for_calendarauto",
+    "calculated.table.calendar_row_count",
+    "calculated.table.summarize_category_avg_sum",
+    "calculated.table.summarize_category_count",
+    "calculated.table.union_keeps_duplicates",
     "core.average.all",
     "core.average.ignores_blank",
     "core.calculate.all_table",
@@ -386,6 +395,7 @@
     "window.calendar.feb_non_leap",
     "window.calendar.leap_quarter_days",
     "window.calendarauto.default_dec",
+    "window.calendarauto.fiscal_july_days",
     "window.calendarauto.fiscal_july_start_year",
     "window.index.last_in_partition",
     "window.index.top_price_desc",
