@@ -111,12 +111,31 @@ export interface MatrixDrillControlsProps {
   onCollapseAll: () => void;
   onExpandOneLevel: () => void;
   t: Translations;
+  /** v0.11 Rodada 2 (Frente I): paridade com o botão "Linhas"/"Colunas" do
+   * cabeçalho da matriz no Power BI Desktop. Só aparece quando a matriz tem
+   * N níveis nos DOIS eixos (senão não há o que alternar). */
+  axis?: 'rows' | 'columns';
+  onToggleAxis?: () => void;
 }
 
 export const MatrixDrillControls: React.FC<MatrixDrillControlsProps> = p => {
   const d = p.t.drill;
   return (
     <div role="group" aria-label={d.matrixControlsGroupLabel} data-testid="matrix-drill-controls" className="flex items-center gap-0.5 shrink-0 mr-0.5 pr-1 border-r border-slate-200 dark:border-slate-700">
+      {p.onToggleAxis && (
+        <button
+          type="button"
+          data-testid="matrix-axis-toggle"
+          title={d.switchAxisHint}
+          onClick={e => {
+            e.stopPropagation();
+            p.onToggleAxis?.();
+          }}
+          className="h-6 px-1.5 shrink-0 inline-flex items-center justify-center rounded text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-slate-200/60 dark:hover:bg-slate-700/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+        >
+          {p.axis === 'columns' ? d.axisColumns : d.axisRows}
+        </button>
+      )}
       <DrillButton
         label={d.expandOneLevel}
         title={p.canExpand ? d.expandOneLevelHint : d.expandOneLevelDoneHint}

@@ -17,11 +17,26 @@ function migrateVisual(visual: Visual): Visual {
   return { ...visual, dataConfig: { ...dc, matrixRowFields: [dc.xAxisField, child] } };
 }
 
+/**
+ * v0.11 Rodada 2 (Frente I): a matriz só tinha 1 nível nas colunas — a legenda
+ * (`legendField`). Vira o 1º nível de `matrixColumnFields`, preservando
+ * `legendField` (exportação/outros leitores continuam funcionando). Só roda
+ * quando `matrixColumnFields` ainda não existe (idempotente: não sobrescreve
+ * uma matriz já editada no v0.11+, mesmo que só tenha 1 nível de coluna).
+ */
+function migrateMatrixColumns(visual: Visual): Visual {
+  const dc = visual.dataConfig;
+  if (visual.type !== 'matrix' || !dc) return visual;
+  if (Array.isArray(dc.matrixColumnFields)) return visual;
+  if (!dc.legendField) return visual;
+  return { ...visual, dataConfig: { ...dc, matrixColumnFields: [dc.legendField] } };
+}
+
 export function migrateDrillConfigs(pages: Page[]): Page[] {
   if (!Array.isArray(pages)) return pages;
   return pages.map(page => {
     if (!Array.isArray(page.visuals)) return page;
-    const visuals = page.visuals.map(migrateVisual);
+    const visuals = page.visuals.map(migrateVisual).map(migrateMatrixColumns);
     return visuals.every((v, i) => v === page.visuals[i]) ? page : { ...page, visuals };
   });
 }

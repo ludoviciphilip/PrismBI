@@ -65,4 +65,26 @@ describe('migrateDrillConfigs', () => {
     expect(dc.matrixRowFields).toEqual(['Categoria', 'Produto']);
     expect(resolveMatrixRowLevels(dc, () => 'text').map(l => l.field)).toEqual(['Categoria', 'Produto']);
   });
+
+  it('v0.11 Rodada 2 (Frente I): a legenda antiga vira o 1º nível de matrixColumnFields', () => {
+    const withLegend = vis({ dataConfig: { tableId: 't', xAxisField: 'Categoria', legendField: 'Regiao', yAxisFields: ['Valor'] } });
+    const [p] = migrateDrillConfigs([page([withLegend])]);
+    const dc = p.visuals[0].dataConfig;
+    expect(dc.matrixColumnFields).toEqual(['Regiao']);
+    // legendField preservado (exportação/outros leitores continuam funcionando)
+    expect(dc.legendField).toBe('Regiao');
+  });
+
+  it('migração de colunas é idempotente e não roda sem legenda nem sobrescreve matrixColumnFields já definido', () => {
+    const noLegend = vis({ dataConfig: { tableId: 't', xAxisField: 'Categoria' } });
+    const already = vis({ dataConfig: { tableId: 't', xAxisField: 'Categoria', legendField: 'Regiao', matrixColumnFields: ['Regiao', 'Cidade'] } });
+    const explicitlyEmpty = vis({ dataConfig: { tableId: 't', xAxisField: 'Categoria', legendField: 'Regiao', matrixColumnFields: [] } });
+    const pages = [page([noLegend, already, explicitlyEmpty])];
+    const out = migrateDrillConfigs(pages);
+    expect(out[0].visuals[0]).toBe(noLegend);
+    expect(out[0].visuals[0].dataConfig.matrixColumnFields).toBeUndefined();
+    expect(out[0].visuals[1]).toBe(already); // já tinha matrixColumnFields: não sobrescreve
+    expect(out[0].visuals[2]).toBe(explicitlyEmpty); // [] já é "definido": idempotente
+    expect(migrateDrillConfigs(migrateDrillConfigs(pages))).toEqual(out);
+  });
 });

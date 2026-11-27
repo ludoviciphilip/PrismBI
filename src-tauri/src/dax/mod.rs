@@ -7,6 +7,10 @@ pub mod lexer;
 pub mod parser;
 pub mod pushdown;
 pub mod query_planner;
+/// v0.11 Frente I: N níveis nas COLUNAS da matriz (gancho mínimo em
+/// `query_planner.rs`; toda a lógica — árvore, subtotal por nível e a
+/// interseção linha×coluna — mora aqui).
+pub mod matrix_columns;
 #[cfg(test)]
 mod tests_duckdb_sync;
 
