@@ -128,5 +128,7 @@ pub fn expand_value(grid: &[GridValue], index: usize) -> GridValue {
     grid.get(index).copied().flatten()
 }
 
+pub mod formula;
+
 #[cfg(test)]
 mod tests;

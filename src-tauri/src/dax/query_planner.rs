@@ -76,6 +76,13 @@ pub struct NativeVisualQueryRequest {
     /// Caminhos de coluna recolhidos individualmente (−).
     #[serde(default)]
     pub matrix_column_collapsed: Vec<Vec<JsonValue>>,
+    /// v0.11 Rodada 2, Frente E: Cálculos Visuais avaliados no Rust sobre a
+    /// grade (`categories`/`series`) já computada por este request — ver
+    /// `dax::visual_calcs::formula`. Fica fora de `supportsNativeRustQuery`
+    /// em `VisualCard.tsx` até esta ligação existir; com ela, visuais com
+    /// Cálculos Visuais também passam a usar o caminho nativo.
+    #[serde(default)]
+    pub visual_calculations: Vec<crate::dax::visual_calcs::formula::NativeVisualCalcRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,6 +173,14 @@ pub struct NativeTableQueryRequest {
     /// Name of a column in `columns` (below) to sort the full result by,
     /// before Top N / pagination — mirrors the table's `sortByColumn`.
     pub sort_field: Option<String>,
+    /// v0.11 Rodada 2, Frente E: mirrors the TS `sortRows({ sortByColumn })` —
+    /// when set AND present among `columns` (group/raw/value fields), rows
+    /// are ordered by THIS column's values instead of `sort_field`'s own
+    /// (e.g. a "Mês" text column sorted by a hidden "MêsNúmero"). The
+    /// caller must include it as a raw/group field for this to take effect,
+    /// exactly like the TS `sortBy in sample` guard in `visualSort.ts`.
+    #[serde(default)]
+    pub sort_by_column: Option<String>,
     #[serde(default)]
     pub sort_order: String, // "asc" | "desc", default asc
     /// Keep only the first N rows after sorting (0 = no Top N).
@@ -196,6 +211,14 @@ pub struct NativeTableQueryResult {
     /// Value columns in the total row, each evaluated by the engine in the
     /// TOTAL filter context (NOT a client-side sum of the returned page).
     pub total_row: Option<NativeTableRow>,
+    /// v0.11 Rodada 2, Frente E: min/max of EVERY row of the result (not just
+    /// the returned page) for each numeric column — conditional-formatting
+    /// gradients (`styleForTotalCell`/`getFieldFormat`) need the TRUE
+    /// min/max of the full set, not just what happens to be on the current
+    /// page. Keyed by column name (see `columns`); absent for non-numeric
+    /// columns or columns with no numeric values at all.
+    #[serde(default)]
+    pub column_min_max: HashMap<String, (f64, f64)>,
     pub query_time_ms: f64,
     pub engine: String,
 }
@@ -311,7 +334,12 @@ pub fn execute_table_query(
     };
 
     if let Some(sort_field) = req.sort_field.as_deref() {
-        if let Some(sort_idx) = columns.iter().position(|c| c == sort_field) {
+        let effective_sort_col = req
+            .sort_by_column
+            .as_deref()
+            .filter(|c| columns.iter().any(|col| col == c))
+            .unwrap_or(sort_field);
+        if let Some(sort_idx) = columns.iter().position(|c| c == effective_sort_col) {
             let desc = req.sort_order.eq_ignore_ascii_case("desc");
             all_rows.sort_by(|a, b| {
                 let ord = cmp_json_for_sort(&a[sort_idx], &b[sort_idx]);
@@ -325,6 +353,20 @@ pub fn execute_table_query(
     }
 
     let total_row_count = all_rows.len();
+    let mut column_min_max: HashMap<String, (f64, f64)> = HashMap::new();
+    for (cidx, col) in columns.iter().enumerate() {
+        let mut min: Option<f64> = None;
+        let mut max: Option<f64> = None;
+        for row in &all_rows {
+            if let Some(n) = row.get(cidx).and_then(JsonValue::as_f64) {
+                min = Some(min.map_or(n, |m| m.min(n)));
+                max = Some(max.map_or(n, |m| m.max(n)));
+            }
+        }
+        if let (Some(min), Some(max)) = (min, max) {
+            column_min_max.insert(col.clone(), (min, max));
+        }
+    }
     let offset = req.offset.min(all_rows.len());
     let end = req.limit.map(|l| (offset + l).min(all_rows.len())).unwrap_or(all_rows.len());
     let page: Vec<NativeTableRow> = all_rows[offset..end]
@@ -353,6 +395,7 @@ pub fn execute_table_query(
         rows: page,
         total_row_count,
         total_row,
+        column_min_max,
         query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
         engine: "rust-native".to_string(),
     })
@@ -748,20 +791,32 @@ pub fn execute_visual_query_with_conn(
     let t0 = Instant::now();
     let agg = req.aggregation.as_deref().unwrap_or("SUM");
 
-    if let Some(conn) = conn {
+    let mut result = if let Some(conn) = conn {
         if crate::dax::pushdown::pushdown_enabled() {
             match crate::dax::pushdown::try_pushdown(model, conn, req, agg, t0) {
-                Ok(result) => return Ok(result),
+                Ok(result) => Ok(result),
                 Err(reason) => {
                     eprintln!(
                         "pushdown: fallback para o motor DAX (visual '{}'): {}",
                         req.visual_id, reason
                     );
+                    execute_visual_query_dax(model, req, t0)
                 }
             }
+        } else {
+            execute_visual_query_dax(model, req, t0)
         }
+    } else {
+        execute_visual_query_dax(model, req, t0)
+    }?;
+
+    // v0.11 Rodada 2, Frente E: evaluated last, over whatever categories/series
+    // the chosen path (pushdown or DAX engine) produced — see
+    // `dax::visual_calcs::formula::apply_to_result`.
+    if !req.visual_calculations.is_empty() {
+        crate::dax::visual_calcs::formula::apply_to_result(&req.visual_calculations, &mut result)?;
     }
-    execute_visual_query_dax(model, req, t0)
+    Ok(result)
 }
 
 fn execute_visual_query_dax(
@@ -2055,5 +2110,102 @@ mod tests {
             res1.points.iter().map(|p| p.label.clone()).collect::<Vec<_>>(),
             res2.points.iter().map(|p| p.label.clone()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_native_table_query_column_min_max_over_full_result_not_page() {
+        let model = sample_model();
+        let res = execute_table_query(
+            &model,
+            &NativeTableQueryRequest {
+                table_id: "fVendas".into(),
+                group_fields: vec!["Categoria".into()],
+                value_fields: vec!["Receita".into()],
+                aggregation: Some("SUM".into()),
+                limit: Some(1), // page has only 1 row, but min/max must cover BOTH (A=150, B=200)
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.total_row_count, 2);
+        let (min, max) = res.column_min_max.get("Receita").copied().expect("Receita min/max");
+        assert_eq!((min, max), (150.0, 200.0));
+    }
+
+    #[test]
+    fn test_native_table_query_sort_by_column_overrides_sort_field() {
+        let model = sample_model();
+        // Sort by "Receita" (B=200 desc > A=150) instead of "Categoria"'s own
+        // alphabetical order — mirrors a hidden sortByColumn driving a text column.
+        let res = execute_table_query(
+            &model,
+            &NativeTableQueryRequest {
+                table_id: "fVendas".into(),
+                group_fields: vec!["Categoria".into()],
+                value_fields: vec!["Receita".into()],
+                aggregation: Some("SUM".into()),
+                sort_field: Some("Categoria".into()),
+                sort_by_column: Some("Receita".into()),
+                sort_order: "desc".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.rows[0].values[0], JsonValue::from("B"));
+        assert_eq!(res.rows[1].values[0], JsonValue::from("A"));
+    }
+
+    // ===== v0.11 Rodada 2, Frente E: visual calculations evaluated natively =====
+
+    #[test]
+    fn test_native_visual_query_applies_runningsum_visual_calculation() {
+        let model = sample_model();
+        let res = execute_visual_query(
+            &model,
+            &NativeVisualQueryRequest {
+                visual_id: "vc1".into(),
+                visual_type: "bar".into(),
+                table_id: "fVendas".into(),
+                x_axis_field: Some("Categoria".into()),
+                y_axis_fields: vec!["Receita".into()],
+                aggregation: Some("SUM".into()),
+                visual_calculations: vec![crate::dax::visual_calcs::formula::NativeVisualCalcRequest {
+                    name: "Acumulado".into(),
+                    formula: "RUNNINGSUM([Receita])".into(),
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.categories, vec!["A", "B"]);
+        let receita = res.series.iter().find(|s| s.name == "Receita").unwrap();
+        let acumulado = res.series.iter().find(|s| s.name == "Acumulado").unwrap();
+        // A=150, B=200 -> acumulado 150, 350 (hand-derived).
+        assert_eq!(receita.data, vec![Some(150.0), Some(200.0)]);
+        assert_eq!(acumulado.data, vec![Some(150.0), Some(350.0)]);
+    }
+
+    #[test]
+    fn test_native_visual_query_unknown_visual_calc_column_errors_clearly() {
+        let model = sample_model();
+        let err = execute_visual_query(
+            &model,
+            &NativeVisualQueryRequest {
+                visual_id: "vc2".into(),
+                visual_type: "bar".into(),
+                table_id: "fVendas".into(),
+                x_axis_field: Some("Categoria".into()),
+                y_axis_fields: vec!["Receita".into()],
+                aggregation: Some("SUM".into()),
+                visual_calculations: vec![crate::dax::visual_calcs::formula::NativeVisualCalcRequest {
+                    name: "Ruim".into(),
+                    formula: "RUNNINGSUM([NaoExiste])".into(),
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("Ruim"), "erro inesperado: {err}");
     }
 }
