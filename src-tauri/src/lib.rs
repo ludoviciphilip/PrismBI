@@ -224,6 +224,11 @@ fn open_pbip_project(
                     name: m.name.clone(),
                     table_name: m.table_name.clone(),
                     formula: m.expression.clone(),
+                    // v0.11 Rodada 2 Frente F (bugfix): carry the TMDL
+                    // formatString here too, same as `column_format_strings`
+                    // above, so a DEFINE MEASURE referencing this measure in
+                    // the DAX Query View can inherit its format.
+                    format_string: m.format_string.clone(),
                 })
                 .collect(),
         };

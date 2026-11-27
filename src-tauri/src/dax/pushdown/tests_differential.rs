@@ -195,11 +195,9 @@ fn calculate_simple_column_filter_measure_matches_dax() {
             cross_filter_direction: "single".into(),
             is_active: true,
         }],
-        vec![DaxMeasureInput {
-            name: "ValorNorte".into(),
+        vec![DaxMeasureInput { name: "ValorNorte".into(),
             table_name: "fVendas".into(),
-            formula: "CALCULATE(SUM(fVendas[Valor]), fVendas[Regiao] = \"Norte\")".into(),
-        }],
+            formula: "CALCULATE(SUM(fVendas[Valor]), fVendas[Regiao] = \"Norte\")".into(), format_string: None }],
     );
     let r = req("column", Some("dCategoria.Nome"), &["ValorNorte"], Some("SUM"));
     assert_parity(&model, &conn, &r, "SUM");
@@ -504,11 +502,9 @@ fn calculate_filter_overriding_outer_filter_falls_back_to_dax() {
             cross_filter_direction: "single".into(),
             is_active: true,
         }],
-        vec![DaxMeasureInput {
-            name: "ValorSul".into(),
+        vec![DaxMeasureInput { name: "ValorSul".into(),
             table_name: "fVendas".into(),
-            formula: "CALCULATE(SUM(fVendas[Valor]), fVendas[Regiao] = \"Sul\")".into(),
-        }],
+            formula: "CALCULATE(SUM(fVendas[Valor]), fVendas[Regiao] = \"Sul\")".into(), format_string: None }],
     );
     // The visual itself is filtered to Regiao=Norte, but the measure's own
     // CALCULATE(..., Regiao="Sul") must override that, not AND with it.
@@ -613,8 +609,8 @@ fn circular_measure_reference_errors_instead_of_overflowing_stack() {
         &[("fVendas", "fVendas", &[Some("number")])],
         vec![],
         vec![
-            DaxMeasureInput { name: "A".into(), table_name: "fVendas".into(), formula: "[B] + 1".into() },
-            DaxMeasureInput { name: "B".into(), table_name: "fVendas".into(), formula: "[A] + 1".into() },
+            DaxMeasureInput { name: "A".into(), table_name: "fVendas".into(), formula: "[B] + 1".into(), format_string: None },
+            DaxMeasureInput { name: "B".into(), table_name: "fVendas".into(), formula: "[A] + 1".into(), format_string: None },
         ],
     );
     let ctx = crate::dax::build_filter_context(&[], &model);

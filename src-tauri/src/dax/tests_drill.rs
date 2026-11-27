@@ -68,16 +68,12 @@ fn stores_model() -> DaxModel {
         }],
         relationships: Vec::<DaxRelationshipInput>::new(),
         measures: vec![
-            DaxMeasureInput {
-                name: "Clientes".into(),
+            DaxMeasureInput { name: "Clientes".into(),
                 table_name: "fVendas".into(),
-                formula: "DISTINCTCOUNT(fVendas[Cliente])".into(),
-            },
-            DaxMeasureInput {
-                name: "Media".into(),
+                formula: "DISTINCTCOUNT(fVendas[Cliente])".into(), format_string: None },
+            DaxMeasureInput { name: "Media".into(),
                 table_name: "fVendas".into(),
-                formula: "AVERAGE(fVendas[Valor])".into(),
-            },
+                formula: "AVERAGE(fVendas[Valor])".into(), format_string: None },
         ],
     });
     model
@@ -239,11 +235,9 @@ fn dates_model() -> DaxModel {
             sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
         }],
         relationships: Vec::<DaxRelationshipInput>::new(),
-        measures: vec![DaxMeasureInput {
-            name: "Total".into(),
+        measures: vec![DaxMeasureInput { name: "Total".into(),
             table_name: "fPedidos".into(),
-            formula: "SUM(fPedidos[Valor])".into(),
-        }],
+            formula: "SUM(fPedidos[Valor])".into(), format_string: None }],
     });
     model
 }

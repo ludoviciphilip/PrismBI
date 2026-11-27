@@ -709,6 +709,15 @@ pub struct DaxMeasureInput {
     pub name: String,
     pub table_name: String,
     pub formula: String,
+    /// v0.11 Rodada 2 Frente F (bugfix): TMDL `formatString` for this
+    /// measure (or a fallback derived from `Measure.format` on the
+    /// frontend when the TMDL file had none), used by the DAX Query
+    /// View so a `DEFINE MEASURE`'s new measure can inherit a format
+    /// from the real measure it references (see
+    /// `query_view::qexec::infer_measure_format`). `None` means no
+    /// format info reached Rust for this measure.
+    #[serde(default)]
+    pub format_string: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1082,6 +1091,15 @@ impl DaxModel {
 
     pub fn get_measure(&self, name: &str) -> Option<&DaxMeasureInput> {
         self.measures.get(&name.trim().to_lowercase())
+    }
+
+    /// v0.11 Rodada 2 Frente F (bugfix): the model's (TMDL or
+    /// frontend-derived) `formatString` for measure `name`, if any reached
+    /// Rust. Used by the DAX Query View to give a `DEFINE MEASURE` that
+    /// wraps a single real measure (e.g. `[Teste] = [Faturamento] * 2`) that
+    /// measure's own format (see `query_view::qexec::infer_measure_format`).
+    pub fn measure_format_string(&self, name: &str) -> Option<&str> {
+        self.get_measure(name).and_then(|m| m.format_string.as_deref())
     }
 
     /// v0.11 Frente A (pushdown): the DuckDB table name backing `dax_table`

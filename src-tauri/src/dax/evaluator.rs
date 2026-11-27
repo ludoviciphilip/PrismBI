@@ -484,26 +484,18 @@ mod tests {
                 },
             ],
             measures: vec![
-                DaxMeasureInput {
-                    name: "Valor Assinado".into(),
+                DaxMeasureInput { name: "Valor Assinado".into(),
                     table_name: "Medidas".into(),
-                    formula: "SUMX('fLançamentos', 'fLançamentos'[Valor] * IF('fLançamentos'[Tipo] == \"Entrada\", 1, -1))".into(),
-                },
-                DaxMeasureInput {
-                    name: "Resultado DRE".into(),
+                    formula: "SUMX('fLançamentos', 'fLançamentos'[Valor] * IF('fLançamentos'[Tipo] == \"Entrada\", 1, -1))".into(), format_string: None },
+                DaxMeasureInput { name: "Resultado DRE".into(),
                     table_name: "Medidas".into(),
-                    formula: "CALCULATE([Valor Assinado], dCategorias[DRE] == \"Sim\")".into(),
-                },
-                DaxMeasureInput {
-                    name: "Faturamento".into(),
+                    formula: "CALCULATE([Valor Assinado], dCategorias[DRE] == \"Sim\")".into(), format_string: None },
+                DaxMeasureInput { name: "Faturamento".into(),
                     table_name: "Medidas".into(),
-                    formula: "CALCULATE([Resultado DRE], dCategorias[Grupo DRE] = \"Receita Bruta\")".into(),
-                },
-                DaxMeasureInput {
-                    name: "DRE".into(),
+                    formula: "CALCULATE([Resultado DRE], dCategorias[Grupo DRE] = \"Receita Bruta\")".into(), format_string: None },
+                DaxMeasureInput { name: "DRE".into(),
                     table_name: "Medidas".into(),
-                    formula: "VAR _linha = SELECTEDVALUE(dEstrutura[Linha], \"Resultado Operacional\") VAR _rec = [Faturamento] RETURN SWITCH(_linha, \"Receita Bruta\", _rec, \"Resultado Operacional\", [Resultado DRE])".into(),
-                },
+                    formula: "VAR _linha = SELECTEDVALUE(dEstrutura[Linha], \"Resultado Operacional\") VAR _rec = [Faturamento] RETURN SWITCH(_linha, \"Receita Bruta\", _rec, \"Resultado Operacional\", [Resultado DRE])".into(), format_string: None },
             ],
         });
 
@@ -569,44 +561,30 @@ mod tests {
                 is_active: true,
             }],
             measures: vec![
-                DaxMeasureInput {
-                    name: "Receita".into(),
+                DaxMeasureInput { name: "Receita".into(),
                     table_name: "fVendas".into(),
-                    formula: "SUM(fVendas[Valor])".into(),
-                },
-                DaxMeasureInput {
-                    name: "Receita YTD".into(),
+                    formula: "SUM(fVendas[Valor])".into(), format_string: None },
+                DaxMeasureInput { name: "Receita YTD".into(),
                     table_name: "fVendas".into(),
-                    formula: "TOTALYTD([Receita], dCal[Data])".into(),
-                },
-                DaxMeasureInput {
-                    name: "Receita MTD".into(),
+                    formula: "TOTALYTD([Receita], dCal[Data])".into(), format_string: None },
+                DaxMeasureInput { name: "Receita MTD".into(),
                     table_name: "fVendas".into(),
-                    formula: "TOTALMTD([Receita], dCal[Data])".into(),
-                },
-                DaxMeasureInput {
-                    name: "Receita Ano Ant".into(),
+                    formula: "TOTALMTD([Receita], dCal[Data])".into(), format_string: None },
+                DaxMeasureInput { name: "Receita Ano Ant".into(),
                     table_name: "fVendas".into(),
-                    formula: "CALCULATE([Receita], PREVIOUSYEAR(dCal[Data]))".into(),
-                },
-                DaxMeasureInput {
-                    name: "Receita Mesmo Dia Ano Ant".into(),
+                    formula: "CALCULATE([Receita], PREVIOUSYEAR(dCal[Data]))".into(), format_string: None },
+                DaxMeasureInput { name: "Receita Mesmo Dia Ano Ant".into(),
                     table_name: "fVendas".into(),
-                    formula: "CALCULATE([Receita], SAMEPERIODLASTYEAR(dCal[Data]))".into(),
-                },
-                DaxMeasureInput {
-                    name: "Rank Data".into(),
+                    formula: "CALCULATE([Receita], SAMEPERIODLASTYEAR(dCal[Data]))".into(), format_string: None },
+                DaxMeasureInput { name: "Rank Data".into(),
                     table_name: "fVendas".into(),
-                    formula: "RANKX(ALL(dCal[Data]), [Receita])".into(),
-                },
-                DaxMeasureInput {
-                    // ALL(fVendas) só define as linhas iteradas; o filtro externo em
+                    formula: "RANKX(ALL(dCal[Data]), [Receita])".into(), format_string: None },
+                DaxMeasureInput { // ALL(fVendas) só define as linhas iteradas; o filtro externo em
                     // dCal continua ativo durante a transição, então as outras datas
                     // ficam BLANK e o valor do dia é o maior => 1 (como no DAX real).
                     name: "Rank Fato".into(),
                     table_name: "fVendas".into(),
-                    formula: "RANKX(ALL(fVendas), [Receita])".into(),
-                },
+                    formula: "RANKX(ALL(fVendas), [Receita])".into(), format_string: None },
             ],
         });
 
@@ -668,11 +646,9 @@ mod tests {
             .tables
             .iter()
             .flat_map(|t| t.measures.iter())
-            .map(|m| DaxMeasureInput {
-                name: m.name.clone(),
+            .map(|m| DaxMeasureInput { name: m.name.clone(),
                 table_name: m.table_name.clone(),
-                formula: m.expression.clone(),
-            })
+                formula: m.expression.clone(), format_string: None })
             .collect();
 
         model.sync_from_payload(DaxModelSyncPayload {
@@ -815,21 +791,15 @@ mod tests {
                 is_active: true,
             }],
             measures: vec![
-                DaxMeasureInput {
-                    name: "Fat".into(),
+                DaxMeasureInput { name: "Fat".into(),
                     table_name: "fLanc".into(),
-                    formula: "SUM(fLanc[Valor])".into(),
-                },
-                DaxMeasureInput {
-                    name: "Fat Mes Passado DateAdd".into(),
+                    formula: "SUM(fLanc[Valor])".into(), format_string: None },
+                DaxMeasureInput { name: "Fat Mes Passado DateAdd".into(),
                     table_name: "fLanc".into(),
-                    formula: "CALCULATE([Fat], DATEADD(dCalendario[Data], -1, MONTH))".into(),
-                },
-                DaxMeasureInput {
-                    name: "Fat Mes Passado Prev".into(),
+                    formula: "CALCULATE([Fat], DATEADD(dCalendario[Data], -1, MONTH))".into(), format_string: None },
+                DaxMeasureInput { name: "Fat Mes Passado Prev".into(),
                     table_name: "fLanc".into(),
-                    formula: "CALCULATE([Fat], PREVIOUSMONTH(dCalendario[Data]))".into(),
-                },
+                    formula: "CALCULATE([Fat], PREVIOUSMONTH(dCalendario[Data]))".into(), format_string: None },
             ],
         });
 
@@ -918,11 +888,9 @@ mod tests {
                     is_active: true,
                 },
             ],
-            measures: vec![DaxMeasureInput {
-                name: "Fat".into(),
+            measures: vec![DaxMeasureInput { name: "Fat".into(),
                 table_name: "fVendas".into(),
-                formula: "SUM(fVendas[Valor])".into(),
-            }],
+                formula: "SUM(fVendas[Valor])".into(), format_string: None }],
         });
 
         let mut ctx = FilterContext::default();
@@ -986,16 +954,12 @@ mod tests {
                 },
             ],
             measures: vec![
-                DaxMeasureInput {
-                    name: "Total".into(),
+                DaxMeasureInput { name: "Total".into(),
                     table_name: "fPedidos".into(),
-                    formula: "SUM(fPedidos[Valor])".into(),
-                },
-                DaxMeasureInput {
-                    name: "QTD T2".into(),
+                    formula: "SUM(fPedidos[Valor])".into(), format_string: None },
+                DaxMeasureInput { name: "QTD T2".into(),
                     table_name: "fPedidos".into(),
-                    formula: "TOTALQTD([Total], dCal[Data])".into(),
-                },
+                    formula: "TOTALQTD([Total], dCal[Data])".into(), format_string: None },
             ],
         });
 
@@ -1089,11 +1053,9 @@ mod tests {
                 },
             ],
             relationships: vec![rel("f", "ProdID", "p", "ProdID"), rel("p", "GrupoID", "g", "GrupoID")],
-            measures: vec![DaxMeasureInput {
-                name: "Total".into(),
+            measures: vec![DaxMeasureInput { name: "Total".into(),
                 table_name: "f".into(),
-                formula: "SUM(f[Valor])".into(),
-            }],
+                formula: "SUM(f[Valor])".into(), format_string: None }],
         });
         model
     }
@@ -1277,11 +1239,9 @@ mod tests {
                 },
             ],
             relationships: vec![],
-            measures: vec![DaxMeasureInput {
-                name: "Total".into(),
+            measures: vec![DaxMeasureInput { name: "Total".into(),
                 table_name: "fVendas".into(),
-                formula: "SUM(fVendas[Valor])".into(),
-            }],
+                formula: "SUM(fVendas[Valor])".into(), format_string: None }],
         });
 
         let ctx = FilterContext::default();
@@ -1348,11 +1308,9 @@ mod tests {
                 },
             ],
             relationships: vec![],
-            measures: vec![DaxMeasureInput {
-                name: "Total".into(),
+            measures: vec![DaxMeasureInput { name: "Total".into(),
                 table_name: "fVendas".into(),
-                formula: "SUM(fVendas[Valor])".into(),
-            }],
+                formula: "SUM(fVendas[Valor])".into(), format_string: None }],
         });
         let ctx = FilterContext::default();
         assert_eq!(

@@ -1164,11 +1164,9 @@ mod tests {
                     is_active: true,
                 },
             ],
-            measures: vec![DaxMeasureInput {
-                name: "Total Vendas".into(),
+            measures: vec![DaxMeasureInput { name: "Total Vendas".into(),
                 table_name: "f_Vendas".into(),
-                formula: "SUM(f_Vendas[Valor])".into(),
-            }],
+                formula: "SUM(f_Vendas[Valor])".into(), format_string: None }],
         });
         model
     }

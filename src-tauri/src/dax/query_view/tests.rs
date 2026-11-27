@@ -55,7 +55,7 @@ fn base_model() -> DaxModel {
         cross_filter_direction: "single".into(),
         is_active: true,
     };
-    let measure = DaxMeasureInput { name: "Total Vendas".into(), table_name: "Vendas".into(), formula: "SUM(Vendas[Valor])".into() };
+    let measure = DaxMeasureInput { name: "Total Vendas".into(), table_name: "Vendas".into(), formula: "SUM(Vendas[Valor])".into(), format_string: None };
     model.sync_from_payload(DaxModelSyncPayload { tables: vec![produto, vendas], relationships: vec![rel], measures: vec![measure] });
     model
 }
@@ -254,8 +254,8 @@ fn validate_wrong_arity_flagged_without_evaluating() {
 #[test]
 fn validate_circular_measure_reference_detected() {
     let mut model = base_model();
-    model.measures.insert("a".into(), DaxMeasureInput { name: "A".into(), table_name: "Vendas".into(), formula: "[B] + 1".into() });
-    model.measures.insert("b".into(), DaxMeasureInput { name: "B".into(), table_name: "Vendas".into(), formula: "[A] + 1".into() });
+    model.measures.insert("a".into(), DaxMeasureInput { name: "A".into(), table_name: "Vendas".into(), formula: "[B] + 1".into(), format_string: None });
+    model.measures.insert("b".into(), DaxMeasureInput { name: "B".into(), table_name: "Vendas".into(), formula: "[A] + 1".into(), format_string: None });
     let v = validate_expression(&model, "[A] * 2", ValidateContext::Measure, None);
     assert!(!v.ok);
     assert!(v.diagnostics.iter().any(|d| d.message.contains("circular")), "{:?}", v.diagnostics);

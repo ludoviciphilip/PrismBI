@@ -17,7 +17,7 @@
 //! report).
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -277,8 +277,18 @@ fn build_row(args: &[Expr], model: &DaxModel, qp: &QueryPos) -> Result<DaxTableD
 }
 
 /// Materializes the table expression an `EVALUATE`/`DEFINE TABLE` points
-/// at, substituting every DEFINE first (see module doc).
-pub(crate) fn resolve_table(src: &TableExprSrc, defines: &Defines, model: &DaxModel, qp: &QueryPos) -> Result<DaxTableData, QError> {
+/// at, substituting every DEFINE first (see module doc). Also returns a
+/// lowercased-alias -> (substituted) expr map for any trailing `"name",
+/// expr` extension pairs of a top-level (or `FILTER`/`TOPN`-wrapped)
+/// `SUMMARIZECOLUMNS`/`ADDCOLUMNS`/`SELECTCOLUMNS` call, so the caller can
+/// try to trace an output column like `"T"` back to the real measure(s) it
+/// references (see `infer_measure_format`, used for `DaxQueryColumn::format_string`).
+pub(crate) fn resolve_table(
+    src: &TableExprSrc,
+    defines: &Defines,
+    model: &DaxModel,
+    qp: &QueryPos,
+) -> Result<(DaxTableData, HashMap<String, Expr>), QError> {
     match src {
         TableExprSrc::Generic(expr) => {
             if let Expr::Ident(name) = expr {
@@ -286,7 +296,7 @@ pub(crate) fn resolve_table(src: &TableExprSrc, defines: &Defines, model: &DaxMo
                 if let Some(TableExprSrc::DataTable { columns, rows }) = defines.tables.get(&key) {
                     let mut tbl = build_datatable(columns, rows, defines, model, qp)?;
                     apply_define_columns(&mut tbl, &key, defines, model, qp)?;
-                    return Ok(tbl);
+                    return Ok((tbl, HashMap::new()));
                 }
             }
             let substituted = substitute(expr, defines, 0)?;
@@ -296,19 +306,127 @@ pub(crate) fn resolve_table(src: &TableExprSrc, defines: &Defines, model: &DaxMo
                     if let Expr::Ident(name) = expr {
                         apply_define_columns(&mut tbl, &name.to_lowercase(), defines, model, qp)?;
                     }
-                    return Ok(tbl);
+                    return Ok((tbl, HashMap::new()));
                 }
             }
+            let extensions = find_extension_exprs(&substituted);
             let ctx = FilterContext::default();
             let mut tbl = evaluate_table_ast("Resultado", &substituted, model, &ctx).map_err(|e| qp.locate(e))?;
             if let Expr::Ident(name) = expr {
                 apply_define_columns(&mut tbl, &name.to_lowercase(), defines, model, qp)?;
             }
-            Ok(tbl)
+            Ok((tbl, extensions))
         }
-        TableExprSrc::DataTable { columns, rows } => build_datatable(columns, rows, defines, model, qp),
+        TableExprSrc::DataTable { columns, rows } => Ok((build_datatable(columns, rows, defines, model, qp)?, HashMap::new())),
     }
 }
+
+/// Extracts the trailing `"name", expr` pairs of a
+/// `SUMMARIZECOLUMNS`/`ADDCOLUMNS`/`SELECTCOLUMNS` call's `args` (same scan
+/// `eval_summarizecolumns`/`eval_add_select_columns` use: the longest
+/// all-`Expr::Text`-at-even-offsets suffix).
+fn extension_pairs(args: &[Expr]) -> Vec<(String, &Expr)> {
+    let ext_start = (0..=args.len())
+        .find(|&i| (args.len() - i) % 2 == 0 && (i..args.len()).step_by(2).all(|k| matches!(args[k], Expr::Text(_))))
+        .unwrap_or(args.len());
+    args[ext_start..]
+        .chunks(2)
+        .filter_map(|c| match c {
+            [Expr::Text(n), e] => Some((n.clone(), e)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Finds the alias -> expr map of extension (`"name", expr`) columns for a
+/// top-level `SUMMARIZECOLUMNS`/`ADDCOLUMNS`/`SELECTCOLUMNS` call, looking
+/// through a `FILTER`/`TOPN` wrapper (the common `ORDER BY`-less "quick
+/// query" shape). Anything else (nested CALCULATETABLE, UNION...) yields no
+/// extension map, so those columns simply get no measure-based format.
+fn find_extension_exprs(expr: &Expr) -> HashMap<String, Expr> {
+    if let Expr::Call { name, args } = expr {
+        let upper = name.to_uppercase();
+        match upper.as_str() {
+            "SUMMARIZECOLUMNS" | "ADDCOLUMNS" | "SELECTCOLUMNS" => {
+                return extension_pairs(args).into_iter().map(|(n, e)| (n.to_lowercase(), e.clone())).collect();
+            }
+            "FILTER" => {
+                if let Some(first) = args.first() {
+                    return find_extension_exprs(first);
+                }
+            }
+            "TOPN" => {
+                if let Some(second) = args.get(1) {
+                    return find_extension_exprs(second);
+                }
+            }
+            _ => {}
+        }
+    }
+    HashMap::new()
+}
+
+/// Collects the (lowercased) names of every `[Measure]` reference in `expr`
+/// that resolves to a real model measure (`model.get_measure`).
+fn collect_measure_names(expr: &Expr, model: &DaxModel, out: &mut HashSet<String>) {
+    match expr {
+        Expr::BracketRef(name) => {
+            if model.get_measure(name).is_some() {
+                out.insert(name.to_lowercase());
+            }
+        }
+        Expr::Unary { expr, .. } => collect_measure_names(expr, model, out),
+        Expr::Binary { left, right, .. } => {
+            collect_measure_names(left, model, out);
+            collect_measure_names(right, model, out);
+        }
+        Expr::InList { expr, list } => {
+            collect_measure_names(expr, model, out);
+            for l in list {
+                collect_measure_names(l, model, out);
+            }
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_measure_names(a, model, out);
+            }
+        }
+        Expr::VarBlock { bindings, body } => {
+            for (_, e) in bindings {
+                collect_measure_names(e, model, out);
+            }
+            collect_measure_names(body, model, out);
+        }
+        Expr::Blank | Expr::Number(_) | Expr::Text(_) | Expr::Boolean(_) | Expr::TableColRef { .. } | Expr::Ident(_) => {}
+    }
+}
+
+/// v0.11 Rodada 2 Frente F (bugfix): a `DEFINE MEASURE`'s new measure (e.g.
+/// `Teste = [Faturamento] * 2`) is, after `substitute`, flattened down to
+/// real model-measure references. When the extension expr references
+/// EXACTLY ONE distinct real measure, this new measure "inherits" that
+/// measure's own formatString (same rule Power BI quick measures follow:
+/// copy the base measure's format). Two or more distinct measures (or none)
+/// is ambiguous, so no format is inferred and the caller's fractional-value
+/// fallback (`#,##0.00`) takes over instead.
+fn infer_measure_format(expr: &Expr, model: &DaxModel) -> Option<String> {
+    let mut names = HashSet::new();
+    collect_measure_names(expr, model, &mut names);
+    if names.len() == 1 {
+        let name = names.into_iter().next().unwrap();
+        model.measure_format_string(&name).map(str::to_string)
+    } else {
+        None
+    }
+}
+
+/// True when `v` is a non-integer number (so a value-derived fallback
+/// format can add 2 decimals instead of silently truncating cents — see
+/// the "T aparece como '1.986.738', perde os centavos" bug report).
+fn is_fractional(v: &DaxValue) -> bool {
+    v.as_f64().map(|f| (f - f.round()).abs() > 1e-9).unwrap_or(false)
+}
+
 
 fn compare_dax(l: &DaxValue, r: &DaxValue) -> Ordering {
     if let (Some(a), Some(b)) = (l.as_f64(), r.as_f64()) {
@@ -414,7 +532,7 @@ fn run_evaluate(
     limit: usize,
     qp: &QueryPos,
 ) -> Result<DaxQueryResultSet, QError> {
-    let mut tbl = resolve_table(&stmt.table_expr, defines, model, qp).map_err(|e| fill_pos_if_unknown(e, stmt.pos))?;
+    let (mut tbl, extensions) = resolve_table(&stmt.table_expr, defines, model, qp).map_err(|e| fill_pos_if_unknown(e, stmt.pos))?;
 
     if !stmt.order_by.is_empty() {
         let sub_exprs: Vec<Expr> = stmt
@@ -487,10 +605,29 @@ fn run_evaluate(
         .columns
         .iter()
         .zip(tbl.col_types.iter())
-        .map(|(n, t)| DaxQueryColumn {
-            name: n.clone(),
-            dax_type: type_id(*t),
-            format_string: split_qualified(n).and_then(|(table, col)| model.column_format_string(table, col)).map(str::to_string),
+        .enumerate()
+        .map(|(idx, (n, t))| {
+            let mut format_string = split_qualified(n).and_then(|(table, col)| model.column_format_string(table, col)).map(str::to_string);
+            if format_string.is_none() {
+                if let Some(ext_expr) = extensions.get(&n.to_lowercase()) {
+                    // Extension (measure/computed) column: try to inherit the
+                    // format of the single real measure it traces back to
+                    // (e.g. a `DEFINE MEASURE Teste = [Faturamento] * 2`
+                    // extension copies `[Faturamento]`'s format), else fall
+                    // back to 2-decimal grouping when some value is
+                    // fractional so cents aren't silently dropped by the
+                    // UI's plain `formatNumber` (see v0.11 round 2 bug
+                    // report: "T aparece como '1.986.738'").
+                    format_string = infer_measure_format(ext_expr, model).or_else(|| {
+                        if tbl.rows.iter().any(|r| r.get(idx).map(is_fractional).unwrap_or(false)) {
+                            Some("#,##0.00".to_string())
+                        } else {
+                            None
+                        }
+                    });
+                }
+            }
+            DaxQueryColumn { name: n.clone(), dax_type: type_id(*t), format_string }
         })
         .collect();
     let rows: Vec<Vec<JsonValue>> = tbl.rows[..take].iter().map(|r| r.iter().map(|v| v.to_json()).collect()).collect();
