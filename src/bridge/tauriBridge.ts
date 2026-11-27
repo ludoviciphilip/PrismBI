@@ -316,7 +316,13 @@ export interface ExportPbipBookmark {
 }
 
 export interface DaxModelSyncPayload {
-  tables: { name: string; columns: string[]; rows: Record<string, any>[]; columnTypes?: (string | null)[] }[];
+  tables: {
+    name: string;
+    columns: string[];
+    rows: Record<string, any>[];
+    columnTypes?: (string | null)[];
+    sortByColumns?: Record<string, string>;
+  }[];
   relationships: {
     fromTable: string;
     fromColumn: string;
@@ -466,7 +472,7 @@ export interface NativeVisualQueryRequest {
 export interface NativeMatrixNodeDto {
   key: unknown;
   label: string;
-  values: number[];
+  values: (number | null)[];
   rowTotal?: number | null;
   hasChildren: boolean;
   expanded: boolean;
@@ -475,7 +481,7 @@ export interface NativeMatrixNodeDto {
 
 export interface NativeVisualSeries {
   name: string;
-  data: number[];
+  data: (number | null)[];
 }
 
 export interface NativeVisualQueryResult {
@@ -486,7 +492,7 @@ export interface NativeVisualQueryResult {
   engine: string;
   /** v0.10 Frente G: chave de cada nível por categoria (alinhado com `categories`). */
   categoryKeys?: unknown[][];
-  matrix?: { rows: NativeMatrixNodeDto[]; columnTotals: number[]; grandTotal?: number | null } | null;
+  matrix?: { rows: NativeMatrixNodeDto[]; columnTotals: (number | null)[]; grandTotal?: number | null } | null;
 }
 
 export async function queryVisualNative(

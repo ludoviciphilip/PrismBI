@@ -308,8 +308,12 @@ impl DaxValue {
     /// `+` with DAX type promotion: Integer+Integer stays Integer, anything
     /// touching Currency stays Currency (exact when both sides are already
     /// Currency/Integer), anything touching Decimal (or non-integral Text)
-    /// promotes to Decimal. BLANK coerces to 0.
+    /// promotes to Decimal. BLANK coerces to 0 when paired with a non-blank
+    /// value, and BLANK + BLANK = BLANK.
     pub fn dax_add(&self, other: &DaxValue) -> DaxValue {
+        if self.is_blank() && other.is_blank() {
+            return DaxValue::Blank;
+        }
         match self.num_kind().max(other.num_kind()) {
             NumKind::Currency => DaxValue::Currency(self.currency_scaled() + other.currency_scaled()),
             NumKind::Decimal => DaxValue::Decimal(self.as_f64().unwrap_or(0.0) + other.as_f64().unwrap_or(0.0)),
@@ -318,6 +322,9 @@ impl DaxValue {
     }
 
     pub fn dax_sub(&self, other: &DaxValue) -> DaxValue {
+        if self.is_blank() && other.is_blank() {
+            return DaxValue::Blank;
+        }
         match self.num_kind().max(other.num_kind()) {
             NumKind::Currency => DaxValue::Currency(self.currency_scaled() - other.currency_scaled()),
             NumKind::Decimal => DaxValue::Decimal(self.as_f64().unwrap_or(0.0) - other.as_f64().unwrap_or(0.0)),
@@ -351,7 +358,7 @@ impl DaxValue {
             DaxValue::Integer(n) => DaxValue::Integer(-n),
             DaxValue::Decimal(n) => DaxValue::Decimal(-n),
             DaxValue::Currency(c) => DaxValue::Currency(-c),
-            DaxValue::Blank => DaxValue::Integer(0),
+            DaxValue::Blank => DaxValue::Blank,
             other => DaxValue::number_smart(-(other.as_f64().unwrap_or(0.0))),
         }
     }
@@ -513,6 +520,8 @@ pub struct DaxTableData {
     pub col_index: HashMap<String, usize>,
     pub col_types: Vec<ColumnType>,
     pub rows: Vec<Vec<DaxValue>>,
+    /// Map of lowercased column name -> sortByColumn name (e.g. "mês" -> "MêsNum").
+    pub sort_by_columns: HashMap<String, String>,
 }
 
 impl DaxTableData {
@@ -565,11 +574,18 @@ impl DaxTableData {
             col_index,
             col_types,
             rows,
+            sort_by_columns: HashMap::new(),
         }
     }
 
     pub fn get_col_idx(&self, col_name: &str) -> Option<usize> {
         self.col_index.get(&col_name.to_lowercase()).copied()
+    }
+
+    pub fn sort_by_col_idx(&self, col_idx: usize) -> Option<usize> {
+        let col_name = self.columns.get(col_idx)?;
+        let sb_name = self.sort_by_columns.get(&col_name.to_lowercase())?;
+        self.get_col_idx(sb_name)
     }
 }
 
@@ -661,7 +677,7 @@ pub struct DaxMeasureInput {
     pub formula: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaxTableInput {
     pub name: String,
@@ -680,6 +696,9 @@ pub struct DaxTableInput {
     /// keep using `rows`. See `docs/RUST_ENGINE_2.md` §3 step 2.
     #[serde(default)]
     pub duckdb_table: Option<String>,
+    /// Optional column name -> sortByColumn name metadata for chronological/custom ordering.
+    #[serde(default)]
+    pub sort_by_columns: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -858,17 +877,24 @@ impl DaxModel {
         let mut new_versions = HashMap::new();
         for t in payload.tables {
             let key = t.name.to_lowercase();
+            let sort_by: HashMap<String, String> = t
+                .sort_by_columns
+                .iter()
+                .map(|(c, sb)| (c.to_lowercase(), sb.clone()))
+                .collect();
             if let Some(duckdb_name) = &t.duckdb_table {
                 let dkey = duckdb_name.to_lowercase();
-                if let Some((version, data)) = freshly_loaded.remove(&dkey) {
+                if let Some((version, mut data)) = freshly_loaded.remove(&dkey) {
+                    data.sort_by_columns = sort_by;
                     new_key_cache.insert(key.clone(), Self::build_key_cache(&data));
                     new_versions.insert(key.clone(), version);
                     new_tables.insert(key, data);
                     continue;
                 }
-                if let (Some(old_data), Some(&old_version)) =
+                if let (Some(mut old_data), Some(&old_version)) =
                     (self.tables.remove(&key), self.duckdb_table_versions.get(&key))
                 {
+                    old_data.sort_by_columns = sort_by;
                     // old_data is byte-for-byte the same as last sync (version
                     // unchanged), so its previously computed key cache is
                     // still valid; only rebuild if it somehow wasn't cached.
@@ -887,7 +913,8 @@ impl DaxModel {
                     duckdb_name, t.name
                 );
             }
-            let data = DaxTableData::from_json_rows_typed(&t.name, t.columns.clone(), &t.rows, &t.column_types);
+            let mut data = DaxTableData::from_json_rows_typed(&t.name, t.columns.clone(), &t.rows, &t.column_types);
+            data.sort_by_columns = sort_by;
             new_key_cache.insert(key.clone(), Self::build_key_cache(&data));
             new_tables.insert(key, data);
         }
@@ -1181,6 +1208,14 @@ mod type_rule_tests {
     }
 
     #[test]
+    fn blank_arithmetic_stays_blank_when_both_sides_or_unary_are_blank() {
+        assert_eq!(DaxValue::Blank.dax_add(&DaxValue::Blank), DaxValue::Blank);
+        assert_eq!(DaxValue::Blank.dax_sub(&DaxValue::Blank), DaxValue::Blank);
+        assert_eq!(DaxValue::Blank.dax_neg(), DaxValue::Blank);
+        assert_eq!(DaxValue::Blank.dax_add(&DaxValue::Integer(1)), DaxValue::Integer(1));
+    }
+
+    #[test]
     fn blank_coercion_matches_dax() {
         // BLANK + 1 = 1
         assert_eq!(DaxValue::Blank.dax_add(&DaxValue::Integer(1)), DaxValue::Integer(1));
@@ -1281,6 +1316,7 @@ mod propagation_tests {
                     columns: vec!["CatID".into(), "Nome".into()],
                     rows: rows(&["CatID", "Nome"], &[&[json!(1), json!("A")], &[json!(2), json!("B")]]),
                     column_types: vec![],
+                    sort_by_columns: Default::default(),
                 },
                 DaxTableInput { duckdb_table: None,
                     name: "d_Produto".into(),
@@ -1294,6 +1330,7 @@ mod propagation_tests {
                         ],
                     ),
                     column_types: vec![],
+                    sort_by_columns: Default::default(),
                 },
                 DaxTableInput { duckdb_table: None,
                     name: "f_Vendas".into(),
@@ -1303,6 +1340,7 @@ mod propagation_tests {
                         &[&[json!(10), json!(1)], &[json!(11), json!(10)], &[json!(12), json!(100)]],
                     ),
                     column_types: vec![],
+                    sort_by_columns: Default::default(),
                 },
             ],
             relationships: vec![
@@ -1389,14 +1427,15 @@ mod bench_tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, name: "Dim1".into(), columns: vec!["Id".into(), "Grupo1".into()], rows: dim_rows("Grupo1"), column_types: vec![] },
-                DaxTableInput { duckdb_table: None, name: "Dim2".into(), columns: vec!["Id".into(), "Grupo2".into()], rows: dim_rows("Grupo2"), column_types: vec![] },
-                DaxTableInput { duckdb_table: None, name: "Dim3".into(), columns: vec!["Id".into(), "Grupo3".into()], rows: dim_rows("Grupo3"), column_types: vec![] },
+                DaxTableInput { duckdb_table: None, name: "Dim1".into(), columns: vec!["Id".into(), "Grupo1".into()], rows: dim_rows("Grupo1"), column_types: vec![], sort_by_columns: Default::default() },
+                DaxTableInput { duckdb_table: None, name: "Dim2".into(), columns: vec!["Id".into(), "Grupo2".into()], rows: dim_rows("Grupo2"), column_types: vec![], sort_by_columns: Default::default() },
+                DaxTableInput { duckdb_table: None, name: "Dim3".into(), columns: vec!["Id".into(), "Grupo3".into()], rows: dim_rows("Grupo3"), column_types: vec![], sort_by_columns: Default::default() },
                 DaxTableInput { duckdb_table: None,
                     name: "Fato".into(),
                     columns: vec!["Dim1Id".into(), "Dim2Id".into(), "Dim3Id".into(), "Valor".into()],
                     rows: fact_rows,
                     column_types: vec![],
+                    sort_by_columns: Default::default(),
                 },
             ],
             relationships: vec![

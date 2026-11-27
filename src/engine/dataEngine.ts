@@ -300,7 +300,7 @@ export class DataEngine implements ModelAccess {
     activeFilters: Filter[] = []
   ): {
     categories: string[];
-    series: { name: string; data: number[] }[];
+    series: { name: string; data: (number | null)[] }[];
     rawRows: Record<string, any>[];
     summaryValue?: number;
     matrixHierarchy?: any[];

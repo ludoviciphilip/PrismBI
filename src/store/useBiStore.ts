@@ -790,6 +790,7 @@ async function pushModelToRustAsync(
         // there would leave the table EMPTY in the model.
         rows: t.rows || [],
         columnTypes: t.columns.map(c => c.dataType ?? null),
+        sortByColumns: Object.fromEntries(t.columns.filter(c => c.sortByColumn).map(c => [c.name, c.sortByColumn!])),
         duckdbTable: t.duckdbTable,
       })),
       relationships: relationships.map(r => ({

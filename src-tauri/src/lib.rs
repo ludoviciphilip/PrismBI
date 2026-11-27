@@ -163,12 +163,26 @@ fn open_pbip_project(
             tables: summary
                 .loaded_tables
                 .iter()
-                .map(|t| dax::DaxTableInput {
-                    name: t.table_name.clone(),
-                    columns: t.columns.iter().map(|c| c.name.clone()).collect(),
-                    rows: t.rows.clone(),
-                    column_types: vec![],
-                    duckdb_table: Some(t.table_name.clone()),
+                .map(|t| {
+                    let sort_by_columns = summary
+                        .tables
+                        .iter()
+                        .find(|tm| tm.name.eq_ignore_ascii_case(&t.table_name))
+                        .map(|tm| {
+                            tm.columns
+                                .iter()
+                                .filter_map(|c| c.sort_by_column.as_ref().map(|sb| (c.name.clone(), sb.clone())))
+                                .collect::<HashMap<String, String>>()
+                        })
+                        .unwrap_or_default();
+                    dax::DaxTableInput {
+                        name: t.table_name.clone(),
+                        columns: t.columns.iter().map(|c| c.name.clone()).collect(),
+                        rows: t.rows.clone(),
+                        column_types: vec![],
+                        duckdb_table: Some(t.table_name.clone()),
+                        sort_by_columns,
+                    }
                 })
                 .collect(),
             relationships: summary

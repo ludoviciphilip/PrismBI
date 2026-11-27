@@ -64,6 +64,7 @@ fn stores_model() -> DaxModel {
             columns: vec!["Regiao".into(), "Cidade".into(), "Loja".into(), "Cliente".into(), "Valor".into()],
             rows,
             column_types: vec![],
+            sort_by_columns: Default::default(),
         }],
         relationships: Vec::<DaxRelationshipInput>::new(),
         measures: vec![
@@ -114,30 +115,30 @@ fn matrix_three_levels_distinctcount_subtotals_are_evaluated_not_summed() {
     let poa = find(&sul.children, "POA");
     let l1 = find(&poa.children, "L1");
     let l2 = find(&poa.children, "L2");
-    assert_eq!(l1.values, vec![2.0]);
-    assert_eq!(l2.values, vec![1.0]);
+    assert_eq!(l1.values, vec![Some(2.0)]);
+    assert_eq!(l2.values, vec![Some(1.0)]);
     assert!(!l1.has_children);
 
     // Subtotal nível 2: POA = clientes distintos de L1 ∪ L2 = {c1,c2} = 2,
     // e NÃO a soma das lojas (2 + 1 = 3).
-    assert_eq!(poa.values, vec![2.0]);
-    let children_sum: f64 = poa.children.iter().map(|n| n.values[0]).sum();
+    assert_eq!(poa.values, vec![Some(2.0)]);
+    let children_sum: f64 = poa.children.iter().filter_map(|n| n.values[0]).sum();
     assert_eq!(children_sum, 3.0);
-    assert_ne!(poa.values[0], children_sum);
+    assert_ne!(poa.values[0], Some(children_sum));
 
     // Curitiba = {c1,c3} = 2.
     let cwb = find(&sul.children, "Curitiba");
-    assert_eq!(cwb.values, vec![2.0]);
+    assert_eq!(cwb.values, vec![Some(2.0)]);
 
     // Subtotal nível 1: Sul = {c1,c2,c3} = 3, não POA + Curitiba = 4.
-    assert_eq!(sul.values, vec![3.0]);
-    assert_ne!(sul.values[0], poa.values[0] + cwb.values[0]);
+    assert_eq!(sul.values, vec![Some(3.0)]);
+    assert_ne!(sul.values[0], Some(poa.values[0].unwrap() + cwb.values[0].unwrap()));
 
     // Norte = {c2,c4} = 2; Total geral = {c1,c2,c3,c4} = 4, não 3 + 2 = 5.
     let norte = find(&m.rows, "Norte");
-    assert_eq!(norte.values, vec![2.0]);
-    assert_eq!(m.column_totals, vec![4.0]);
-    assert_ne!(m.column_totals[0], sul.values[0] + norte.values[0]);
+    assert_eq!(norte.values, vec![Some(2.0)]);
+    assert_eq!(m.column_totals, vec![Some(4.0)]);
+    assert_ne!(m.column_totals[0], Some(sul.values[0].unwrap() + norte.values[0].unwrap()));
 }
 
 #[test]
@@ -149,9 +150,9 @@ fn matrix_three_levels_implicit_distinctcount_and_average_subtotals() {
     req.aggregation = Some("DISTINCTCOUNT".into());
     let m = execute_visual_query(&model, &req).unwrap().matrix.unwrap();
     let sul = find(&m.rows, "Sul");
-    assert_eq!(sul.values, vec![3.0]);
-    assert_eq!(find(&sul.children, "POA").values, vec![2.0]);
-    assert_eq!(m.column_totals, vec![4.0]);
+    assert_eq!(sul.values, vec![Some(3.0)]);
+    assert_eq!(find(&sul.children, "POA").values, vec![Some(2.0)]);
+    assert_eq!(m.column_totals, vec![Some(4.0)]);
 
     // AVERAGE: POA = (10+20+30)/3 = 20, não média das médias das lojas
     // ((15 + 30) / 2 = 22.5) nem a soma (45). Sul = 150/5 = 30.
@@ -159,11 +160,11 @@ fn matrix_three_levels_implicit_distinctcount_and_average_subtotals() {
     let m = execute_visual_query(&model, &matrix_req(&["Media"], 2)).unwrap().matrix.unwrap();
     let sul = find(&m.rows, "Sul");
     let poa = find(&sul.children, "POA");
-    assert_eq!(find(&poa.children, "L1").values, vec![15.0]);
-    assert_eq!(find(&poa.children, "L2").values, vec![30.0]);
-    assert_eq!(poa.values, vec![20.0]);
-    assert_eq!(sul.values, vec![30.0]);
-    assert_eq!(m.column_totals, vec![40.0]);
+    assert_eq!(find(&poa.children, "L1").values, vec![Some(15.0)]);
+    assert_eq!(find(&poa.children, "L2").values, vec![Some(30.0)]);
+    assert_eq!(poa.values, vec![Some(20.0)]);
+    assert_eq!(sul.values, vec![Some(30.0)]);
+    assert_eq!(m.column_totals, vec![Some(40.0)]);
 }
 
 #[test]
@@ -206,12 +207,12 @@ fn matrix_with_legend_columns_has_engine_row_totals() {
     assert_eq!(res.series.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["L1", "L2", "L3", "L4"]);
     let m = res.matrix.unwrap();
     let sul = find(&m.rows, "Sul");
-    // Sul: L1 {c1,c2}=2, L2 {c1}=1, L3 {c1,c3}=2, L4 nada → 0.
-    assert_eq!(sul.values, vec![2.0, 1.0, 2.0, 0.0]);
+    // Sul: L1 {c1,c2}=2, L2 {c1}=1, L3 {c1,c3}=2, L4 nada → 0 (DISTINCTCOUNT retorna 0).
+    assert_eq!(sul.values, vec![Some(2.0), Some(1.0), Some(2.0), Some(0.0)]);
     // Total da linha Sul = {c1,c2,c3} = 3 (não 2+1+2 = 5).
     assert_eq!(sul.row_total, Some(3.0));
     // Totais das colunas: L1=2, L2=1, L3=2, L4=2; total geral = 4.
-    assert_eq!(m.column_totals, vec![2.0, 1.0, 2.0, 2.0]);
+    assert_eq!(m.column_totals, vec![Some(2.0), Some(1.0), Some(2.0), Some(2.0)]);
     assert_eq!(m.grand_total, Some(4.0));
 }
 
@@ -232,6 +233,7 @@ fn dates_model() -> DaxModel {
             columns: vec!["Data".into(), "Valor".into()],
             rows: data.iter().map(|(d, v)| row(&[("Data", json!(d)), ("Valor", json!(v))])).collect(),
             column_types: vec![Some("date".into()), Some("number".into())],
+            sort_by_columns: Default::default(),
         }],
         relationships: Vec::<DaxRelationshipInput>::new(),
         measures: vec![DaxMeasureInput {
@@ -263,7 +265,7 @@ fn chart_date_hierarchy_year_level() {
     let res = execute_visual_query(&model, &chart_req(vec![date_lvl("Data", "year")], vec![])).unwrap();
     // 2023: 10; 2024: 5+7+3+1 = 16.
     assert_eq!(res.category_keys, vec![vec![json!(2023)], vec![json!(2024)]]);
-    assert_eq!(res.series[0].data, vec![10.0, 16.0]);
+    assert_eq!(res.series[0].data, vec![Some(10.0), Some(16.0)]);
 }
 
 #[test]
@@ -273,7 +275,7 @@ fn chart_drill_into_year_shows_quarters_filtered_by_drill_path() {
     let res = execute_visual_query(&model, &chart_req(vec![date_lvl("Data", "quarter")], drill)).unwrap();
     // 2024 → T1: 5+7 = 12; T2: 3; T4: 1 (T3 sem dados some, como no Power BI).
     assert_eq!(res.category_keys, vec![vec![json!(1)], vec![json!(2)], vec![json!(4)]]);
-    assert_eq!(res.series[0].data, vec![12.0, 3.0, 1.0]);
+    assert_eq!(res.series[0].data, vec![Some(12.0), Some(3.0), Some(1.0)]);
 }
 
 #[test]
@@ -282,7 +284,7 @@ fn chart_next_level_without_drill_filter_aggregates_all_years() {
     let res = execute_visual_query(&model, &chart_req(vec![date_lvl("Data", "quarter")], vec![])).unwrap();
     // T1: 5+7 = 12; T2: 3; T4: 10 (2023-11) + 1 (2024-12) = 11.
     assert_eq!(res.category_keys, vec![vec![json!(1)], vec![json!(2)], vec![json!(4)]]);
-    assert_eq!(res.series[0].data, vec![12.0, 3.0, 11.0]);
+    assert_eq!(res.series[0].data, vec![Some(12.0), Some(3.0), Some(11.0)]);
 }
 
 #[test]
@@ -298,7 +300,7 @@ fn chart_expand_all_levels_groups_by_year_and_quarter_tuples() {
         res.category_keys,
         vec![vec![json!(2023), json!(4)], vec![json!(2024), json!(1)], vec![json!(2024), json!(2)], vec![json!(2024), json!(4)]]
     );
-    assert_eq!(res.series[0].data, vec![10.0, 12.0, 3.0, 1.0]);
+    assert_eq!(res.series[0].data, vec![Some(10.0), Some(12.0), Some(3.0), Some(1.0)]);
 }
 
 #[test]
@@ -314,7 +316,7 @@ fn drill_filter_intersects_with_existing_filter_on_same_column() {
     }];
     let res = execute_visual_query(&model, &req).unwrap();
     assert_eq!(res.category_keys, vec![vec![json!(1)]]);
-    assert_eq!(res.series[0].data, vec![5.0]);
+    assert_eq!(res.series[0].data, vec![Some(5.0)]);
 
     // Drill num ano que o segmentador exclui = nada (não "sem filtro").
     let drill = vec![NativeDrillFilter { field: "Data".into(), date_part: Some("year".into()), value: json!(2022) }];
@@ -341,7 +343,7 @@ fn plain_field_drill_filter_and_legacy_requests_unchanged() {
     };
     let res = execute_visual_query(&model, &req).unwrap();
     assert_eq!(res.category_keys, vec![vec![json!("Curitiba")], vec![json!("POA")]]);
-    assert_eq!(res.series[0].data, vec![2.0, 2.0]);
+    assert_eq!(res.series[0].data, vec![Some(2.0), Some(2.0)]);
 
     // Requisição antiga (sem os campos novos) continua igual e sem chaves/matriz.
     let legacy: NativeVisualQueryRequest = serde_json::from_value(json!({
@@ -351,7 +353,7 @@ fn plain_field_drill_filter_and_legacy_requests_unchanged() {
     .unwrap();
     let res = execute_visual_query(&model, &legacy).unwrap();
     assert_eq!(res.categories, vec!["Norte", "Sul"]);
-    assert_eq!(res.series[0].data, vec![130.0, 150.0]);
+    assert_eq!(res.series[0].data, vec![Some(130.0), Some(150.0)]);
     assert!(res.category_keys.is_empty());
     assert!(res.matrix.is_none());
     let js = serde_json::to_value(&res).unwrap();

@@ -66,7 +66,8 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
   const hasLegend = Boolean(dc.legendField);
   const formats = activeFormats(visual);
 
-  const fmtCell = (val: number, colName?: string) => {
+  const fmtCell = (val: number | null | undefined, colName?: string) => {
+    if (val === null || val === undefined || Number.isNaN(val)) return '';
     if (colName) {
       const m = measures.find(ms => ms.name.toLowerCase() === colName.toLowerCase());
       if (m?.formatString) return formatValue(val, m.formatString);
@@ -74,6 +75,18 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
       if (m?.format === 'currency' || isCurrencyField(colName)) return formatCurrency(val);
     }
     return useCurr ? formatCurrency(val) : formatNumber(val);
+  };
+
+  const sumNullable = (vals: (number | null | undefined)[]): number | null => {
+    let acc = 0;
+    let any = false;
+    for (const v of vals) {
+      if (v !== null && v !== undefined && Number.isFinite(v)) {
+        acc += v;
+        any = true;
+      }
+    }
+    return any ? acc : null;
   };
 
   const rows: FlatRow[] = useMemo(() => {
@@ -128,19 +141,24 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
   const rowField = levels[0]?.field;
   const showTotalCol = seriesNames.length > 1;
   // Com legenda o total da linha vem do motor (medida sem o filtro da coluna).
-  // Sem legenda e com várias medidas, mantém o comportamento antigo (soma das medidas da linha).
-  const rowTotalOf = (n: MatrixNode) => (hasLegend ? n.rowTotal ?? 0 : n.values.reduce((a, b) => a + (Number(b) || 0), 0));
-  const grandTotal = hasLegend ? data?.grandTotal ?? 0 : (data?.columnTotals ?? []).reduce((a, b) => a + (Number(b) || 0), 0);
+  // Sem legenda e com várias medidas, mantém o comportamento antigo (soma das medidas não-nulas da linha).
+  const rowTotalOf = (n: MatrixNode): number | null =>
+    hasLegend ? n.rowTotal ?? null : sumNullable(n.values);
+  const grandTotal: number | null = hasLegend
+    ? data?.grandTotal ?? null
+    : sumNullable(data?.columnTotals ?? []);
   // Valores visíveis por série (gradiente/regras da formatação condicional), separados por
-  // nível: subtotais não entram no mínimo/máximo das folhas e vice-versa.
+  // nível: subtotais não entram no mínimo/máximo das folhas e vice-versa; células em branco ficam de fora.
+  const onlyNums = (arr: (number | null | undefined)[]): number[] =>
+    arr.filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v));
   const visibleAt = (depth: number) =>
-    seriesNames.map((_, i) => rows.filter(r => r.depth === depth).map(r => r.node.values[i] ?? 0));
+    seriesNames.map((_, i) => onlyNums(rows.filter(r => r.depth === depth).map(r => r.node.values[i])));
   const visibleByDepth = levels.map((_, d) => visibleAt(d));
   // v0.10 Frente H→G: cada nível (subtotal) tem a própria escala para `styleForTotalCell`,
   // igual ao total da linha, aos totais de coluna e ao total geral abaixo.
   const lastDepth = levels.length - 1;
-  const rowTotalsByDepth = levels.map((_, d) => rows.filter(r => r.depth === d).map(r => rowTotalOf(r.node)));
-  const colTotalsVisible = data?.columnTotals ?? [];
+  const rowTotalsByDepth = levels.map((_, d) => onlyNums(rows.filter(r => r.depth === d).map(r => rowTotalOf(r.node))));
+  const colTotalsVisible = onlyNums(data?.columnTotals ?? []);
 
   return (
     <div className="w-full h-full overflow-auto text-xs" data-testid="hierarchical-matrix">
@@ -237,7 +255,20 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
                   </div>
                 </td>
                 {seriesNames.map((name, sIdx) => {
-                  const val = Number(node.values[sIdx]) || 0;
+                  const rawVal = node.values[sIdx];
+                  if (rawVal === null || rawVal === undefined || Number.isNaN(rawVal)) {
+                    return (
+                      <td
+                        key={name}
+                        className={
+                          isTop
+                            ? 'px-2.5 py-1 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap'
+                            : 'px-2.5 py-1 text-right font-mono text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap'
+                        }
+                      />
+                    );
+                  }
+                  const val = Number(rawVal);
                   const isSubtotalRow = depth < lastDepth;
                   if (isSubtotalRow) {
                     // Subtotal (nível intermediário): só formatos com applyToTotals, escala do próprio nível.
@@ -276,18 +307,21 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
                     </FormattedCell>
                   );
                 })}
-                {showTotalCol && (
-                  <td
-                    className={
-                      isTop
-                        ? 'px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap'
-                        : 'px-2.5 py-1 text-right font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 border-l border-slate-200 dark:border-slate-800 whitespace-nowrap'
-                    }
-                    style={styleForTotalCell(formats, primaryY, rowTotalOf(node), rowTotalsByDepth[depth] ?? [])}
-                  >
-                    {fmtCell(rowTotalOf(node))}
-                  </td>
-                )}
+                {showTotalCol && (() => {
+                  const rowTot = rowTotalOf(node);
+                  return (
+                    <td
+                      className={
+                        isTop
+                          ? 'px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap'
+                          : 'px-2.5 py-1 text-right font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 border-l border-slate-200 dark:border-slate-800 whitespace-nowrap'
+                      }
+                      style={rowTot !== null ? styleForTotalCell(formats, primaryY, rowTot, rowTotalsByDepth[depth] ?? []) : undefined}
+                    >
+                      {fmtCell(rowTot)}
+                    </td>
+                  );
+                })()}
               </tr>
             );
           })}
@@ -301,20 +335,23 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
             <td className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-slate-900 dark:text-amber-300 border-t-2 border-r border-slate-300 dark:border-slate-700">
               Total Geral
             </td>
-            {seriesNames.map((name, cIdx) => (
-              <td
-                key={name}
-                data-testid={`matrix-total-${name}`}
-                className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-900 dark:text-amber-300 border-t-2 border-slate-300 dark:border-slate-700 whitespace-nowrap"
-                style={styleForTotalCell(formats, name, data?.columnTotals[cIdx] ?? 0, colTotalsVisible)}
-              >
-                {fmtCell(data?.columnTotals[cIdx] ?? 0, name)}
-              </td>
-            ))}
+            {seriesNames.map((name, cIdx) => {
+              const colTot = data?.columnTotals[cIdx] ?? null;
+              return (
+                <td
+                  key={name}
+                  data-testid={`matrix-total-${name}`}
+                  className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-900 dark:text-amber-300 border-t-2 border-slate-300 dark:border-slate-700 whitespace-nowrap"
+                  style={colTot !== null ? styleForTotalCell(formats, name, colTot, colTotalsVisible) : undefined}
+                >
+                  {fmtCell(colTot, name)}
+                </td>
+              );
+            })}
             {showTotalCol && (
               <td
                 className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-950 dark:text-amber-400 border-t-2 border-l border-slate-300 dark:border-slate-700 whitespace-nowrap"
-                style={styleForTotalCell(formats, primaryY, grandTotal, [grandTotal])}
+                style={grandTotal !== null ? styleForTotalCell(formats, primaryY, grandTotal, [grandTotal]) : undefined}
               >
                 {fmtCell(grandTotal)}
               </td>

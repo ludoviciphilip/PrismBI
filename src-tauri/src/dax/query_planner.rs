@@ -1,7 +1,7 @@
 use crate::dax::{build_filter_context, functions, DaxModel, DaxValue, FilterContext, NativeFilterInput, ValueKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
 /// v0.10 Frente G: um nível de agrupamento (eixo de drill ou linha de matriz).
@@ -66,7 +66,7 @@ pub struct NativeVisualQueryRequest {
 #[serde(rename_all = "camelCase")]
 pub struct NativeVisualSeries {
     pub name: String,
-    pub data: Vec<f64>,
+    pub data: Vec<Option<f64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,7 +93,7 @@ pub struct NativeVisualQueryResult {
 pub struct NativeMatrixNode {
     pub key: JsonValue,
     pub label: String,
-    pub values: Vec<f64>,
+    pub values: Vec<Option<f64>>,
     /// Com legenda (colunas): a medida no contexto da linha sem o filtro da coluna.
     pub row_total: Option<f64>,
     pub has_children: bool,
@@ -106,7 +106,7 @@ pub struct NativeMatrixNode {
 pub struct NativeMatrixResult {
     pub rows: Vec<NativeMatrixNode>,
     /// Total geral por coluna (série), avaliado no contexto base.
-    pub column_totals: Vec<f64>,
+    pub column_totals: Vec<Option<f64>>,
     /// Com legenda: total geral da medida principal (canto inferior direito).
     pub grand_total: Option<f64>,
 }
@@ -221,7 +221,7 @@ pub fn execute_visual_query(
             categories: vec![y_field.to_string()],
             series: vec![NativeVisualSeries {
                 name: y_field.to_string(),
-                data: vec![summary],
+                data: vec![Some(summary)],
             }],
             summary_value: Some(summary),
             query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
@@ -249,7 +249,7 @@ pub fn execute_visual_query(
             categories,
             series: vec![NativeVisualSeries {
                 name: "Valores".to_string(),
-                data: vals,
+                data: vals.into_iter().map(Some).collect(),
             }],
             summary_value: summary,
             query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
@@ -285,7 +285,7 @@ pub fn execute_visual_query(
             }
         }
         let cat_vec: Vec<String> = cats.into_iter().collect();
-        let ones = vec![1.0; cat_vec.len()];
+        let ones = vec![Some(1.0); cat_vec.len()];
         return Ok(NativeVisualQueryResult {
             categories: cat_vec,
             series: vec![NativeVisualSeries {
@@ -313,62 +313,52 @@ pub fn execute_visual_query(
     // 4. Grouped visuals & matrix
     let raw_cat = req.x_axis_field.as_deref().unwrap_or("");
     let (cat_tbl_name, cat_col) = resolve_table_and_col(model, &req.table_id, raw_cat);
-    let mut cat_entries: BTreeMap<String, ValueKey> = BTreeMap::new(); // display -> value_key
-    if let Some(tbl) = model.get_table(&cat_tbl_name) {
-        if let Some(cidx) = tbl.get_col_idx(&cat_col) {
-            for r_idx in model.get_visible_row_indices(&tbl.name, &base_ctx) {
-                let v = &tbl.rows[r_idx][cidx];
-                let disp = v.as_display_string();
-                let key = v.value_key();
-                let label = if disp.is_empty() { "Sem dados".to_string() } else { disp };
-                cat_entries.entry(label).or_insert(key);
-            }
-        }
-    }
+    let cat_entries = collect_sorted_entries(model, &cat_tbl_name, &cat_col, &base_ctx, true);
 
-    let categories: Vec<String> = cat_entries.keys().cloned().collect();
     if let Some(ref leg_raw) = req.legend_field.as_ref().filter(|s| !s.trim().is_empty()) {
         let (leg_tbl_name, leg_col) = resolve_table_and_col(model, &req.table_id, leg_raw);
-        let mut leg_entries: BTreeMap<String, ValueKey> = BTreeMap::new();
-        if let Some(tbl) = model.get_table(&leg_tbl_name) {
-            if let Some(cidx) = tbl.get_col_idx(&leg_col) {
-                for r_idx in model.get_visible_row_indices(&tbl.name, &base_ctx) {
-                    let v = &tbl.rows[r_idx][cidx];
-                    let disp = v.as_display_string();
-                    if !disp.is_empty() {
-                        leg_entries.entry(disp).or_insert_with(|| v.value_key());
-                    }
-                }
-            }
-        }
+        let leg_entries = collect_sorted_entries(model, &leg_tbl_name, &leg_col, &base_ctx, false);
         let primary_y = req.y_axis_fields.first().map(String::as_str).unwrap_or("");
-        let mut out_series = Vec::with_capacity(leg_entries.len());
-        for (leg_label, leg_key) in &leg_entries {
-            let mut data = Vec::with_capacity(categories.len());
-            for cat_label in &categories {
+
+        // Evaluate each (cat, leg) cell via eval_field_opt; keep only rows where at
+        // least one cell is non-blank, and columns that have data on kept rows.
+        let mut grid: Vec<Vec<Option<f64>>> = Vec::with_capacity(cat_entries.len());
+        let mut kept_cats: Vec<String> = Vec::with_capacity(cat_entries.len());
+        for (cat_label, cat_key) in &cat_entries {
+            let mut row_vals = Vec::with_capacity(leg_entries.len());
+            for (_, leg_key) in &leg_entries {
                 let mut cell_ctx = base_ctx.clone();
-                if let Some(cat_key) = cat_entries.get(cat_label) {
-                    let mut s1 = HashSet::new();
-                    s1.insert(cat_key.clone());
-                    cell_ctx.set_column_filter(&cat_tbl_name, &cat_col, s1);
-                }
+                let mut s1 = HashSet::new();
+                s1.insert(cat_key.clone());
+                cell_ctx.set_column_filter(&cat_tbl_name, &cat_col, s1);
                 let mut s2 = HashSet::new();
                 s2.insert(leg_key.clone());
                 cell_ctx.set_column_filter(&leg_tbl_name, &leg_col, s2);
                 let val = if primary_y.is_empty() {
-                    0.0
+                    None
                 } else {
-                    eval_field_value(model, &cell_ctx, &req.table_id, primary_y, agg)
+                    eval_field_opt(model, &cell_ctx, &req.table_id, primary_y, agg)
                 };
-                data.push(val);
+                row_vals.push(val);
             }
-            out_series.push(NativeVisualSeries {
-                name: leg_label.clone(),
-                data,
-            });
+            if row_vals.iter().any(Option::is_some) {
+                kept_cats.push(cat_label.clone());
+                grid.push(row_vals);
+            }
+        }
+
+        let mut out_series = Vec::with_capacity(leg_entries.len());
+        for (l_idx, (leg_label, _)) in leg_entries.iter().enumerate() {
+            let data: Vec<Option<f64>> = grid.iter().map(|r| r[l_idx]).collect();
+            if data.iter().any(Option::is_some) {
+                out_series.push(NativeVisualSeries {
+                    name: leg_label.clone(),
+                    data,
+                });
+            }
         }
         return Ok(NativeVisualQueryResult {
-            categories,
+            categories: kept_cats,
             series: out_series,
             summary_value: None,
             query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
@@ -379,31 +369,38 @@ pub fn execute_visual_query(
     }
 
     // Standard multi-measure or single-measure grouped series
-    let mut cell_contexts: HashMap<String, FilterContext> = HashMap::with_capacity(categories.len());
+    let y_names: Vec<String> = req
+        .y_axis_fields
+        .iter()
+        .map(|yf| yf.trim().trim_start_matches('Σ').trim().to_string())
+        .collect();
+    let mut kept_cats: Vec<String> = Vec::with_capacity(cat_entries.len());
+    let mut grid: Vec<Vec<Option<f64>>> = Vec::with_capacity(cat_entries.len());
     for (cat_label, cat_key) in &cat_entries {
         let mut cctx = base_ctx.clone();
         let mut s = HashSet::new();
         s.insert(cat_key.clone());
         cctx.set_column_filter(&cat_tbl_name, &cat_col, s);
-        cell_contexts.insert(cat_label.clone(), cctx);
+        let row_vals: Vec<Option<f64>> = y_names
+            .iter()
+            .map(|clean_y| eval_field_opt(model, &cctx, &req.table_id, clean_y, agg))
+            .collect();
+        if row_vals.iter().any(Option::is_some) {
+            kept_cats.push(cat_label.clone());
+            grid.push(row_vals);
+        }
     }
 
-    let mut out_series = Vec::with_capacity(req.y_axis_fields.len());
-    for yf in &req.y_axis_fields {
-        let clean_y = yf.trim().trim_start_matches('Σ').trim();
-        let mut data = Vec::with_capacity(categories.len());
-        for cat_label in &categories {
-            let cctx = &cell_contexts[cat_label];
-            data.push(eval_field_value(model, cctx, &req.table_id, clean_y, agg));
-        }
+    let mut out_series = Vec::with_capacity(y_names.len());
+    for (y_idx, clean_y) in y_names.into_iter().enumerate() {
         out_series.push(NativeVisualSeries {
-            name: clean_y.to_string(),
-            data,
+            name: clean_y,
+            data: grid.iter().map(|r| r[y_idx]).collect(),
         });
     }
 
     Ok(NativeVisualQueryResult {
-        categories,
+        categories: kept_cats,
         series: out_series,
         summary_value: None,
         query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
@@ -528,15 +525,64 @@ fn build_query_context(model: &DaxModel, req: &NativeVisualQueryRequest) -> Filt
     build_filter_context(&filters, model)
 }
 
+fn row_sort_key_opt(tbl: &crate::dax::DaxTableData, col_idx: usize, r_idx: usize) -> Option<ValueKey> {
+    let sb_idx = tbl.sort_by_col_idx(col_idx)?;
+    let sv = &tbl.rows[r_idx][sb_idx];
+    if sv.is_blank() {
+        None
+    } else {
+        Some(sv.value_key())
+    }
+}
+
+fn collect_sorted_entries(
+    model: &DaxModel,
+    tbl_name: &str,
+    col_name: &str,
+    ctx: &FilterContext,
+    keep_blank_as_sem_dados: bool,
+) -> Vec<(String, ValueKey)> {
+    let Some(tbl) = model.get_table(tbl_name) else {
+        return Vec::new();
+    };
+    let Some(cidx) = tbl.get_col_idx(col_name) else {
+        return Vec::new();
+    };
+    let mut map: HashMap<String, (Option<ValueKey>, ValueKey)> = HashMap::new();
+    for r_idx in model.get_visible_row_indices(&tbl.name, ctx) {
+        let v = &tbl.rows[r_idx][cidx];
+        let disp = v.as_display_string();
+        if disp.is_empty() && !keep_blank_as_sem_dados {
+            continue;
+        }
+        let label = if disp.is_empty() { "Sem dados".to_string() } else { disp };
+        let key = v.value_key();
+        let sb_key = row_sort_key_opt(tbl, cidx, r_idx);
+        let entry = map.entry(label).or_insert((None, key));
+        if entry.0.is_none() && sb_key.is_some() {
+            entry.0 = sb_key;
+        }
+    }
+    let mut vec: Vec<(ValueKey, String, ValueKey)> = map
+        .into_iter()
+        .map(|(label, (sb_opt, vkey))| {
+            let order_key = sb_opt.unwrap_or_else(|| vkey.clone());
+            (order_key, label, vkey)
+        })
+        .collect();
+    vec.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    vec.into_iter().map(|(_, label, vkey)| (label, vkey)).collect()
+}
+
 struct LevelGroup {
     key: JsonValue,
     label: String,
     allowed: HashSet<ValueKey>,
 }
 
-/// Valores distintos de um nível visíveis em `ctx`, em ordem (chave tipada;
-/// partes de data em ordem numérica). Cada grupo carrega o conjunto de
-/// valores brutos da coluna que ele representa (para o filtro do nó).
+/// Valores distintos de um nível visíveis em `ctx`, em ordem (chave tipada ou
+/// `sortByColumn` configurada; partes de data em ordem numérica). Cada grupo
+/// carrega o conjunto de valores brutos da coluna que ele representa.
 fn collect_groups(
     model: &DaxModel,
     req: &NativeVisualQueryRequest,
@@ -544,7 +590,7 @@ fn collect_groups(
     level: &NativeGroupLevel,
 ) -> (String, String, Vec<LevelGroup>) {
     let (tbl_name, col) = resolve_table_and_col(model, &req.table_id, &level.field);
-    let mut map: BTreeMap<ValueKey, LevelGroup> = BTreeMap::new();
+    let mut map: HashMap<ValueKey, (Option<ValueKey>, LevelGroup)> = HashMap::new();
     let Some(tbl) = model.get_table(&tbl_name) else {
         return (tbl_name, col, Vec::new());
     };
@@ -553,23 +599,45 @@ fn collect_groups(
     };
     for r_idx in model.get_visible_row_indices(&tbl.name, ctx) {
         let v = &tbl.rows[r_idx][cidx];
-        let (sort_key, key, label) = match level.date_part.as_deref() {
+        let (group_key, sort_opt, key, label) = match level.date_part.as_deref() {
             Some(part) => match date_part_of(v, part) {
-                Some(n) => (ValueKey::Num(n.saturating_mul(1_000_000)), JsonValue::from(n), n.to_string()),
-                None => (ValueKey::Blank, JsonValue::Null, String::new()),
+                Some(n) => {
+                    let nk = ValueKey::Num(n.saturating_mul(1_000_000));
+                    (nk.clone(), Some(nk), JsonValue::from(n), n.to_string())
+                }
+                None => (ValueKey::Blank, Some(ValueKey::Blank), JsonValue::Null, String::new()),
             },
-            None => (v.value_key(), v.to_json(), v.as_display_string()),
+            None => (
+                v.value_key(),
+                row_sort_key_opt(tbl, cidx, r_idx),
+                v.to_json(),
+                v.as_display_string(),
+            ),
         };
-        map.entry(sort_key)
-            .or_insert_with(|| LevelGroup {
-                key,
-                label,
-                allowed: HashSet::new(),
-            })
-            .allowed
-            .insert(v.value_key());
+        let entry = map.entry(group_key).or_insert_with(|| {
+            (
+                None,
+                LevelGroup {
+                    key,
+                    label,
+                    allowed: HashSet::new(),
+                },
+            )
+        });
+        if entry.0.is_none() && sort_opt.is_some() {
+            entry.0 = sort_opt;
+        }
+        entry.1.allowed.insert(v.value_key());
     }
-    (tbl.name.clone(), col, map.into_values().collect())
+    let mut vec: Vec<(ValueKey, ValueKey, LevelGroup)> = map
+        .into_iter()
+        .map(|(gkey, (sb_opt, group))| {
+            let order_key = sb_opt.unwrap_or_else(|| gkey.clone());
+            (order_key, gkey, group)
+        })
+        .collect();
+    vec.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    (tbl.name.clone(), col, vec.into_iter().map(|(_, _, g)| g).collect())
 }
 
 /// Séries do visual: uma por campo de valor, ou uma por valor da legenda
@@ -704,7 +772,7 @@ fn execute_levels_query(
     enumerate_leaves(model, req, base_ctx, &req.category_levels, 0, &mut Vec::new(), &mut Vec::new(), &mut leaves);
     let mut categories = Vec::with_capacity(leaves.len());
     let mut category_keys = Vec::with_capacity(leaves.len());
-    let mut data: Vec<Vec<f64>> = vec![Vec::with_capacity(leaves.len()); names.len()];
+    let mut data: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(leaves.len()); names.len()];
     for (keys, labels, ctx) in leaves {
         let vals = spec.eval_values(model, req, &ctx, agg);
         if vals.iter().all(Option::is_none) {
@@ -713,7 +781,7 @@ fn execute_levels_query(
         categories.push(labels.join(" "));
         category_keys.push(keys);
         for (i, v) in vals.into_iter().enumerate() {
-            data[i].push(v.unwrap_or(0.0));
+            data[i].push(v);
         }
     }
     NativeVisualQueryResult {
@@ -779,7 +847,7 @@ fn build_matrix_nodes(
         out.push(NativeMatrixNode {
             key: g.key,
             label: g.label,
-            values: vals.into_iter().map(|v| v.unwrap_or(0.0)).collect(),
+            values: vals,
             row_total,
             has_children,
             expanded,
@@ -803,18 +871,14 @@ fn execute_matrix_query(
     let names = spec.names();
     let mut budget = MAX_MATRIX_NODES;
     let rows = build_matrix_nodes(model, req, base_ctx, agg, &spec, 0, &mut Vec::new(), &mut budget);
-    let column_totals = spec
-        .eval_values(model, req, base_ctx, agg)
-        .into_iter()
-        .map(|v| v.unwrap_or(0.0))
-        .collect();
+    let column_totals = spec.eval_values(model, req, base_ctx, agg);
     let grand_total = spec.eval_row_total(model, req, base_ctx, agg);
     let series = names
         .into_iter()
         .enumerate()
         .map(|(i, name)| NativeVisualSeries {
             name,
-            data: rows.iter().map(|r| r.values.get(i).copied().unwrap_or(0.0)).collect(),
+            data: rows.iter().map(|r| r.values.get(i).copied().flatten()).collect(),
         })
         .collect();
     NativeVisualQueryResult {
@@ -860,6 +924,7 @@ mod tests {
                     make_row("B", 200.0),
                 ],
                 column_types: vec![],
+                sort_by_columns: Default::default(),
             }],
             relationships: Vec::<DaxRelationshipInput>::new(),
             measures: vec![
@@ -918,7 +983,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mc_res.categories, vec!["Receita", "Qtd"]);
-        assert_eq!(mc_res.series[0].data, vec![350.0, 3.0]);
+        assert_eq!(mc_res.series[0].data, vec![Some(350.0), Some(3.0)]);
 
         // Slicer keeps all options even when filtered on its own column
         let sl_res = execute_visual_query(
@@ -959,6 +1024,144 @@ mod tests {
         )
         .unwrap();
         assert_eq!(col_res.categories, vec!["A", "B"]);
-        assert_eq!(col_res.series[0].data, vec![150.0, 200.0]);
+        assert_eq!(col_res.series[0].data, vec![Some(150.0), Some(200.0)]);
+    }
+
+    #[test]
+    fn test_matrix_legend_sort_by_column_and_sumx_blank_omits_empty_rows() {
+        use serde_json::json;
+        let row_map = |pairs: &[(&str, serde_json::Value)]| -> serde_json::Map<String, serde_json::Value> {
+            pairs.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect()
+        };
+        let mut model = DaxModel::new();
+        let mut sort_by = HashMap::new();
+        sort_by.insert("MesNome".to_string(), "MesNum".to_string());
+        let mut cat_sort_by = HashMap::new();
+        cat_sort_by.insert("Linha".to_string(), "Ordem".to_string());
+
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput {
+                    name: "dCal".into(),
+                    columns: vec!["Data".into(), "MesNome".into(), "MesNum".into()],
+                    rows: vec![
+                        row_map(&[("Data", json!("2026-01-10")), ("MesNome", json!("jan")), ("MesNum", json!(1))]),
+                        row_map(&[("Data", json!("2026-04-10")), ("MesNome", json!("abr")), ("MesNum", json!(4))]),
+                        row_map(&[("Data", json!("2026-11-10")), ("MesNome", json!("nov")), ("MesNum", json!(11))]),
+                    ],
+                    column_types: vec![Some("date".into()), Some("text".into()), Some("number".into())],
+                    sort_by_columns: sort_by,
+                    ..Default::default()
+                },
+                DaxTableInput {
+                    name: "dEstrutura".into(),
+                    columns: vec!["Linha".into(), "Ordem".into()],
+                    rows: vec![
+                        row_map(&[("Linha", json!("Receita")), ("Ordem", json!(1))]),
+                        row_map(&[("Linha", json!("ZeroReal")), ("Ordem", json!(2))]),
+                        row_map(&[("Linha", json!("—")), ("Ordem", json!(3))]),
+                    ],
+                    column_types: vec![Some("text".into()), Some("number".into())],
+                    sort_by_columns: cat_sort_by,
+                    ..Default::default()
+                },
+                DaxTableInput {
+                    name: "fLanc".into(),
+                    columns: vec!["Data".into(), "Linha".into(), "Valor".into()],
+                    rows: vec![
+                        // Only Jan & Nov have data for Receita (Apr has none -> None in grid, NOT 0)
+                        row_map(&[("Data", json!("2026-01-10")), ("Linha", json!("Receita")), ("Valor", json!(1000))]),
+                        row_map(&[("Data", json!("2026-11-10")), ("Linha", json!("Receita")), ("Valor", json!(2500))]),
+                        // ZeroReal has an actual matching row of 0 in Apr -> preserved as Some(0.0)
+                        row_map(&[("Data", json!("2026-04-10")), ("Linha", json!("ZeroReal")), ("Valor", json!(0))]),
+                        // "—" has NO rows in fLanc -> SUMX returns BLANK on all months -> row dropped
+                    ],
+                    column_types: vec![Some("date".into()), Some("text".into()), Some("number".into())],
+                    ..Default::default()
+                },
+            ],
+            relationships: vec![
+                DaxRelationshipInput {
+                    from_table: "fLanc".into(),
+                    from_column: "Data".into(),
+                    to_table: "dCal".into(),
+                    to_column: "Data".into(),
+                    cross_filter_direction: "single".into(),
+                    is_active: true,
+                },
+                DaxRelationshipInput {
+                    from_table: "fLanc".into(),
+                    from_column: "Linha".into(),
+                    to_table: "dEstrutura".into(),
+                    to_column: "Linha".into(),
+                    cross_filter_direction: "single".into(),
+                    is_active: true,
+                },
+            ],
+            measures: vec![DaxMeasureInput {
+                name: "DRE Valor".into(),
+                table_name: "fLanc".into(),
+                formula: "-SUMX(FILTER(fLanc, fLanc[Valor] >= 0), fLanc[Valor])".into(),
+            }],
+        });
+
+        // Empty filter SUMX & unary negation must return Blank
+        let mut ctx_dash = FilterContext::default();
+        let mut s_dash = HashSet::new();
+        s_dash.insert(ValueKey::Text("—".into()));
+        ctx_dash.set_column_filter("dEstrutura", "Linha", s_dash);
+        assert_eq!(model.evaluate_dax("[DRE Valor]", &ctx_dash).unwrap(), DaxValue::Blank);
+
+        // 1-level matrix: columns ordered by MesNum (jan, apr, nov) NOT alphabetical (abr, jan, nov)
+        // Row "—" dropped cleanly; empty cells stay None, genuine 0 stays Some(0.0)
+        let res = execute_visual_query(
+            &model,
+            &NativeVisualQueryRequest {
+                visual_id: "m1".into(),
+                visual_type: "matrix".into(),
+                table_id: "fLanc".into(),
+                x_axis_field: Some("dEstrutura.Linha".into()),
+                legend_field: Some("dCal.MesNome".into()),
+                y_axis_fields: vec!["DRE Valor".into()],
+                aggregation: Some("NONE".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(res.categories, vec!["Receita", "ZeroReal"]);
+        assert_eq!(
+            res.series.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["jan", "abr", "nov"]
+        );
+        assert_eq!(res.series[0].data, vec![Some(-1000.0), None]); // jan
+        assert_eq!(res.series[1].data, vec![None, Some(0.0)]);    // abr (ZeroReal = 0)
+        assert_eq!(res.series[2].data, vec![Some(-2500.0), None]); // nov
+
+        // Multi-level hierarchical matrix also orders columns chronologically and preserves None
+        let res_hier = execute_visual_query(
+            &model,
+            &NativeVisualQueryRequest {
+                visual_id: "m2".into(),
+                visual_type: "matrix".into(),
+                table_id: "fLanc".into(),
+                x_axis_field: Some("dEstrutura.Linha".into()),
+                legend_field: Some("dCal.MesNome".into()),
+                y_axis_fields: vec!["DRE Valor".into()],
+                aggregation: Some("NONE".into()),
+                matrix_rows: vec![NativeGroupLevel { field: "dEstrutura.Linha".into(), date_part: None }],
+                matrix_expand_depth: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            res_hier.series.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["jan", "abr", "nov"]
+        );
+        let mx = res_hier.matrix.unwrap();
+        assert_eq!(mx.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), vec!["Receita", "ZeroReal"]);
+        assert_eq!(mx.rows[0].values, vec![Some(-1000.0), None, Some(-2500.0)]);
+        assert_eq!(mx.rows[1].values, vec![None, Some(0.0), None]);
     }
 }

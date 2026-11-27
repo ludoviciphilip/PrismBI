@@ -833,6 +833,7 @@ mod tests {
                         row(json!({"ProdutoID": 4, "Produto": "Teclado", "Categoria": "Informatica"})),
                     ],
                     column_types: vec![],
+                    sort_by_columns: Default::default(),
                 },
                 DaxTableInput {
                     duckdb_table: None,
@@ -844,6 +845,7 @@ mod tests {
                         row(json!({"ClienteID": 3, "Cliente": "Carla"})),
                     ],
                     column_types: vec![],
+                    sort_by_columns: Default::default(),
                 },
                 DaxTableInput {
                     duckdb_table: None,
@@ -854,6 +856,7 @@ mod tests {
                     columns: vec!["VendaID".into(), "ProdutoID".into(), "ClienteID".into(), "Valor".into()],
                     rows: f_rows,
                     column_types: vec![],
+                    sort_by_columns: Default::default(),
                 },
             ],
             relationships: vec![

@@ -126,7 +126,7 @@ describe('queryMatrixTs: N níveis com subtotal avaliado pelo motor', () => {
     });
     expect(res.seriesNames).toEqual(['L1', 'L2', 'L3', 'L4']);
     const sul = find(res.rows, 'Sul');
-    expect(sul.values).toEqual([2, 1, 2, 0]);
+    expect(sul.values).toEqual([2, 1, 2, null]);
     expect(sul.rowTotal).toBe(3);
     expect(res.columnTotals).toEqual([2, 1, 2, 2]);
     expect(res.grandTotal).toBe(4);
@@ -142,6 +142,71 @@ describe('queryMatrixTs: N níveis com subtotal avaliado pelo motor', () => {
     });
     // Só Sul tem c1; Norte some (BLANK).
     expect(res.rows.map(r => [r.label, r.values[0]])).toEqual([['Sul', 1]]);
+  });
+
+  it('colunas e linhas da matriz respeitam sortByColumn e omitir linhas só com BLANK / SUMX vazio', () => {
+    const dCal: Table = {
+      id: 'dc',
+      name: 'dCal',
+      originalName: 'dCal',
+      columns: [
+        { id: 'c1', name: 'Data', originalName: 'Data', dataType: 'date' },
+        { id: 'c2', name: 'MesNome', originalName: 'MesNome', dataType: 'text', sortByColumn: 'MesNum' },
+        { id: 'c3', name: 'MesNum', originalName: 'MesNum', dataType: 'number' },
+      ],
+      rows: [
+        { Data: '2026-01-10', MesNome: 'jan', MesNum: 1 },
+        { Data: '2026-04-10', MesNome: 'abr', MesNum: 4 },
+        { Data: '2026-11-10', MesNome: 'nov', MesNum: 11 },
+      ],
+    } as Table;
+    const dEst: Table = {
+      id: 'de',
+      name: 'dEstrutura',
+      originalName: 'dEstrutura',
+      columns: [
+        { id: 'e1', name: 'Linha', originalName: 'Linha', dataType: 'text', sortByColumn: 'Ordem' },
+        { id: 'e2', name: 'Ordem', originalName: 'Ordem', dataType: 'number' },
+      ],
+      rows: [
+        { Linha: 'Receita', Ordem: 1 },
+        { Linha: 'ZeroReal', Ordem: 2 },
+        { Linha: '—', Ordem: 3 },
+      ],
+    } as Table;
+    const fLanc: Table = {
+      id: 'fl',
+      name: 'fLanc',
+      originalName: 'fLanc',
+      columns: [
+        { id: 'l1', name: 'Data', originalName: 'Data', dataType: 'date' },
+        { id: 'l2', name: 'Linha', originalName: 'Linha', dataType: 'text' },
+        { id: 'l3', name: 'Valor', originalName: 'Valor', dataType: 'number' },
+      ],
+      rows: [
+        { Data: '2026-01-10', Linha: 'Receita', Valor: 1000 },
+        { Data: '2026-11-10', Linha: 'Receita', Valor: 2500 },
+        { Data: '2026-04-10', Linha: 'ZeroReal', Valor: 0 },
+      ],
+    } as Table;
+    const mDre: Measure[] = [
+      { id: 'md', name: 'DRE Valor', formula: 'SUMX(FILTER(fLanc, fLanc[Valor] >= 0), fLanc[Valor])', tableName: 'fLanc' } as Measure,
+    ];
+    const rels = [
+      { id: 'r1', fromTable: 'fLanc', fromColumn: 'Data', toTable: 'dCal', toColumn: 'Data', cardinality: 'N:1' as const, crossFilterDirection: 'single' as const, isActive: true },
+      { id: 'r2', fromTable: 'fLanc', fromColumn: 'Linha', toTable: 'dEstrutura', toColumn: 'Linha', cardinality: 'N:1' as const, crossFilterDirection: 'single' as const, isActive: true },
+    ];
+    const dreModel = new InMemoryModelAccess([dCal, dEst, fLanc], rels, mDre);
+    const res = queryMatrixTs(dreModel, {
+      visual: visual({ tableId: 'fl', xAxisField: 'dEstrutura.Linha', legendField: 'dCal.MesNome', yAxisFields: ['DRE Valor'] }, 'matrix'),
+      filters: [],
+      levels: [plain('dEstrutura.Linha')],
+      expansion: COLLAPSED_MATRIX,
+    });
+    expect(res.seriesNames).toEqual(['jan', 'abr', 'nov']);
+    expect(res.rows.map(r => r.label)).toEqual(['Receita', 'ZeroReal']);
+    expect(res.rows[0].values).toEqual([1000, null, 2500]);
+    expect(res.rows[1].values).toEqual([null, 0, null]);
   });
 });
 

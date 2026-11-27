@@ -246,4 +246,80 @@ describe('visualSort — engine integration', () => {
     const tbl = engine.queryVisualData(mkVisual({ sortField: 'Valor', sortOrder: 'desc' }, 'table'), []);
     expect(tbl.rawRows.map(r => r.Valor)).toEqual([100, 30, 5, 1]);
   });
+
+  it('orders matrix/legend columns by sortByColumn and drops all-blank SUMX rows', () => {
+    const cal: Table = {
+      id: 'dc',
+      name: 'dCal',
+      originalName: 'dCal',
+      columns: [
+        { id: 'c1', name: 'Data', originalName: 'Data', dataType: 'date' },
+        { id: 'c2', name: 'MesNome', originalName: 'MesNome', dataType: 'text', sortByColumn: 'MesNum' },
+        { id: 'c3', name: 'MesNum', originalName: 'MesNum', dataType: 'number' },
+      ],
+      rows: [
+        { Data: '2026-01-10', MesNome: 'jan', MesNum: 1 },
+        { Data: '2026-04-10', MesNome: 'abr', MesNum: 4 },
+        { Data: '2026-11-10', MesNome: 'nov', MesNum: 11 },
+      ],
+    } as Table;
+    const est: Table = {
+      id: 'de',
+      name: 'dEstrutura',
+      originalName: 'dEstrutura',
+      columns: [
+        { id: 'e1', name: 'Linha', originalName: 'Linha', dataType: 'text', sortByColumn: 'Ordem' },
+        { id: 'e2', name: 'Ordem', originalName: 'Ordem', dataType: 'number' },
+      ],
+      rows: [
+        { Linha: 'Receita', Ordem: 1 },
+        { Linha: '—', Ordem: 2 },
+      ],
+    } as Table;
+    const fact: Table = {
+      id: 'fl',
+      name: 'fLanc',
+      originalName: 'fLanc',
+      columns: [
+        { id: 'l1', name: 'Data', originalName: 'Data', dataType: 'date' },
+        { id: 'l2', name: 'Linha', originalName: 'Linha', dataType: 'text' },
+        { id: 'l3', name: 'Valor', originalName: 'Valor', dataType: 'number' },
+      ],
+      rows: [
+        { Data: '2026-01-10', Linha: 'Receita', Valor: 100 },
+        { Data: '2026-11-10', Linha: 'Receita', Valor: 250 },
+      ],
+    } as Table;
+    const engine = new DataEngine();
+    engine.setSchema(
+      [cal, est, fact],
+      [
+        { id: 'r1', fromTable: 'fLanc', fromColumn: 'Data', toTable: 'dCal', toColumn: 'Data', cardinality: 'N:1', crossFilterDirection: 'single', isActive: true },
+        { id: 'r2', fromTable: 'fLanc', fromColumn: 'Linha', toTable: 'dEstrutura', toColumn: 'Linha', cardinality: 'N:1', crossFilterDirection: 'single', isActive: true },
+      ],
+      [{ id: 'm1', name: 'DRE Valor', formula: '-SUMX(FILTER(fLanc, fLanc[Valor] >= 0), fLanc[Valor])', tableName: 'fLanc' } as any]
+    );
+    const v = mkVisual({ tableId: 'fl', xAxisField: 'dEstrutura.Linha', legendField: 'dCal.MesNome', yAxisFields: ['DRE Valor'], aggregation: 'NONE' }, 'matrix');
+    const res = engine.queryVisualData(v, []);
+    expect(res.categories).toEqual(['Receita']); // "—" row omitted completely
+    expect(res.series.map(s => s.name)).toEqual(['jan', 'nov']); // sorted by MesNum, abr had only BLANK on Receita
+    expect(res.series[0].data).toEqual([-100]);
+    expect(res.series[1].data).toEqual([-250]);
+
+    // Simulated native-unordered response also gets legend columns sorted via buildSortSpec
+    const spec = engine.getVisualSortSpec(v)!;
+    const sortedNative = applyVisualSort(
+      {
+        categories: ['Receita'],
+        series: [
+          { name: 'nov', data: [-250] },
+          { name: 'abr', data: [null] },
+          { name: 'jan', data: [-100] },
+        ],
+      },
+      spec
+    );
+    expect(sortedNative.series.map(s => s.name)).toEqual(['jan', 'abr', 'nov']);
+    expect(sortedNative.series.map(s => s.data)).toEqual([[-100], [null], [-250]]);
+  });
 });

@@ -62,7 +62,7 @@ export function makeColumnTypeLookup(tables: Table[], baseTableId: string) {
 
 export interface VisualDrill {
   /** Resultado do eixo hierárquico (já ordenado); null = visual sem hierarquia (caminho antigo). */
-  chartResult: { categories: string[]; series: { name: string; data: number[] }[] } | null;
+  chartResult: { categories: string[]; series: { name: string; data: (number | null)[] }[] } | null;
   hoverProps: Pick<React.HTMLAttributes<HTMLDivElement>, 'onMouseEnter' | 'onMouseLeave' | 'onFocusCapture'>;
   header: React.ReactNode;
   overlay: React.ReactNode;

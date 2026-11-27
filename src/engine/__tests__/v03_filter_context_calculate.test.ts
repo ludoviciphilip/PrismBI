@@ -385,7 +385,7 @@ describe('V0.3: FilterContext, CALCULATE & New Visual Query Pipeline', () => {
       // - Móveis: V003 (P003, C003 Sudeste) 5800 + V004 (P004, C001 Sudeste) 2890 = 8690
       // Sul:
       // - Eletrônicos: V002 (P002, C002 Sul) = 3200
-      // - Móveis: 0
+      // - Móveis: BLANK (null — sem vendas no Sul)
       const sudesteSeries = result.series.find(s => s.name === 'Sudeste')!;
       const sulSeries = result.series.find(s => s.name === 'Sul')!;
 
@@ -395,7 +395,7 @@ describe('V0.3: FilterContext, CALCULATE & New Visual Query Pipeline', () => {
       expect(sudesteSeries.data[eletronicosIdx]).toBe(17000);
       expect(sudesteSeries.data[moveisIdx]).toBe(8690);
       expect(sulSeries.data[eletronicosIdx]).toBe(3200);
-      expect(sulSeries.data[moveisIdx]).toBe(0);
+      expect(sulSeries.data[moveisIdx]).toBeNull();
     });
 
     it('applies limit as Top N by value', () => {

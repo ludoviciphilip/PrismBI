@@ -527,3 +527,132 @@ describe('i18n (item 6): controles de drill usam src/i18n, não PT-BR fixo', () 
     expect(screen.getByRole('button', { name: 'Fazer drill up' })).toBeTruthy();
   });
 });
+
+describe('Matriz UI: sortByColumn nas colunas e células BLANK vazias (sem R$ 0,00)', () => {
+  const seedDre = (mv: Visual) => {
+    const dCal: Table = {
+      id: 'dc',
+      name: 'dCal',
+      originalName: 'dCal',
+      columns: [
+        { id: 'c1', name: 'Data', originalName: 'Data', dataType: 'date' },
+        { id: 'c2', name: 'MesNome', originalName: 'MesNome', dataType: 'text', sortByColumn: 'MesNum' },
+        { id: 'c3', name: 'MesNum', originalName: 'MesNum', dataType: 'number' },
+      ],
+      rows: [
+        { Data: '2026-01-10', MesNome: 'jan', MesNum: 1 },
+        { Data: '2026-04-10', MesNome: 'abr', MesNum: 4 },
+        { Data: '2026-11-10', MesNome: 'nov', MesNum: 11 },
+      ],
+    } as Table;
+    const dEst: Table = {
+      id: 'de',
+      name: 'dEstrutura',
+      originalName: 'dEstrutura',
+      columns: [
+        { id: 'e1', name: 'Linha', originalName: 'Linha', dataType: 'text', sortByColumn: 'Ordem' },
+        { id: 'e2', name: 'Ordem', originalName: 'Ordem', dataType: 'number' },
+      ],
+      rows: [
+        { Linha: 'Receita', Ordem: 1 },
+        { Linha: 'ZeroReal', Ordem: 2 },
+        { Linha: '—', Ordem: 3 },
+      ],
+    } as Table;
+    const fLanc: Table = {
+      id: 'fl',
+      name: 'fLanc',
+      originalName: 'fLanc',
+      columns: [
+        { id: 'l1', name: 'Data', originalName: 'Data', dataType: 'date' },
+        { id: 'l2', name: 'Linha', originalName: 'Linha', dataType: 'text' },
+        { id: 'l3', name: 'Valor', originalName: 'Valor', dataType: 'currency' },
+      ],
+      rows: [
+        { Data: '2026-01-10', Linha: 'Receita', Valor: 1000 },
+        { Data: '2026-11-10', Linha: 'Receita', Valor: 2500 },
+        { Data: '2026-04-10', Linha: 'ZeroReal', Valor: 0 },
+      ],
+    } as Table;
+    const mDre: Measure[] = [
+      { id: 'md', name: 'DRE Valor', formula: 'SUMX(FILTER(fLanc, fLanc[Valor] >= 0), fLanc[Valor])', tableName: 'fLanc', format: 'currency' },
+    ];
+    const rels = [
+      { id: 'r1', fromTable: 'fLanc', fromColumn: 'Data', toTable: 'dCal', toColumn: 'Data', cardinality: 'N:1' as const, crossFilterDirection: 'single' as const, isActive: true },
+      { id: 'r2', fromTable: 'fLanc', fromColumn: 'Linha', toTable: 'dEstrutura', toColumn: 'Linha', cardinality: 'N:1' as const, crossFilterDirection: 'single' as const, isActive: true },
+    ];
+    const st = useBiStore.getState();
+    st.newProject('DRE Matrix UI');
+    st.setTables([dCal, dEst, fLanc]);
+    useBiStore.setState({ relationships: rels, measures: mDre, filters: [] });
+    globalDataEngine.setSchema([dCal, dEst, fLanc], rels, mDre);
+    const pageId = useBiStore.getState().activePageId;
+    useBiStore.setState(s => ({ pages: [{ ...s.pages[0], id: pageId, visuals: [mv] }] }));
+  };
+
+  it('matriz hierárquica ordena meses cronologicamente, oculta linha "—" e deixa células BLANK vazias', () => {
+    seedDre({
+      id: 'v1',
+      type: 'matrix',
+      title: 'DRE',
+      x: 0,
+      y: 0,
+      w: 600,
+      h: 400,
+      dataConfig: {
+        tableId: 'fl',
+        xAxisField: 'dEstrutura.Linha',
+        legendField: 'dCal.MesNome',
+        matrixRowFields: ['dEstrutura.Linha', 'dEstrutura.Ordem'],
+        yAxisFields: ['DRE Valor'],
+        aggregation: 'NONE',
+      },
+      formatConfig: { showTitle: true },
+    });
+    render(<LiveCard id="v1" />);
+    const matrix = screen.getByTestId('hierarchical-matrix');
+    const headers = Array.from(matrix.querySelectorAll('thead th')).map(th => th.textContent?.trim());
+    expect(headers).toEqual(['dEstrutura.Linha', 'jan', 'abr', 'nov', 'Total']);
+
+    const bodyRows = Array.from(matrix.querySelectorAll('tbody tr'));
+    expect(bodyRows.map(tr => tr.querySelector('td span')?.textContent)).toEqual(['Receita', 'ZeroReal']);
+
+    const receitaCells = Array.from(bodyRows[0].querySelectorAll('td')).map(td => td.textContent);
+    expect(receitaCells[1]).toContain('1.000');
+    expect(receitaCells[2]).toBe(''); // abr para Receita é BLANK (nunca R$ 0,00)
+    expect(receitaCells[3]).toContain('2.500');
+
+    const zeroCells = Array.from(bodyRows[1].querySelectorAll('td')).map(td => td.textContent);
+    expect(zeroCells[1]).toBe('');
+    expect(zeroCells[2]).toContain('0,00'); // ZeroReal em abr é 0 genuíno
+    expect(zeroCells[3]).toBe('');
+  });
+
+  it('matriz de 1 nível também ordena colunas por sortByColumn e deixa células BLANK vazias', () => {
+    seedDre({
+      id: 'v1',
+      type: 'matrix',
+      title: 'DRE 1L',
+      x: 0,
+      y: 0,
+      w: 600,
+      h: 400,
+      dataConfig: {
+        tableId: 'fl',
+        xAxisField: 'dEstrutura.Linha',
+        legendField: 'dCal.MesNome',
+        yAxisFields: ['DRE Valor'],
+        aggregation: 'NONE',
+      },
+      formatConfig: { showTitle: true },
+    });
+    const { container } = render(<LiveCard id="v1" />);
+    const headers = Array.from(container.querySelectorAll('table thead th')).map(th => th.textContent?.trim());
+    expect(headers).toEqual(['dEstrutura.Linha', 'jan', 'abr', 'nov', 'Total']);
+
+    const bodyRows = Array.from(container.querySelectorAll('table tbody tr'));
+    expect(bodyRows.map(tr => tr.querySelector('td span')?.textContent)).toEqual(['Receita', 'ZeroReal']);
+    const receitaCells = Array.from(bodyRows[0].querySelectorAll('td')).map(td => td.textContent);
+    expect(receitaCells[2]).toBe('');
+  });
+});

@@ -747,7 +747,14 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               fontSize: 10,
               color: axisColor,
               textBorderWidth: 0,
-              formatter: (p: any) => (isYCurrency ? formatCurrency(p.value) : p.value >= 1000 ? `${(p.value / 1000).toFixed(0)}k` : p.value),
+              formatter: (p: any) =>
+                p.value === null || p.value === undefined
+                  ? ''
+                  : isYCurrency
+                  ? formatCurrency(p.value)
+                  : p.value >= 1000
+                  ? `${(p.value / 1000).toFixed(0)}k`
+                  : p.value,
             },
           })),
         };
@@ -993,7 +1000,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       case 'treemap': {
         const treeData = categories.map((cat, i) => ({
           name: cat,
-          value: series[0]?.data[i] || 0,
+          value: series[0]?.data[i] ?? 0,
         }));
         return {
           animation: false,
@@ -1783,11 +1790,17 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
         ) : visual.type === 'matrix' ? (
           (() => {
             const { categories, series } = queryResult;
-            const colTotals = series.map(s => s.data.reduce((a, b) => a + (Number(b) || 0), 0));
-            const rowTotals = categories.map((_, rIdx) =>
-              series.reduce((sum, s) => sum + (Number(s.data[rIdx]) || 0), 0)
-            );
-            const grandTotal = rowTotals.reduce((a, b) => a + b, 0);
+            const onlyNums = (arr: (number | null | undefined)[]): number[] =>
+              arr.filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v));
+            const sumNullable = (vals: (number | null | undefined)[]): number | null => {
+              const nums = onlyNums(vals);
+              return nums.length === 0 ? null : nums.reduce((a, b) => a + b, 0);
+            };
+            const colTotals = series.map(s => sumNullable(s.data));
+            const colTotalsNums = onlyNums(colTotals);
+            const rowTotals = categories.map((_, rIdx) => sumNullable(series.map(s => s.data[rIdx])));
+            const rowTotalsNums = onlyNums(rowTotals);
+            const grandTotal = sumNullable(rowTotals);
             const primaryY = visual.dataConfig.yAxisFields?.[0] || '';
             const useCurr = isCurrencyField(primaryY);
             const childHierarchyField = visual.dataConfig.drillFields?.[0];
@@ -1797,7 +1810,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               visual.dataConfig.sortField && matrixRowField && fieldMatches(visual.dataConfig.sortField, matrixRowField)
                 ? childHierarchyField
                 : visual.dataConfig.sortField;
-            const fmtCell = (val: number, colName?: string) => {
+            const fmtCell = (val: number | null | undefined, colName?: string) => {
+              if (val === null || val === undefined || Number.isNaN(val)) return '';
               if (colName) {
                 const m = measures.find(ms => ms.name.toLowerCase() === colName.toLowerCase());
                 if (m?.formatString) return formatValue(val, m.formatString);
@@ -1922,8 +1936,19 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                               </div>
                             </td>
                             {series.map(s => {
-                              const cellVal = Number(s.data[rIdx]) || 0;
-                              const cellFormat = getFieldFormat(activeFormats(visual), s.name, cellVal, s.data, resolverFromSeries(series, rIdx));
+                              const rawCell = s.data[rIdx];
+                              if (rawCell === null || rawCell === undefined || Number.isNaN(rawCell)) {
+                                return (
+                                  <td
+                                    key={s.name}
+                                    onMouseEnter={(e) => onCellMouseEnter(e, cat, visual.dataConfig.legendField ? s.name : undefined)}
+                                    onMouseLeave={onCellMouseLeave}
+                                    className="px-2.5 py-1 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap"
+                                  />
+                                );
+                              }
+                              const cellVal = Number(rawCell);
+                              const cellFormat = getFieldFormat(activeFormats(visual), s.name, cellVal, onlyNums(s.data), resolverFromSeries(series, rIdx));
                               return (
                                 <FormattedCell
                                   key={s.name}
@@ -1939,7 +1964,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                             {series.length > 1 && (
                               <td
                                 className="px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap"
-                                style={styleForTotalCell(activeFormats(visual), primaryY, rowTotals[rIdx], rowTotals)}
+                                style={rowTotals[rIdx] !== null ? styleForTotalCell(activeFormats(visual), primaryY, rowTotals[rIdx]!, rowTotalsNums) : undefined}
                               >
                                 {fmtCell(rowTotals[rIdx])}
                               </td>
@@ -1947,8 +1972,9 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                           </tr>
                           {isExpanded && childData && (() => {
                             const childRowTotals = childData.categories.map((_, ci) =>
-                              childData.series.reduce((sum, cs) => sum + (Number(cs.data[ci]) || 0), 0)
+                              sumNullable(childData.series.map(cs => cs.data[ci]))
                             );
+                            const childRowTotalsNums = onlyNums(childRowTotals);
                             return childData.categories.map((childCat, cIdx) => {
                               const childRowTotal = childRowTotals[cIdx];
                               return (
@@ -1963,14 +1989,14 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                       key={s.name}
                                       className="px-2.5 py-1 text-right font-mono text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap"
                                     >
-                                      {fmtCell(Number(cs?.data[cIdx]) || 0, s.name)}
+                                      {fmtCell(cs?.data[cIdx] ?? null, s.name)}
                                     </td>
                                   );
                                 })}
                                 {series.length > 1 && (
                                   <td
                                     className="px-2.5 py-1 text-right font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 border-l border-slate-200 dark:border-slate-800 whitespace-nowrap"
-                                    style={styleForTotalCell(activeFormats(visual), primaryY, childRowTotal, childRowTotals)}
+                                    style={childRowTotal !== null ? styleForTotalCell(activeFormats(visual), primaryY, childRowTotal, childRowTotalsNums) : undefined}
                                   >
                                     {fmtCell(childRowTotal)}
                                   </td>
@@ -1992,7 +2018,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                         <td
                           key={series[cIdx]?.name || cIdx}
                           className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-900 dark:text-amber-300 border-t-2 border-slate-300 dark:border-slate-700 whitespace-nowrap"
-                          style={styleForTotalCell(activeFormats(visual), series[cIdx]?.name || '', tot, colTotals)}
+                          style={tot !== null ? styleForTotalCell(activeFormats(visual), series[cIdx]?.name || '', tot, colTotalsNums) : undefined}
                         >
                           {fmtCell(tot, series[cIdx]?.name)}
                         </td>
@@ -2000,7 +2026,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                       {series.length > 1 && (
                         <td
                           className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-950 dark:text-amber-400 border-t-2 border-l border-slate-300 dark:border-slate-700 whitespace-nowrap"
-                          style={styleForTotalCell(activeFormats(visual), primaryY, grandTotal, [grandTotal])}
+                          style={grandTotal !== null ? styleForTotalCell(activeFormats(visual), primaryY, grandTotal, [grandTotal]) : undefined}
                         >
                           {fmtCell(grandTotal)}
                         </td>

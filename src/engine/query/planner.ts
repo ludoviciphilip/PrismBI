@@ -17,7 +17,7 @@ import {
 
 export interface VisualQueryResult {
   categories: string[];
-  series: { name: string; data: number[] }[];
+  series: { name: string; data: (number | null)[] }[];
   rawRows: Record<string, any>[];
   summaryValue?: number;
   matrixHierarchy?: any[];
@@ -171,16 +171,28 @@ export class QueryPlanner {
 
     // Check if legendField is provided for series breakdown
     const legendField = visual.dataConfig.legendField;
-    let series: { name: string; data: number[] }[] = [];
+    let series: { name: string; data: (number | null)[] }[] = [];
 
     const yFields = visual.dataConfig.yAxisFields && visual.dataConfig.yAxisFields.length > 0
       ? visual.dataConfig.yAxisFields
       : [table.columns.find(c => c.dataType === 'number' || c.dataType === 'currency')?.name || 'ValorTotal'];
 
+    const evalMeasureOpt = (formula: string, sliceCtx: FilterContext): number | null => {
+      const val = DaxEngine.evaluateWithContext(formula, this.model, sliceCtx);
+      if (isBlank(val) || val === null || val === undefined || val === '') return null;
+      const n = typeof val === 'number' ? val : Number(val);
+      return Number.isFinite(n) ? n : null;
+    };
+
     if (legendField) {
       // Legend breakdown: One series per distinct value of legendField
       const { categoryTable: legendTable, cleanColName: legendCol } = this.resolveColumnLocation(table, legendField);
-      const legendValues = this.extractCategories(table, legendTable, legendCol, baseFilterContext, filteredRows);
+      const rawLegendValues = this.extractCategories(table, legendTable, legendCol, baseFilterContext, filteredRows);
+      const legendColMeta = legendTable.columns.find(c => c.name.toLowerCase() === legendCol.toLowerCase());
+      const legendSortKeys = legendColMeta?.sortByColumn
+        ? buildSortByLookup(legendTable.rows, legendCol, legendColMeta.sortByColumn)
+        : undefined;
+      const legendValues = sortCategoryLabels(rawLegendValues, 'asc', legendSortKeys);
       const targetMetric = yFields[0];
       const measureObj = this.model.getMeasure ? this.model.getMeasure(targetMetric) : undefined;
       const isMeasure = !!measureObj;
@@ -201,11 +213,10 @@ export class QueryPlanner {
           });
 
           if (isMeasure && measureObj) {
-            const val = DaxEngine.evaluateWithContext(measureObj.formula, this.model, sliceContext);
-            return typeof val === 'number' && !isNaN(val) ? val : (isBlank(val) ? 0 : Number(val) || 0);
+            return evalMeasureOpt(measureObj.formula, sliceContext);
           } else {
             const sliceRows = sliceContext.getFilteredRows(table.id, this.model);
-            return this.calculateImplicitAggregation(sliceRows, targetMetric, agg);
+            return this.calculateImplicitAggregationOpt(sliceRows, targetMetric, agg);
           }
         });
 
@@ -230,11 +241,10 @@ export class QueryPlanner {
           });
 
           if (isMeasure && measureObj) {
-            const val = DaxEngine.evaluateWithContext(measureObj.formula, this.model, sliceContext);
-            return typeof val === 'number' && !isNaN(val) ? val : (isBlank(val) ? 0 : Number(val) || 0);
+            return evalMeasureOpt(measureObj.formula, sliceContext);
           } else {
             const sliceRows = sliceContext.getFilteredRows(table.id, this.model);
-            return this.calculateImplicitAggregation(sliceRows, yField, agg);
+            return this.calculateImplicitAggregationOpt(sliceRows, yField, agg);
           }
         });
 
@@ -245,9 +255,23 @@ export class QueryPlanner {
       });
     }
 
+    // Power BI drops rows where every measure/column evaluates to BLANK, and drops
+    // legend columns that have no non-blank cells on any kept row.
+    const keptRowIndices = categories
+      .map((_, rIdx) => rIdx)
+      .filter(rIdx => series.some(s => s.data[rIdx] !== null));
+    const nonEmptyCategories = keptRowIndices.map(rIdx => categories[rIdx]);
+    let nonEmptySeries = series.map(s => ({
+      ...s,
+      data: keptRowIndices.map(rIdx => s.data[rIdx]),
+    }));
+    if (legendField) {
+      nonEmptySeries = nonEmptySeries.filter(s => s.data.some(v => v !== null));
+    }
+
     // Sorting (shared with the native Rust path) — TopN/limit is applied AFTER sorting.
     const sorted = applyVisualSort(
-      { categories, series },
+      { categories: nonEmptyCategories, series: nonEmptySeries },
       this.buildSortSpecFor(visual, table, effectiveXField, categoryTable, cleanColName, yFields)
     );
     const finalCategories = sorted.categories;
@@ -324,6 +348,14 @@ export class QueryPlanner {
     const categorySortKeys = xColMeta?.sortByColumn
       ? buildSortByLookup(categoryTable.rows, cleanColName, xColMeta.sortByColumn)
       : undefined;
+    let legendSortKeys: Map<string, unknown> | undefined;
+    if (visual.dataConfig.legendField) {
+      const { categoryTable: legendTable, cleanColName: legendCol } = this.resolveColumnLocation(table, visual.dataConfig.legendField);
+      const legendColMeta = legendTable.columns.find(c => c.name.toLowerCase() === legendCol.toLowerCase());
+      if (legendColMeta?.sortByColumn) {
+        legendSortKeys = buildSortByLookup(legendTable.rows, legendCol, legendColMeta.sortByColumn);
+      }
+    }
     const valueFields = [...yFields];
     for (const y of yFields) {
       const m = this.model.getMeasure ? this.model.getMeasure(y) : undefined;
@@ -342,6 +374,7 @@ export class QueryPlanner {
       ].filter(Boolean),
       valueFields,
       categorySortKeys,
+      legendSortKeys,
     };
   }
 
@@ -366,7 +399,7 @@ export class QueryPlanner {
   private applyVisualCalculations(
     visual: Visual,
     categories: string[],
-    series: { name: string; data: number[] }[],
+    series: { name: string; data: (number | null)[] }[],
     effectiveXField: string,
     filterContext: FilterContext
   ): Record<string, any>[] {
@@ -506,32 +539,41 @@ export class QueryPlanner {
     return Array.from(categoriesSet);
   }
 
+  private calculateImplicitAggregationOpt(
+    rows: Record<string, any>[],
+    columnName: string,
+    agg: Visual['dataConfig']['aggregation']
+  ): number | null {
+    if (rows.length === 0) return null;
+
+    const values = rows.map(r => r[columnName]);
+    const nonBlankValues = values.filter(v => !isBlank(v) && v !== null && v !== undefined && v !== '');
+    if (nonBlankValues.length === 0) return null;
+
+    switch (agg) {
+      case 'COUNT':
+        return nonBlankValues.length;
+      case 'DISTINCTCOUNT':
+        return new Set(nonBlankValues).size;
+      default: {
+        const numValues = nonBlankValues
+          .map(v => parseNumber(v).value)
+          .filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
+        if (numValues.length === 0) return null;
+        if (agg === 'AVG') return numValues.reduce((a, b) => a + b, 0) / numValues.length;
+        if (agg === 'MIN') return Math.min(...numValues);
+        if (agg === 'MAX') return Math.max(...numValues);
+        if (agg === 'NONE') return numValues[0];
+        return numValues.reduce((a, b) => a + b, 0);
+      }
+    }
+  }
+
   private calculateImplicitAggregation(
     rows: Record<string, any>[],
     columnName: string,
     agg: Visual['dataConfig']['aggregation']
   ): number {
-    if (rows.length === 0) return 0;
-
-    const values = rows.map(r => r[columnName]);
-    const numValues = values.map(v => parseNumber(v).value ?? 0);
-
-    switch (agg) {
-      case 'AVG':
-        return numValues.length ? numValues.reduce((a, b) => a + b, 0) / numValues.length : 0;
-      case 'COUNT':
-        return values.filter(v => !isBlank(v) && v !== null && v !== undefined && v !== '').length;
-      case 'DISTINCTCOUNT':
-        return new Set(values.filter(v => !isBlank(v) && v !== null && v !== undefined && v !== '')).size;
-      case 'MIN':
-        return numValues.length ? Math.min(...numValues) : 0;
-      case 'MAX':
-        return numValues.length ? Math.max(...numValues) : 0;
-      case 'NONE':
-        return numValues[0] ?? 0;
-      case 'SUM':
-      default:
-        return numValues.reduce((a, b) => a + b, 0);
-    }
+    return this.calculateImplicitAggregationOpt(rows, columnName, agg) ?? 0;
   }
 }

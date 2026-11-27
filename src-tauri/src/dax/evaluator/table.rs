@@ -99,6 +99,7 @@ pub(super) fn eval_table_expr<'a>(
                     col_index,
                     col_types: vec![ColumnType::Text],
                     rows,
+                    sort_by_columns: HashMap::new(),
                 };
                 return Ok((TableEval::Owned(synth), (0..n).collect(), base_ctx));
             }
@@ -142,6 +143,7 @@ pub(super) fn eval_table_expr<'a>(
                 col_index: t1.col_index.clone(),
                 col_types: t1.col_types.clone(),
                 rows,
+                sort_by_columns: t1.sort_by_columns.clone(),
             };
             return Ok((TableEval::Owned(synth), (0..n).collect(), c1));
         }
@@ -217,6 +219,7 @@ pub(super) fn eval_table_expr<'a>(
                 col_index,
                 col_types: vec![ColumnType::Decimal],
                 rows,
+                sort_by_columns: HashMap::new(),
             };
             let indices: Vec<usize> = (0..tbl.rows.len()).collect();
             return Ok((TableEval::Owned(tbl), indices, ctx.clone()));
@@ -229,7 +232,7 @@ pub(super) fn eval_table_expr<'a>(
 pub(super) fn synth_table(name: String, columns: Vec<String>, rows: Vec<Vec<DaxValue>>) -> DaxTableData {
     let col_index = columns.iter().enumerate().map(|(i, c)| (c.to_lowercase(), i)).collect();
     let col_types = vec![ColumnType::Text; columns.len()];
-    DaxTableData { name, columns, col_index, col_types, rows }
+    DaxTableData { name, columns, col_index, col_types, rows, sort_by_columns: HashMap::new() }
 }
 
 /// Column naming convention for synthetic tables whose columns come from *different* model
@@ -534,6 +537,7 @@ pub(super) fn eval_base_table_expr<'a>(
                         col_index: tbl.col_index.clone(),
                         col_types: tbl.col_types.clone(),
                         rows,
+                        sort_by_columns: tbl.sort_by_columns.clone(),
                     };
                     return Ok((TableEval::Owned(synth), (0..n).collect(), ctx.clone()));
                 }

@@ -262,6 +262,7 @@ pub fn load_table_from_duckdb(
         col_index,
         col_types,
         rows,
+        sort_by_columns: HashMap::new(),
     })
 }
 

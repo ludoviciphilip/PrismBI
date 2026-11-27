@@ -15,6 +15,7 @@ import { FilterContext, filterContextFromUIFilters } from '../../../engine/model
 import { DaxEngine } from '../../../engine/daxEngine';
 import { isBlank } from '../../../engine/expr/types';
 import { parseNumber } from '../../../engine/shared/valueParser';
+import { buildSortByLookup, sortPermutation } from '../../../engine/visualSort';
 import {
   DrillFilterSpec,
   DrillLevel,
@@ -30,13 +31,13 @@ export interface LevelQueryResult {
   categories: string[];
   /** Valor de cada nível agrupado, alinhado com `categories`. */
   categoryKeys: unknown[][];
-  series: { name: string; data: number[] }[];
+  series: { name: string; data: (number | null)[] }[];
 }
 
 export interface MatrixNode {
   key: unknown;
   label: string;
-  values: number[];
+  values: (number | null)[];
   rowTotal: number | null;
   hasChildren: boolean;
   expanded: boolean;
@@ -46,7 +47,7 @@ export interface MatrixNode {
 export interface MatrixQueryResult {
   seriesNames: string[];
   rows: MatrixNode[];
-  columnTotals: number[];
+  columnTotals: (number | null)[];
   grandTotal: number | null;
 }
 
@@ -118,7 +119,7 @@ function compareKeys(a: unknown, b: unknown): number {
   return String(a).localeCompare(String(b), 'pt-BR', { sensitivity: 'base', numeric: true });
 }
 
-/** Valores distintos de um nível visíveis no contexto (em ordem). */
+/** Valores distintos de um nível visíveis no contexto (em ordem, honrando sortByColumn). */
 function distinctKeys(model: ModelAccess, ctx: FilterContext, rc: ResolvedColumn, level: DrillLevel): unknown[] {
   const seen = new Map<string, unknown>();
   for (const r of ctx.getFilteredRows(rc.table.id, model)) {
@@ -127,7 +128,21 @@ function distinctKeys(model: ModelAccess, ctx: FilterContext, rc: ResolvedColumn
     const id = typeof key === 'string' ? `s:${key.toLowerCase()}` : `v:${String(key)}`;
     if (!seen.has(id)) seen.set(id, key);
   }
-  return Array.from(seen.values()).sort(compareKeys);
+  const values = Array.from(seen.values());
+  if (!level.datePart) {
+    const meta = rc.table.columns.find(c => c.name.toLowerCase() === rc.col.toLowerCase());
+    if (meta?.sortByColumn) {
+      const lookup = buildSortByLookup(rc.table.rows, rc.col, meta.sortByColumn);
+      if (lookup.size > 0) {
+        const perm = sortPermutation(values, k => {
+          const s = blankValue(k) ? '' : String(k);
+          return lookup.has(s) ? lookup.get(s) : k;
+        }, 'asc');
+        return perm.map(i => values[i]);
+      }
+    }
+  }
+  return values.sort(compareKeys);
 }
 
 function aggregate(values: unknown[], agg: string): number | null {
@@ -232,7 +247,7 @@ export function queryLevelsTs(model: ModelAccess, input: LevelQueryInput): Level
       count++;
       out.categories.push(concatLevelLabels(input.levels, path));
       out.categoryKeys.push(path);
-      vals.forEach((v, i) => out.series[i].data.push(v ?? 0));
+      vals.forEach((v, i) => out.series[i].data.push(v));
     }
   };
   walk(ctx, 0, []);
@@ -271,7 +286,7 @@ export function queryMatrixTs(model: ModelAccess, input: MatrixQueryInput): Matr
       nodes.push({
         key: k,
         label: levelValueLabel(input.levels[depth], k),
-        values: vals.map(v => v ?? 0),
+        values: vals,
         rowTotal,
         hasChildren,
         expanded,
@@ -284,7 +299,7 @@ export function queryMatrixTs(model: ModelAccess, input: MatrixQueryInput): Matr
   return {
     seriesNames: series.names,
     rows: build(ctx, 0, []),
-    columnTotals: series.values(ctx).map(v => v ?? 0),
+    columnTotals: series.values(ctx),
     grandTotal: series.rowTotal(ctx),
   };
 }
