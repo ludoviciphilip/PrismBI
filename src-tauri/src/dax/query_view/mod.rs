@@ -25,6 +25,10 @@ pub mod qparser;
 pub mod qvalidate;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_repro_rhino;
+#[cfg(test)]
+mod tests_real_rhino;
 
 pub use qexec::{execute_query, DaxQueryExecuteResult, DaxQueryOptions};
 pub use qvalidate::{validate_expression, ValidateContext, ValidationResult};

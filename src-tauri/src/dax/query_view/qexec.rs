@@ -25,10 +25,40 @@ use serde_json::Value as JsonValue;
 
 use crate::dax::ast::Expr;
 use crate::dax::evaluator::{evaluate_ast, evaluate_table_ast, RowContext};
+use crate::dax::lexer::{tokenize, Token};
 use crate::dax::{ColumnType, DaxModel, DaxTableData, DaxValue, FilterContext};
 
 use super::qast::{Define, OrderDir, Pos, QError, QueryProgram, TableExprSrc};
 use super::qparser::parse_query;
+use super::qvalidate::locate_runtime_error;
+
+/// Re-tokenizes the whole query text (cheap: queries are short) to turn a
+/// shared-evaluator runtime error (plain `String`, e.g. "Referência
+/// '[AAAAAA]' não encontrada.") into a `QError` with the real line/column
+/// of the offending `[Name]`/`Table[Col]`/identifier — the same
+/// token-scan `dax_validate` already uses for a single formula (see
+/// `qvalidate::locate_runtime_error`), reused here so a multi-statement
+/// `DEFINE`/`EVALUATE` query gets the same precision instead of always
+/// reporting line 1 column 1 (task item 4: "a mensagem saiu sem linha e
+/// coluna").
+pub(crate) struct QueryPos {
+    tokens: Vec<Token>,
+    chars: Vec<char>,
+}
+
+impl QueryPos {
+    fn new(query: &str) -> Self {
+        let chars: Vec<char> = query.chars().collect();
+        let tokens = tokenize(query).unwrap_or_default();
+        QueryPos { tokens, chars }
+    }
+
+    fn locate(&self, message: impl Into<String>) -> QError {
+        let message = message.into();
+        let (pos, _len) = locate_runtime_error(&self.tokens, &self.chars, &message);
+        QError::new(message, pos)
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct Defines {
@@ -146,7 +176,7 @@ fn coerce_to(v: DaxValue, ty: ColumnType) -> DaxValue {
     }
 }
 
-fn build_datatable(columns: &[(String, String)], rows: &[Vec<Expr>], defines: &Defines, model: &DaxModel) -> Result<DaxTableData, QError> {
+fn build_datatable(columns: &[(String, String)], rows: &[Vec<Expr>], defines: &Defines, model: &DaxModel, qp: &QueryPos) -> Result<DaxTableData, QError> {
     let col_names: Vec<String> = columns.iter().map(|(n, _)| n.clone()).collect();
     let col_types: Vec<ColumnType> = columns.iter().map(|(_, t)| datatable_type(t)).collect();
     let mut col_index = HashMap::new();
@@ -159,7 +189,7 @@ fn build_datatable(columns: &[(String, String)], rows: &[Vec<Expr>], defines: &D
         let mut vals = Vec::with_capacity(row.len());
         for (cell_idx, cell_expr) in row.iter().enumerate() {
             let substituted = substitute(cell_expr, defines, 0)?;
-            let v = evaluate_ast(&substituted, model, &ctx, &[], &HashMap::new()).map_err(QError::at_start)?;
+            let v = evaluate_ast(&substituted, model, &ctx, &[], &HashMap::new()).map_err(|e| qp.locate(e))?;
             vals.push(coerce_to(v, col_types[cell_idx]));
         }
         out_rows.push(vals);
@@ -199,7 +229,7 @@ fn infer_col_type(values: &[DaxValue]) -> ColumnType {
 /// Applies every `DEFINE COLUMN <table_key>[...]` pending for `table_key`
 /// onto the already-materialized `tbl` (row context, RELATED etc. all work
 /// since this reuses the normal `evaluate_ast`/`RowContext` path).
-fn apply_define_columns(tbl: &mut DaxTableData, table_key: &str, defines: &Defines, model: &DaxModel) -> Result<(), QError> {
+fn apply_define_columns(tbl: &mut DaxTableData, table_key: &str, defines: &Defines, model: &DaxModel, qp: &QueryPos) -> Result<(), QError> {
     let Some(cols) = defines.columns.get(table_key) else { return Ok(()) };
     let ctx = FilterContext::default();
     for (name, expr) in cols {
@@ -208,7 +238,7 @@ fn apply_define_columns(tbl: &mut DaxTableData, table_key: &str, defines: &Defin
         let mut vals = Vec::with_capacity(n);
         for row_idx in 0..n {
             let rc = RowContext { table: &*tbl, row_idx };
-            let v = evaluate_ast(&substituted, model, &ctx, &[rc], &HashMap::new()).map_err(QError::at_start)?;
+            let v = evaluate_ast(&substituted, model, &ctx, &[rc], &HashMap::new()).map_err(|e| qp.locate(e))?;
             vals.push(v);
         }
         let col_type = infer_col_type(&vals);
@@ -223,7 +253,7 @@ fn apply_define_columns(tbl: &mut DaxTableData, table_key: &str, defines: &Defin
     Ok(())
 }
 
-fn build_row(args: &[Expr], model: &DaxModel) -> Result<DaxTableData, QError> {
+fn build_row(args: &[Expr], model: &DaxModel, qp: &QueryPos) -> Result<DaxTableData, QError> {
     if args.is_empty() || args.len() % 2 != 0 {
         return Err(QError::at_start("ROW requer pares (\"nome da coluna\", expressão)."));
     }
@@ -237,7 +267,7 @@ fn build_row(args: &[Expr], model: &DaxModel) -> Result<DaxTableData, QError> {
             Expr::Text(s) => s.clone(),
             other => return Err(QError::at_start(format!("ROW: nome de coluna deve ser texto entre aspas, encontrado {:?}.", other))),
         };
-        let v = evaluate_ast(&pair[1], model, &ctx, &[], &HashMap::new()).map_err(QError::at_start)?;
+        let v = evaluate_ast(&pair[1], model, &ctx, &[], &HashMap::new()).map_err(|e| qp.locate(e))?;
         col_index.insert(name.to_lowercase(), columns.len());
         col_types.push(infer_col_type(std::slice::from_ref(&v)));
         columns.push(name);
@@ -248,35 +278,35 @@ fn build_row(args: &[Expr], model: &DaxModel) -> Result<DaxTableData, QError> {
 
 /// Materializes the table expression an `EVALUATE`/`DEFINE TABLE` points
 /// at, substituting every DEFINE first (see module doc).
-pub fn resolve_table(src: &TableExprSrc, defines: &Defines, model: &DaxModel) -> Result<DaxTableData, QError> {
+pub(crate) fn resolve_table(src: &TableExprSrc, defines: &Defines, model: &DaxModel, qp: &QueryPos) -> Result<DaxTableData, QError> {
     match src {
         TableExprSrc::Generic(expr) => {
             if let Expr::Ident(name) = expr {
                 let key = name.to_lowercase();
                 if let Some(TableExprSrc::DataTable { columns, rows }) = defines.tables.get(&key) {
-                    let mut tbl = build_datatable(columns, rows, defines, model)?;
-                    apply_define_columns(&mut tbl, &key, defines, model)?;
+                    let mut tbl = build_datatable(columns, rows, defines, model, qp)?;
+                    apply_define_columns(&mut tbl, &key, defines, model, qp)?;
                     return Ok(tbl);
                 }
             }
             let substituted = substitute(expr, defines, 0)?;
             if let Expr::Call { name, args } = &substituted {
                 if name.eq_ignore_ascii_case("ROW") {
-                    let mut tbl = build_row(args, model)?;
+                    let mut tbl = build_row(args, model, qp)?;
                     if let Expr::Ident(name) = expr {
-                        apply_define_columns(&mut tbl, &name.to_lowercase(), defines, model)?;
+                        apply_define_columns(&mut tbl, &name.to_lowercase(), defines, model, qp)?;
                     }
                     return Ok(tbl);
                 }
             }
             let ctx = FilterContext::default();
-            let mut tbl = evaluate_table_ast("Resultado", &substituted, model, &ctx).map_err(QError::at_start)?;
+            let mut tbl = evaluate_table_ast("Resultado", &substituted, model, &ctx).map_err(|e| qp.locate(e))?;
             if let Expr::Ident(name) = expr {
-                apply_define_columns(&mut tbl, &name.to_lowercase(), defines, model)?;
+                apply_define_columns(&mut tbl, &name.to_lowercase(), defines, model, qp)?;
             }
             Ok(tbl)
         }
-        TableExprSrc::DataTable { columns, rows } => build_datatable(columns, rows, defines, model),
+        TableExprSrc::DataTable { columns, rows } => build_datatable(columns, rows, defines, model, qp),
     }
 }
 
@@ -300,11 +330,31 @@ fn type_id(t: ColumnType) -> &'static str {
     }
 }
 
+/// `"dCalendario[Ano]"` -> `Some(("dCalendario", "Ano"))`. Output columns
+/// for group-by (SUMMARIZECOLUMNS/ADDCOLUMNS over a model table) keep this
+/// `Table[Column]` shape; extension (`"name", expr`) columns don't, so they
+/// correctly fall through to `None` here.
+fn split_qualified(name: &str) -> Option<(&str, &str)> {
+    let inner = name.strip_suffix(']')?;
+    let open = inner.find('[')?;
+    Some((&inner[..open], &inner[open + 1..]))
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaxQueryColumn {
     pub name: String,
     pub dax_type: &'static str,
+    /// v0.11 Rodada 2 Frente F: the model's TMDL `formatString` for this
+    /// column, when the output column traces back to a plain model
+    /// `Table[Column]` (SUMMARIZECOLUMNS/ADDCOLUMNS/VALUES group-by
+    /// column), so the UI can format an integer year ("0", no grouping)
+    /// differently from a currency measure, instead of guessing from the
+    /// JS `typeof` alone. `None` for computed/extension columns (measures,
+    /// `"name", expr` pairs) — those have no single model column to copy
+    /// a format from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format_string: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -362,8 +412,9 @@ fn run_evaluate(
     defines: &Defines,
     stmt: &super::qast::EvaluateStmt,
     limit: usize,
+    qp: &QueryPos,
 ) -> Result<DaxQueryResultSet, QError> {
-    let mut tbl = resolve_table(&stmt.table_expr, defines, model).map_err(|e| fill_pos_if_unknown(e, stmt.pos))?;
+    let mut tbl = resolve_table(&stmt.table_expr, defines, model, qp).map_err(|e| fill_pos_if_unknown(e, stmt.pos))?;
 
     if !stmt.order_by.is_empty() {
         let sub_exprs: Vec<Expr> = stmt
@@ -399,7 +450,7 @@ fn run_evaluate(
                 .iter()
                 .map(|e| {
                     let se = substitute(e, defines, 0)?;
-                    evaluate_ast(&se, model, &ctx, &[], &HashMap::new()).map_err(QError::at_start)
+                    evaluate_ast(&se, model, &ctx, &[], &HashMap::new()).map_err(|msg| qp.locate(msg))
                 })
                 .collect::<Result<_, _>>()
                 .map_err(|e| fill_pos_if_unknown(e, stmt.pos))?;
@@ -432,7 +483,16 @@ fn run_evaluate(
     let total = tbl.rows.len();
     let truncated = total > limit;
     let take = total.min(limit);
-    let columns: Vec<DaxQueryColumn> = tbl.columns.iter().zip(tbl.col_types.iter()).map(|(n, t)| DaxQueryColumn { name: n.clone(), dax_type: type_id(*t) }).collect();
+    let columns: Vec<DaxQueryColumn> = tbl
+        .columns
+        .iter()
+        .zip(tbl.col_types.iter())
+        .map(|(n, t)| DaxQueryColumn {
+            name: n.clone(),
+            dax_type: type_id(*t),
+            format_string: split_qualified(n).and_then(|(table, col)| model.column_format_string(table, col)).map(str::to_string),
+        })
+        .collect();
     let rows: Vec<Vec<JsonValue>> = tbl.rows[..take].iter().map(|r| r.iter().map(|v| v.to_json()).collect()).collect();
     let display_rows: Vec<Vec<String>> = tbl.rows[..take].iter().map(|r| r.iter().map(|v| v.as_display_string()).collect()).collect();
     Ok(DaxQueryResultSet { columns, rows, display_rows, row_count: total, truncated })
@@ -448,9 +508,10 @@ pub fn execute_query(model: &DaxModel, query: &str, opts: &DaxQueryOptions) -> D
         Err(e) => return DaxQueryExecuteResult { result_sets: vec![], elapsed_ms: elapsed_ms(started), error: Some(e.into()) },
     };
     let defines = Defines::from_program(&program.defines);
+    let qp = QueryPos::new(query);
     let mut result_sets = Vec::new();
     for stmt in &program.evaluates {
-        match run_evaluate(model, &defines, stmt, limit) {
+        match run_evaluate(model, &defines, stmt, limit, &qp) {
             Ok(rs) => result_sets.push(rs),
             Err(e) => return DaxQueryExecuteResult { result_sets, elapsed_ms: elapsed_ms(started), error: Some(e.into()) },
         }
