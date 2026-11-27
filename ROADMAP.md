@@ -114,11 +114,6 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 - [ ] **`CALENDARAUTO` ignorando tabelas e colunas calculadas**, como manda a especificação (hoje o calendário gerado entra na varredura).
 - [ ] **Desempenho das funções de janela:** cache da partição ordenada, para que OFFSET, INDEX, WINDOW e RANK dentro de iteradores não reordenem a tabela a cada linha.
 - [ ] Windows: assinatura de código (depende de certificado) e teste de atualização via `msiexec`.
-- [ ] **Pendências da `v0.10.0`:** níveis nas **colunas** da Matriz; filtro cruzado a partir de níveis de data drillados (Ano/Trimestre/Mês); i18n dos painéis Indicadores e Dicas de página.
-- [ ] **Correções do motor:** `CALENDARAUTO` deve ignorar tabelas e colunas calculadas; funções de janela não podem reordenar a partição inteira a cada chamada (cache da partição ordenada).
-- [ ] Assinatura de código do instalador Windows (depende de certificado; pode ficar para depois).
-
-**Plano de execução:** Rodada 1 (pushdown, persistência colunar, tabelas/colunas calculadas, pendências de frontend) → build de teste → Rodada 2 (migrar tabela, dispersão, Cálculos Visuais e DAX Query para o Rust; remover o motor TS; cobertura; desempenho das janelas). Contrato: `docs/V011.md`.
 
 ---
 
