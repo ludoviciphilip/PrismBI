@@ -341,6 +341,95 @@ export function isTauriRuntime(): boolean {
   );
 }
 
+// ---------------------------------------------------------------------
+// Cache colunar de projeto (v0.11 Frente B) — ver src-tauri/src/project_store.
+// ---------------------------------------------------------------------
+
+export interface NativeTableCacheMeta {
+  name: string;
+  columnsSignature: string;
+  sourceSignature: string;
+  rowCount: number;
+}
+
+export interface NativeProjectCacheManifest {
+  formatVersion: number;
+  format: string;
+  appVersion: string;
+  createdAt: string;
+}
+
+export interface NativeProjectCacheSaveOutcome {
+  manifest: NativeProjectCacheManifest;
+  totalRows: number;
+  elapsedMs: number;
+  bytesOnDisk: number;
+}
+
+export interface NativeProjectCacheLoadOutcome {
+  loaded: boolean;
+  reason?: string | null;
+  tables: NativeImportedTable[];
+  totalRows: number;
+  elapsedMs: number;
+}
+
+export interface NativeProjectCacheInfo {
+  exists: boolean;
+  valid: boolean;
+  reason?: string | null;
+  formatVersion?: number | null;
+  totalRows: number;
+  tableCount: number;
+}
+
+/** Grava o cache colunar do projeto (tabelas já carregadas no DuckDB nativo). */
+export async function projectCacheSave(
+  projectKey: string,
+  tables: NativeTableCacheMeta[],
+  dir?: string | null
+): Promise<NativeProjectCacheSaveOutcome> {
+  return await invoke<NativeProjectCacheSaveOutcome>('project_cache_save', {
+    projectKey,
+    tables,
+    dir: dir ?? null,
+  });
+}
+
+/** Carrega as tabelas do cache no DuckDB nativo, se válido (ver `tables`). */
+export async function projectCacheLoad(
+  projectKey: string,
+  tables: NativeTableCacheMeta[],
+  dir?: string | null
+): Promise<NativeProjectCacheLoadOutcome> {
+  return await invoke<NativeProjectCacheLoadOutcome>('project_cache_load', {
+    projectKey,
+    tables,
+    dir: dir ?? null,
+  });
+}
+
+/** Só inspeciona o cache (existe? válido?) sem carregar nada no DuckDB. */
+export async function projectCacheInfo(
+  projectKey: string,
+  tables: NativeTableCacheMeta[],
+  dir?: string | null
+): Promise<NativeProjectCacheInfo> {
+  return await invoke<NativeProjectCacheInfo>('project_cache_info', {
+    projectKey,
+    tables,
+    dir: dir ?? null,
+  });
+}
+
+/** Remove o cache colunar do projeto (ex.: ao descartar ou forçar rebuild). */
+export async function projectCacheInvalidate(
+  projectKey: string,
+  dir?: string | null
+): Promise<void> {
+  await invoke<void>('project_cache_invalidate', { projectKey, dir: dir ?? null });
+}
+
 export async function getNativeEngineInfo(): Promise<NativeEngineInfo> {
   return await invoke<NativeEngineInfo>('get_engine_info');
 }
