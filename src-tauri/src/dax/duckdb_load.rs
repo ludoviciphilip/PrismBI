@@ -508,7 +508,11 @@ pub fn load_changed_tables(
         if get_last_sync_version(duckdb_name) == Some(current_version) {
             continue; // unchanged since the last sync: DaxModel reuses its cache.
         }
-        match load_table_from_duckdb_fast(conn, duckdb_name, &t.column_types) {
+        // The Arrow loader (`load_table_from_duckdb_fast`) measured only ~8%
+        // faster for 10M rows but +38% peak RAM (1.23 -> 1.70 GB, see
+        // docs/RUST_ENGINE_2.md §5.8). Peak RAM matters more on the laptops
+        // that open big models, so production keeps the row-by-row loader.
+        match load_table_from_duckdb(conn, duckdb_name, &t.column_types) {
             Ok(data) => {
                 set_last_sync_version(duckdb_name, current_version);
                 out.insert(duckdb_name.to_lowercase(), (current_version, data));

@@ -115,6 +115,8 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 - [ ] **Desempenho das funções de janela:** cache da partição ordenada, para que OFFSET, INDEX, WINDOW e RANK dentro de iteradores não reordenem a tabela a cada linha.
 - [ ] Windows: assinatura de código (depende de certificado) e teste de atualização via `msiexec`.
 
+- [ ] **Paridade de agrupamento com o Power BI:** linhas do fato sem correspondência na dimensão devem aparecer como "(Em branco)" nos visuais (hoje são descartadas), e o agrupamento de texto deve ignorar maiúsculas ("a" e "A" no mesmo grupo).
+
 ---
 
 ## `v0.12.0` — Integração Desktop Linux, Produtividade & CLI/Automação
