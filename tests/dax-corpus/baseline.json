@@ -386,6 +386,7 @@
     "window.calendar.feb_non_leap",
     "window.calendar.leap_quarter_days",
     "window.calendarauto.default_dec",
+    "window.calendarauto.fiscal_july_days",
     "window.calendarauto.fiscal_july_start_year",
     "window.index.last_in_partition",
     "window.index.top_price_desc",
