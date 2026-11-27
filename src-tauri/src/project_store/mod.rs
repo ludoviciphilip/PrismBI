@@ -630,8 +630,13 @@ mod tests {
         assert!(resolve_cache_dir("proj1", base, Some("/abs/../escape")).is_err());
         // A clean absolute override is accepted, but the leaf name is
         // still derived from the project key's hash, never the raw key.
-        let dir = resolve_cache_dir("proj1", base, Some("/tmp/vetrobi_file_cache")).expect("ok");
-        assert!(dir.starts_with("/tmp/vetrobi_file_cache"));
+        // "/tmp/..." is not absolute on Windows (no drive letter), so build the
+        // override from the platform temp dir, which is absolute everywhere.
+        let abs_override = std::env::temp_dir().join("vetrobi_file_cache");
+        let traversal = abs_override.join("..").join("escape");
+        assert!(resolve_cache_dir("proj1", base, Some(&traversal.to_string_lossy())).is_err());
+        let dir = resolve_cache_dir("proj1", base, Some(&abs_override.to_string_lossy())).expect("ok");
+        assert!(dir.starts_with(&abs_override));
     }
 
     #[test]
