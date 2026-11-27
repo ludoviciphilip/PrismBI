@@ -350,6 +350,11 @@ export interface Filter {
   column: string;
   operator: 'in' | 'notIn' | 'equals' | 'notEquals' | 'greaterThan' | 'greaterThanOrEqual' | 'lessThan' | 'lessThanOrEqual' | 'between' | 'contains';
   value: any;
+  /** v0.11 Frente D: cross-filter a partir de um ponto drillado de data (ano/trimestre/mês/dia);
+   *  `value` é o número da parte (ex.: trimestre 1-4), comparado via `datePartValue`. */
+  datePart?: 'year' | 'quarter' | 'month' | 'day';
+  /** Rótulo legível para o painel de Filtros (ex.: "Trimestre: Trim 2"); só usado por filtros de drill. */
+  label?: string;
 }
 
 /** Per-visual display state captured by a Bookmark (capture.display), Power BI style. */

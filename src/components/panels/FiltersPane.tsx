@@ -311,10 +311,11 @@ export const FiltersPane: React.FC = React.memo(() => {
                 </span>
               </div>
               <div className="text-[11px] font-bold text-amber-800 dark:text-amber-400 bg-amber-100/70 dark:bg-amber-950/70 px-1.5 py-0.5 rounded truncate">
-                {describeSlicerDateFilter(pages, filter.visualId) ??
+                {filter.label ??
+                  describeSlicerDateFilter(pages, filter.visualId) ??
                   (Array.isArray(filter.value) ? filter.value.join(', ') : String(filter.value))}
               </div>
-              {isBasicFilter(filter) && (
+              {isBasicFilter(filter) && !filter.datePart && (
                 <FilterValueList
                   filter={filter}
                   tables={tables}
