@@ -748,6 +748,84 @@ export async function queryVisualNative(
   return await invoke<NativeVisualQueryResult>('query_visual_native', { request });
 }
 
+// ===========================================================================
+// v0.11 Rodada 2, Frente E: table / scatter native queries (Tauri only). Used
+// by VisualCard.tsx instead of aggregating `table.rows` (a 5.000-row preview)
+// in JS — see docs/V011.md Rodada 2, Frente E. There is NO TS equivalent of
+// pagination/Top N/engine-computed total here: the browser-only fallback
+// (no Tauri runtime, e.g. the demo web app) keeps using
+// `globalDataEngine.queryVisualData` off the preview rows exactly as before.
+// ===========================================================================
+
+export interface NativeTableQueryRequest {
+  tableId: string;
+  groupFields?: string[];
+  rawFields?: string[];
+  valueFields?: string[];
+  aggregation?: string;
+  filters?: { tableId: string; column: string; values: unknown[] }[];
+  sortField?: string;
+  sortOrder?: 'asc' | 'desc';
+  topN?: number;
+  offset?: number;
+  limit?: number;
+}
+
+export interface NativeTableQueryResult {
+  columns: string[];
+  rows: { values: unknown[] }[];
+  totalRowCount: number;
+  totalRow?: { values: unknown[] } | null;
+  queryTimeMs: number;
+  engine: string;
+}
+
+/** v0.11 Rodada 2, Frente E: native "table" query over ALL rows (no 5.000-row
+ * preview cap), with the total row computed by the engine and server-side
+ * sort/Top N/pagination. Only call when `isTauriRuntime()`. */
+export async function queryTableNative(
+  request: NativeTableQueryRequest
+): Promise<NativeTableQueryResult> {
+  return await invoke<NativeTableQueryResult>('query_table_native', { request });
+}
+
+export interface NativeScatterQueryRequest {
+  tableId: string;
+  detailField: string;
+  xField: string;
+  yField: string;
+  sizeField?: string;
+  legendField?: string;
+  aggregation?: string;
+  filters?: { tableId: string; column: string; values: unknown[] }[];
+  maxPoints?: number;
+}
+
+export interface NativeScatterPointDto {
+  label: string;
+  x: number | null;
+  y: number | null;
+  size: number | null;
+  legend: string | null;
+}
+
+export interface NativeScatterQueryResult {
+  points: NativeScatterPointDto[];
+  totalPoints: number;
+  sampled: boolean;
+  queryTimeMs: number;
+  engine: string;
+}
+
+/** v0.11 Rodada 2, Frente E: native "scatter" query with deterministic
+ * Power-BI-style point sampling (default ~3.500 points). Only call when
+ * `isTauriRuntime()`. */
+export async function queryScatterNative(
+  request: NativeScatterQueryRequest
+): Promise<NativeScatterQueryResult> {
+  return await invoke<NativeScatterQueryResult>('query_scatter_native', { request });
+}
+
 export async function pickFolderDialog(title = 'Selecionar pasta de destino'): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   const selected = await openDialog({

@@ -132,6 +132,357 @@ pub struct NativeMatrixResult {
     pub column_header: Option<Vec<crate::dax::matrix_columns::NativeMatrixColumnNode>>,
 }
 
+// ===========================================================================
+// v0.11 Rodada 2, Frente E: native "table" visual query.
+//
+// Replaces the TS path (`src/engine/query/planner.ts` + `dataEngine.ts`,
+// called from `VisualCard.tsx`) which aggregates `table.rows` — a preview
+// capped at `PREVIEW_ROW_LIMIT` (5000) for DuckDB-backed tables, hence the
+// "amostra de 5.000 linhas" warning. This path instead runs over EVERY row
+// via `model.get_visible_row_indices` (which reads the full DuckDB-backed
+// `Table`, not the capped preview), with the total row evaluated by the
+// engine (measure in the *total* filter context, never a sum of the
+// returned page), server-side sort, Top N, and offset/limit pagination so
+// a 10M-row table never crosses the Tauri IPC boundary in one shot.
+// ===========================================================================
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTableQueryRequest {
+    pub table_id: String,
+    /// Group-by columns ("resumir" in Power BI). Empty = raw/detail rows
+    /// ("não resumir"): one row per underlying fact row.
+    #[serde(default)]
+    pub group_fields: Vec<String>,
+    /// Detail columns shown as-is when `group_fields` is empty.
+    #[serde(default)]
+    pub raw_fields: Vec<String>,
+    /// Measure (or column+aggregation) columns, evaluated in each row's context.
+    #[serde(default)]
+    pub value_fields: Vec<String>,
+    pub aggregation: Option<String>,
+    #[serde(default)]
+    pub filters: Vec<NativeFilterInput>,
+    /// Name of a column in `columns` (below) to sort the full result by,
+    /// before Top N / pagination — mirrors the table's `sortByColumn`.
+    pub sort_field: Option<String>,
+    #[serde(default)]
+    pub sort_order: String, // "asc" | "desc", default asc
+    /// Keep only the first N rows after sorting (0 = no Top N).
+    #[serde(default)]
+    pub top_n: usize,
+    /// Pagination window applied after sort + Top N.
+    #[serde(default)]
+    pub offset: usize,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTableRow {
+    /// One JSON value per entry of `NativeTableQueryResult::columns`, in order.
+    pub values: Vec<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTableQueryResult {
+    pub columns: Vec<String>,
+    /// The requested page (`offset..offset+limit`) of the sorted/Top-N'd result.
+    pub rows: Vec<NativeTableRow>,
+    /// Total number of rows AFTER grouping/Top N but BEFORE pagination, so the
+    /// frontend can page/scroll without ever receiving the full set.
+    pub total_row_count: usize,
+    /// Value columns in the total row, each evaluated by the engine in the
+    /// TOTAL filter context (NOT a client-side sum of the returned page).
+    pub total_row: Option<NativeTableRow>,
+    pub query_time_ms: f64,
+    pub engine: String,
+}
+
+fn cmp_json_for_sort(a: &JsonValue, b: &JsonValue) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a.as_f64(), b.as_f64()) {
+        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+        _ => a
+            .as_str()
+            .unwrap_or_default()
+            .cmp(b.as_str().unwrap_or_default()),
+    }
+}
+
+/// Builds grouped table rows recursively, one `group_fields` level at a
+/// time, so each level's distinct values are only those actually present
+/// under the levels above it (never a full cross product).
+fn build_grouped_table_rows(
+    model: &DaxModel,
+    req: &NativeTableQueryRequest,
+    ctx: &FilterContext,
+    levels: &[String],
+    acc: &mut Vec<JsonValue>,
+    out: &mut Vec<Vec<JsonValue>>,
+) {
+    if levels.is_empty() {
+        let agg = req.aggregation.as_deref().unwrap_or("SUM");
+        let mut row = acc.clone();
+        for vf in &req.value_fields {
+            row.push(
+                eval_field_opt(model, ctx, &req.table_id, vf, agg)
+                    .map(JsonValue::from)
+                    .unwrap_or(JsonValue::Null),
+            );
+        }
+        out.push(row);
+        return;
+    }
+    let fake_req = NativeVisualQueryRequest {
+        table_id: req.table_id.clone(),
+        ..Default::default()
+    };
+    let (tbl_name, col_name, groups) = collect_groups(
+        model,
+        &fake_req,
+        ctx,
+        &NativeGroupLevel { field: levels[0].clone(), date_part: None },
+    );
+    for g in groups {
+        if g.label.is_empty() {
+            continue;
+        }
+        let mut ctx2 = ctx.clone();
+        ctx2.set_column_filter(&tbl_name, &col_name, g.allowed.clone());
+        acc.push(g.key.clone());
+        build_grouped_table_rows(model, req, &ctx2, &levels[1..], acc, out);
+        acc.pop();
+    }
+}
+
+/// Executes a native "table" visual query over ALL rows of the model (no
+/// 5.000-row preview cap). See module header above for the design.
+pub fn execute_table_query(
+    model: &DaxModel,
+    req: &NativeTableQueryRequest,
+) -> Result<NativeTableQueryResult, String> {
+    let t0 = Instant::now();
+    let base_ctx = build_filter_context(&req.filters, model);
+
+    let (columns, mut all_rows): (Vec<String>, Vec<Vec<JsonValue>>) = if !req.group_fields.is_empty() {
+        let mut cols = req.group_fields.clone();
+        cols.extend(req.value_fields.iter().cloned());
+        let mut out = Vec::new();
+        build_grouped_table_rows(model, req, &base_ctx, &req.group_fields, &mut Vec::new(), &mut out);
+        (cols, out)
+    } else {
+        // Raw/detail rows ("não resumir"): one row per visible fact row.
+        let mut cols = req.raw_fields.clone();
+        cols.extend(req.value_fields.iter().cloned());
+        let tbl = model
+            .get_table(&req.table_id)
+            .ok_or_else(|| format!("tabela '{}' não encontrada", req.table_id))?;
+        let raw_idx: Vec<Option<usize>> = req.raw_fields.iter().map(|f| tbl.get_col_idx(f)).collect();
+        let mut out = Vec::new();
+        for r_idx in model.get_visible_row_indices(&tbl.name, &base_ctx) {
+            let mut row = Vec::with_capacity(cols.len());
+            for cidx in &raw_idx {
+                row.push(match cidx {
+                    Some(c) => tbl.rows[r_idx][*c].to_json(),
+                    None => JsonValue::Null,
+                });
+            }
+            // Value fields in raw mode show the row's own column value when
+            // it IS a plain column (no aggregation makes sense per-row);
+            // measures fall back to the table-wide total context — a known
+            // gap, see docs/V011.md Rodada 2 Frente E report.
+            for vf in &req.value_fields {
+                let clean = vf.trim().trim_start_matches('Σ').trim();
+                if let Some(c) = tbl.get_col_idx(clean) {
+                    row.push(tbl.rows[r_idx][c].to_json());
+                } else {
+                    row.push(
+                        eval_field_opt(model, &base_ctx, &req.table_id, clean, req.aggregation.as_deref().unwrap_or("SUM"))
+                            .map(JsonValue::from)
+                            .unwrap_or(JsonValue::Null),
+                    );
+                }
+            }
+            out.push(row);
+        }
+        (cols, out)
+    };
+
+    if let Some(sort_field) = req.sort_field.as_deref() {
+        if let Some(sort_idx) = columns.iter().position(|c| c == sort_field) {
+            let desc = req.sort_order.eq_ignore_ascii_case("desc");
+            all_rows.sort_by(|a, b| {
+                let ord = cmp_json_for_sort(&a[sort_idx], &b[sort_idx]);
+                if desc { ord.reverse() } else { ord }
+            });
+        }
+    }
+
+    if req.top_n > 0 && all_rows.len() > req.top_n {
+        all_rows.truncate(req.top_n);
+    }
+
+    let total_row_count = all_rows.len();
+    let offset = req.offset.min(all_rows.len());
+    let end = req.limit.map(|l| (offset + l).min(all_rows.len())).unwrap_or(all_rows.len());
+    let page: Vec<NativeTableRow> = all_rows[offset..end]
+        .iter()
+        .cloned()
+        .map(|values| NativeTableRow { values })
+        .collect();
+
+    let agg = req.aggregation.as_deref().unwrap_or("SUM");
+    let total_row = if !req.value_fields.is_empty() {
+        let mut vals = vec![JsonValue::Null; req.group_fields.len().max(req.raw_fields.len())];
+        for vf in &req.value_fields {
+            vals.push(
+                eval_field_opt(model, &base_ctx, &req.table_id, vf, agg)
+                    .map(JsonValue::from)
+                    .unwrap_or(JsonValue::Null),
+            );
+        }
+        Some(NativeTableRow { values: vals })
+    } else {
+        None
+    };
+
+    Ok(NativeTableQueryResult {
+        columns,
+        rows: page,
+        total_row_count,
+        total_row,
+        query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
+        engine: "rust-native".to_string(),
+    })
+}
+
+// ===========================================================================
+// v0.11 Rodada 2, Frente E: native "scatter" visual query, with Power-BI-style
+// deterministic sampling (default cap mirrors Power BI's ~3.500 points) so a
+// detail field with millions of distinct values never ships every point
+// over IPC. Sampling is a fixed stride over the sorted point list, so the
+// same input always yields the same sampled subset (no RNG).
+// ===========================================================================
+
+pub const SCATTER_DEFAULT_MAX_POINTS: usize = 3500;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeScatterQueryRequest {
+    pub table_id: String,
+    /// Field with one point per distinct value (Power BI's "Detalhes").
+    pub detail_field: String,
+    pub x_field: String,
+    pub y_field: String,
+    pub size_field: Option<String>,
+    pub legend_field: Option<String>,
+    pub aggregation: Option<String>,
+    #[serde(default)]
+    pub filters: Vec<NativeFilterInput>,
+    /// 0 = use `SCATTER_DEFAULT_MAX_POINTS`.
+    #[serde(default)]
+    pub max_points: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeScatterPoint {
+    pub label: String,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub size: Option<f64>,
+    pub legend: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeScatterQueryResult {
+    pub points: Vec<NativeScatterPoint>,
+    pub total_points: usize,
+    pub sampled: bool,
+    pub query_time_ms: f64,
+    pub engine: String,
+}
+
+pub fn execute_scatter_query(
+    model: &DaxModel,
+    req: &NativeScatterQueryRequest,
+) -> Result<NativeScatterQueryResult, String> {
+    let t0 = Instant::now();
+    let base_ctx = build_filter_context(&req.filters, model);
+    let agg = req.aggregation.as_deref().unwrap_or("SUM");
+
+    let fake_req = NativeVisualQueryRequest {
+        table_id: req.table_id.clone(),
+        ..Default::default()
+    };
+    let (tbl_name, col_name, groups) = collect_groups(
+        model,
+        &fake_req,
+        &base_ctx,
+        &NativeGroupLevel { field: req.detail_field.clone(), date_part: None },
+    );
+
+    let mut all_points = Vec::with_capacity(groups.len());
+    for g in groups {
+        if g.label.is_empty() {
+            continue;
+        }
+        let mut ctx2 = base_ctx.clone();
+        ctx2.set_column_filter(&tbl_name, &col_name, g.allowed.clone());
+        let x = eval_field_opt(model, &ctx2, &req.table_id, &req.x_field, agg);
+        let y = eval_field_opt(model, &ctx2, &req.table_id, &req.y_field, agg);
+        let size = req
+            .size_field
+            .as_deref()
+            .and_then(|sf| eval_field_opt(model, &ctx2, &req.table_id, sf, agg));
+        let legend = req.legend_field.as_deref().and_then(|lf| {
+            let (lt, lc) = resolve_table_and_col(model, &req.table_id, lf);
+            let tbl = model.get_table(&lt)?;
+            let cidx = tbl.get_col_idx(&lc)?;
+            model
+                .get_visible_row_indices(&tbl.name, &ctx2)
+                .first()
+                .map(|&i| tbl.rows[i][cidx].as_display_string())
+        });
+        all_points.push(NativeScatterPoint { label: g.label, x, y, size, legend });
+    }
+
+    let total_points = all_points.len();
+    let max_points = if req.max_points == 0 { SCATTER_DEFAULT_MAX_POINTS } else { req.max_points };
+    let sampled = total_points > max_points;
+    let points = if sampled {
+        // Deterministic fixed-stride sample: evenly spread across the
+        // (already deterministically ordered) point list, always picking
+        // index 0 and walking by a float step to land close to `max_points`
+        // samples without any randomness.
+        let step = total_points as f64 / max_points as f64;
+        let mut out = Vec::with_capacity(max_points);
+        let mut i = 0.0f64;
+        let mut seen = std::collections::HashSet::new();
+        while out.len() < max_points && (i as usize) < total_points {
+            let idx = i as usize;
+            if seen.insert(idx) {
+                out.push(all_points[idx].clone());
+            }
+            i += step;
+        }
+        out
+    } else {
+        all_points
+    };
+
+    Ok(NativeScatterQueryResult {
+        points,
+        total_points,
+        sampled,
+        query_time_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
+        engine: "rust-native".to_string(),
+    })
+}
+
 pub(crate) fn resolve_table_and_col(model: &DaxModel, default_table: &str, raw_field: &str) -> (String, String) {
     let clean = raw_field.trim();
     if let Some((t, c)) = clean.split_once('.') {
@@ -1513,5 +1864,189 @@ mod tests {
         assert_eq!(mx.rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), vec!["Receita", "ZeroReal"]);
         assert_eq!(mx.rows[0].values, vec![Some(-1000.0), None, Some(-2500.0)]);
         assert_eq!(mx.rows[1].values, vec![None, Some(0.0), None]);
+    }
+
+    // ===== v0.11 Rodada 2, Frente E: native table / scatter =====
+
+    #[test]
+    fn test_native_table_query_grouped_sort_total_over_all_rows() {
+        let model = sample_model();
+        let res = execute_table_query(
+            &model,
+            &NativeTableQueryRequest {
+                table_id: "fVendas".into(),
+                group_fields: vec!["Categoria".into()],
+                value_fields: vec!["Receita".into()],
+                aggregation: Some("SUM".into()),
+                sort_field: Some("Receita".into()),
+                sort_order: "desc".into(),
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.columns, vec!["Categoria", "Receita"]);
+        // B=200 > A=150(100+50) -> sorted desc by Receita
+        assert_eq!(res.rows.len(), 2);
+        assert_eq!(res.rows[0].values, vec![JsonValue::from("B"), JsonValue::from(200.0)]);
+        assert_eq!(res.rows[1].values, vec![JsonValue::from("A"), JsonValue::from(150.0)]);
+        assert_eq!(res.total_row_count, 2);
+        // Total row: engine measure in TOTAL context (350), not a sum of the page's two rows re-added
+        assert_eq!(res.total_row.unwrap().values.last().unwrap(), &JsonValue::from(350.0));
+        assert_eq!(res.engine, "rust-native");
+    }
+
+    #[test]
+    fn test_native_table_query_raw_rows_topn_and_pagination() {
+        let model = sample_model();
+        // Raw ("não resumir"): one row per fact row, sorted by raw Valor asc, Top 2.
+        let res = execute_table_query(
+            &model,
+            &NativeTableQueryRequest {
+                table_id: "fVendas".into(),
+                raw_fields: vec!["Categoria".into()],
+                value_fields: vec!["Valor".into()],
+                sort_field: Some("Valor".into()),
+                sort_order: "asc".into(),
+                top_n: 2,
+                offset: 0,
+                limit: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.columns, vec!["Categoria", "Valor"]);
+        // After Top N=2 the universe is [50 (A), 100 (A)]; with limit=1 only the first page row comes back.
+        assert_eq!(res.total_row_count, 2);
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0].values[0], JsonValue::from("A"));
+        assert_eq!(res.rows[0].values[1].as_f64(), Some(50.0)); // raw column renders as an integer JSON number (50, not 50.0)
+        // Total row sums the RAW column over the full (unpaginated, pre-TopN) table via the engine: 100+50+200=350,
+        // never the client-visible page's 50.
+        assert_eq!(res.total_row.unwrap().values.last().unwrap(), &JsonValue::from(350.0));
+    }
+
+    #[test]
+    fn test_native_table_query_closed_form_total_over_20000_rows() {
+        // SUM(1..20000) = 20000*20001/2 = 200010000 (closed form), with every
+        // row read through `get_visible_row_indices` — never a 5.000-row preview.
+        let mut model = DaxModel::new();
+        let mut rows = Vec::with_capacity(20_000);
+        for i in 1..=20_000i64 {
+            let mut m = serde_json::Map::new();
+            m.insert("Categoria".into(), serde_json::Value::String("All".into()));
+            m.insert("Valor".into(), serde_json::json!(i));
+            rows.push(m);
+        }
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![DaxTableInput {
+                duckdb_table: None,
+                name: "fBig".into(),
+                columns: vec!["Categoria".into(), "Valor".into()],
+                rows,
+                column_types: vec![],
+                sort_by_columns: Default::default(),
+                is_calculated: false,
+                expression: None,
+                calculated_columns: ::std::collections::HashMap::new(),
+            }],
+            relationships: Vec::<DaxRelationshipInput>::new(),
+            measures: vec![DaxMeasureInput {
+                name: "Total".into(),
+                table_name: "fBig".into(),
+                formula: "SUM(fBig[Valor])".into(),
+            }],
+        });
+
+        let res = execute_table_query(
+            &model,
+            &NativeTableQueryRequest {
+                table_id: "fBig".into(),
+                group_fields: vec!["Categoria".into()],
+                value_fields: vec!["Total".into()],
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.rows.len(), 1);
+        assert_eq!(res.rows[0].values, vec![JsonValue::from("All"), JsonValue::from(200_010_000.0)]);
+        assert_eq!(res.total_row.unwrap().values.last().unwrap(), &JsonValue::from(200_010_000.0));
+    }
+
+    #[test]
+    fn test_native_scatter_query_points_per_detail_value() {
+        let model = sample_model();
+        let res = execute_scatter_query(
+            &model,
+            &NativeScatterQueryRequest {
+                table_id: "fVendas".into(),
+                detail_field: "Categoria".into(),
+                x_field: "Qtd".into(),
+                y_field: "Receita".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(res.total_points, 2);
+        assert!(!res.sampled);
+        let mut by_label: HashMap<String, &NativeScatterPoint> =
+            res.points.iter().map(|p| (p.label.clone(), p)).collect();
+        let a = by_label.remove("A").unwrap();
+        assert_eq!(a.x, Some(2.0)); // COUNTROWS over A's 2 rows
+        assert_eq!(a.y, Some(150.0)); // SUM(Valor) over A's 2 rows (100+50)
+        let b = by_label.remove("B").unwrap();
+        assert_eq!(b.x, Some(1.0));
+        assert_eq!(b.y, Some(200.0));
+    }
+
+    #[test]
+    fn test_native_scatter_query_deterministic_sampling_caps_points() {
+        let mut model = DaxModel::new();
+        let mut rows = Vec::with_capacity(10);
+        for i in 0..10 {
+            let mut m = serde_json::Map::new();
+            m.insert("Categoria".into(), serde_json::Value::String(format!("C{i}")));
+            m.insert("Valor".into(), serde_json::json!(i as f64));
+            rows.push(m);
+        }
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![DaxTableInput {
+                duckdb_table: None,
+                name: "fPts".into(),
+                columns: vec!["Categoria".into(), "Valor".into()],
+                rows,
+                column_types: vec![],
+                sort_by_columns: Default::default(),
+                is_calculated: false,
+                expression: None,
+                calculated_columns: ::std::collections::HashMap::new(),
+            }],
+            relationships: Vec::<DaxRelationshipInput>::new(),
+            measures: vec![DaxMeasureInput {
+                name: "V".into(),
+                table_name: "fPts".into(),
+                formula: "SUM(fPts[Valor])".into(),
+            }],
+        });
+
+        let req = NativeScatterQueryRequest {
+            table_id: "fPts".into(),
+            detail_field: "Categoria".into(),
+            x_field: "V".into(),
+            y_field: "V".into(),
+            max_points: 3,
+            ..Default::default()
+        };
+        let res1 = execute_scatter_query(&model, &req).unwrap();
+        let res2 = execute_scatter_query(&model, &req).unwrap();
+        assert_eq!(res1.total_points, 10);
+        assert!(res1.sampled);
+        assert!(res1.points.len() <= 3);
+        // Deterministic: same input -> same sampled subset every time (no RNG).
+        assert_eq!(
+            res1.points.iter().map(|p| p.label.clone()).collect::<Vec<_>>(),
+            res2.points.iter().map(|p| p.label.clone()).collect::<Vec<_>>()
+        );
     }
 }

@@ -12,6 +12,7 @@ pub mod query_planner;
 /// interseção linha×coluna — mora aqui).
 pub mod matrix_columns;
 pub mod query_view;
+pub mod visual_calcs;
 #[cfg(test)]
 mod tests_duckdb_sync;
 
