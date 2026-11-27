@@ -101,10 +101,15 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 ---
 
 ## `v0.11.0` — Escalabilidade Real (1M–10M+ linhas): Persistência Colunar & SQL Pushdown
+
+> **Diretriz técnica (`Rust-first`):** O motor em TypeScript (`src/engine/`) está congelado como legado e será removido progressivamente; todas as novas funcionalidades são implementadas nativamente em Rust com testes automatizados e casos no corpus DAX.
+
 - [ ] Formato de projeto colunar comprimido (cache local DuckDB/Parquet ao lado dos metadados) para abrir milhões de linhas em menos de 1 segundo com baixo consumo de RAM.
 - [ ] **Pushdown para DuckDB SQL** em agregações, joins e filtros pesados antes da camada DAX.
 - [ ] **Tabelas Calculadas e Colunas Calculadas** (`CALENDAR`, `SUMMARIZE`, `ADDCOLUMNS`, `UNION`) executadas nativamente em Rust.
-- [ ] Migração para Rust das funções avançadas de tabela e janela (`WINDOW`, `OFFSET`, `INDEX`, `RANK`, `ROWNUMBER`, `CALCULATETABLE`, `SUMMARIZECOLUMNS`).
+- [x] Migração para Rust das funções avançadas de tabela e janela (`CALENDAR`, `CALENDARAUTO`, `SUMMARIZECOLUMNS`, `WINDOW`, `OFFSET`, `INDEX`, `RANK`, `ROWNUMBER`, `CALCULATETABLE`).
+- [ ] **Aumento de cobertura de testes das funções (Rust):** ampliar a cobertura de funções do crate Rust (base de 75,06% em `docs/TEST_COVERAGE.md`), cobrindo funções ainda sem teste direto (`engine/duckdb_store.rs`, `etl/sql.rs`, `etl/m_from.rs`, `pbi/pbip.rs`, `dax/query_planner.rs`) e exigindo testes unitários + casos no corpus DAX para cada nova feature.
+- [ ] **Desligamento progressivo do motor TypeScript legado:** migrar consultas remanescentes (tabela comum, dispersão, Cálculos Visuais, DAX Query View e validação) para o motor Rust nativo e remover módulos legados em `src/engine/`.
 
 ---
 

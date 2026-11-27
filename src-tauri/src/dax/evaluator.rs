@@ -14,6 +14,7 @@ mod row;
 mod scalar;
 mod table;
 mod time;
+mod window;
 
 use filter::*;
 use row::*;
@@ -276,6 +277,8 @@ fn eval_call(
             time::eval_date_boundary(&fname, args, model, ctx)
         }
         "RANKX" => aggregate::eval_rankx(args, model, ctx, row_stack, vars),
+        "RANK" => window::eval_rank(args, model, ctx, row_stack, vars),
+        "ROWNUMBER" => window::eval_rownumber(args, model, ctx, row_stack, vars),
         "SUM" | "AVERAGE" | "AVERAGEA" | "MIN" | "MINA" | "MAX" | "MAXA"
         | "COUNT" | "COUNTA" | "COUNTBLANK" | "DISTINCTCOUNT" | "DISTINCTCOUNTNOBLANK"
         | "MEDIAN" | "STDEV.S" | "STDEV.P" | "VAR.S" | "VAR.P" | "PRODUCT" | "GEOMEAN" => {
@@ -1256,6 +1259,59 @@ mod tests {
         assert_eq!(
             model.evaluate_dax("SLN(5000, 500, 9)", &ctx).unwrap().as_f64(),
             Some(500.0)
+        );
+    }
+
+    #[test]
+    fn test_calendar_calendarauto_and_summarizecolumns() {
+        let mut model = DaxModel::new();
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput {
+                    duckdb_table: None,
+                    column_types: vec![Some("text".into()), Some("date".into()), Some("number".into())],
+                    sort_by_columns: Default::default(),
+                    name: "fVendas".into(),
+                    columns: vec!["Cat".into(), "Data".into(), "Valor".into()],
+                    rows: vec![
+                        serde_json::json!({"Cat": "A", "Data": "2024-02-15", "Valor": 100}).as_object().unwrap().clone(),
+                        serde_json::json!({"Cat": "B", "Data": "2024-08-10", "Valor": 250}).as_object().unwrap().clone(),
+                        serde_json::json!({"Cat": "C", "Data": "2024-11-05", "Valor": 400}).as_object().unwrap().clone(),
+                    ],
+                },
+            ],
+            relationships: vec![],
+            measures: vec![DaxMeasureInput {
+                name: "Total".into(),
+                table_name: "fVendas".into(),
+                formula: "SUM(fVendas[Valor])".into(),
+            }],
+        });
+        let ctx = FilterContext::default();
+        assert_eq!(
+            model.evaluate_dax("COUNTROWS(CALENDAR(DATE(2024, 1, 1), DATE(2024, 1, 10)))", &ctx).unwrap().as_f64(),
+            Some(10.0)
+        );
+        assert!(model.evaluate_dax("CALENDAR(DATE(2024, 2, 1), DATE(2024, 1, 1))", &ctx).is_err());
+        // 2024 is leap year -> 366 days
+        assert_eq!(
+            model.evaluate_dax("COUNTROWS(CALENDARAUTO())", &ctx).unwrap().as_f64(),
+            Some(366.0)
+        );
+        // Fiscal year ending June: min date 2024-02-15 -> starts 2023-07-01; max 2024-11-05 -> ends 2025-06-30 => 731 days
+        assert_eq!(
+            model.evaluate_dax("COUNTROWS(CALENDARAUTO(6))", &ctx).unwrap().as_f64(),
+            Some(731.0)
+        );
+        assert!(model.evaluate_dax("CALENDARAUTO(13)", &ctx).is_err());
+
+        assert_eq!(
+            model.evaluate_dax("SUMX(SUMMARIZECOLUMNS(\"GrandTotal\", [Total]), [GrandTotal])", &ctx).unwrap().as_f64(),
+            Some(750.0)
+        );
+        assert_eq!(
+            model.evaluate_dax("COUNTROWS(SUMMARIZECOLUMNS(fVendas[Cat], \"Soma\", [Total]))", &ctx).unwrap().as_f64(),
+            Some(3.0)
         );
     }
 }

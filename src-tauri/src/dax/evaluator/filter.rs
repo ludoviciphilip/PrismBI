@@ -495,8 +495,10 @@ pub(super) fn apply_calculate_modifier(
                 // handling: the resulting rows become the filter, grouped into tuple
                 // filters whenever more than one of their columns trace back to the
                 // same table.
-                "VALUES" | "DISTINCT" | "SUMMARIZE" | "ADDCOLUMNS" | "SELECTCOLUMNS" | "UNION" | "INTERSECT"
-                | "EXCEPT" | "CROSSJOIN" | "GENERATESERIES" | "TOPN" | "CALCULATETABLE" | "RELATEDTABLE" => {
+                "VALUES" | "DISTINCT" | "SUMMARIZE" | "SUMMARIZECOLUMNS" | "ADDCOLUMNS"
+                | "SELECTCOLUMNS" | "UNION" | "INTERSECT" | "EXCEPT" | "CROSSJOIN"
+                | "GENERATESERIES" | "TOPN" | "CALCULATETABLE" | "RELATEDTABLE" | "CALENDAR"
+                | "CALENDARAUTO" | "OFFSET" | "INDEX" | "WINDOW" => {
                     apply_table_filter(expr, model, outer_ctx, next_ctx, row_stack, vars, false)?;
                     return Ok(());
                 }
@@ -653,6 +655,12 @@ pub(super) fn apply_table_filter(
                 let cls: Vec<String> = col_names.iter().map(|c| c.to_lowercase()).collect();
                 if let Some(existing) = outer_ctx.tuple_filters.iter().find(|tf| tf.table == tl && tf.columns == cls) {
                     tuples = tuples.intersection(&existing.tuples).cloned().collect();
+                }
+            } else {
+                // Replacing outer filters on the same columns (e.g., OFFSET/WINDOW returning
+                // another row from ALL(T[C1], T[C2]) when outer ctx filtered only T[C1]).
+                for c in &col_names {
+                    next_ctx.clear_column(&t, c);
                 }
             }
             next_ctx.set_tuple_filter(&t, &col_names, tuples);

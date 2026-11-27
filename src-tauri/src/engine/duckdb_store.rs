@@ -1243,4 +1243,105 @@ mod tests {
         let result = store.import_csv(Path::new("/nonexistent/path/does-not-exist.csv"), None);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn list_tables_and_get_table_preview_work_for_inserted_rows() {
+        let store = DuckDbStore::new_in_memory().expect("init duckdb");
+        let cols = vec![("Nome".into(), "text".into()), ("Valor".into(), "number".into())];
+        let r1 = serde_json::json!({"Nome": "Ana", "Valor": 10.5}).as_object().unwrap().clone();
+        let r2 = serde_json::json!({"Nome": "Bruno", "Valor": 20.0}).as_object().unwrap().clone();
+        let r3 = serde_json::json!({"Nome": "Carla", "Valor": 30.0}).as_object().unwrap().clone();
+        store.insert_table_rows("f_Itens", &cols, &[r1, r2, r3]).expect("insert_table_rows");
+
+        let tables = store.list_tables().expect("list_tables");
+        let found = tables.iter().find(|t| t.table_name == "f_Itens").expect("f_Itens listed");
+        assert_eq!(found.row_count, 3);
+        assert_eq!(found.columns.len(), 2);
+
+        let preview = store.get_table_preview("f_Itens", 2).expect("get_table_preview");
+        assert_eq!(preview.rows.len(), 2);
+        assert_eq!(preview.columns, vec!["Nome", "Valor"]);
+    }
+
+    #[test]
+    fn import_xlsx_rejects_missing_file_and_imports_minimal_workbook() {
+        use std::io::Write;
+        let store = DuckDbStore::new_in_memory().expect("init duckdb");
+        assert!(store.import_xlsx(Path::new("/nonexistent/workbook.xlsx")).is_err());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let xlsx_path = dir.path().join("vendas.xlsx");
+        {
+            let file = std::fs::File::create(&xlsx_path).expect("create xlsx");
+            let mut zip = zip::ZipWriter::new(file);
+            let opt = zip::write::SimpleFileOptions::default();
+
+            zip.start_file("[Content_Types].xml", opt).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"#,
+            )
+            .unwrap();
+
+            zip.start_file("_rels/.rels", opt).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#,
+            )
+            .unwrap();
+
+            zip.start_file("xl/workbook.xml", opt).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Dados" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"#,
+            )
+            .unwrap();
+
+            zip.start_file("xl/_rels/workbook.xml.rels", opt).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#,
+            )
+            .unwrap();
+
+            zip.start_file("xl/worksheets/sheet1.xml", opt).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Item</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Qtd</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>Teclado</t></is></c>
+      <c r="B2"><v>4</v></c>
+    </row>
+  </sheetData>
+</worksheet>"#,
+            )
+            .unwrap();
+
+            zip.finish().unwrap();
+        }
+
+        let sheets = store.import_xlsx(&xlsx_path).expect("import_xlsx");
+        assert_eq!(sheets.len(), 1);
+        assert_eq!(sheets[0].table_name, "Dados");
+        assert_eq!(sheets[0].rows.len(), 1);
+        assert_eq!(sheets[0].rows[0].get("Item").and_then(|v| v.as_str()), Some("Teclado"));
+    }
 }

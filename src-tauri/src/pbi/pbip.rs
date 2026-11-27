@@ -1498,4 +1498,28 @@ mod tests {
         let meta = parse_pbir_visual_json(&vj, "p1", 0).expect("tableEx com cor fixa");
         assert!(meta.conditional_formats.is_empty());
     }
+
+    #[test]
+    fn extract_pbir_textbox_text_joins_runs_and_paragraphs() {
+        let visual_obj = serde_json::json!({
+            "objects": {
+                "general": [
+                    {
+                        "properties": {
+                            "paragraphs": [
+                                { "textRuns": [{ "value": "Olá, " }, { "value": "VetroBI!" }] },
+                                { "textRuns": [{ "value": "" }] },
+                                { "textRuns": [{ "value": "Segunda linha" }] }
+                            ]
+                        }
+                    }
+                ]
+            }
+        });
+        assert_eq!(
+            extract_pbir_textbox_text(&visual_obj).as_deref(),
+            Some("Olá, VetroBI!\nSegunda linha")
+        );
+        assert_eq!(extract_pbir_textbox_text(&serde_json::json!({})), None);
+    }
 }

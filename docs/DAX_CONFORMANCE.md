@@ -3,7 +3,7 @@
 > Gerado por `scripts/dax-conformance-report.mjs` a partir de `tests/dax-corpus/`. Não edite à mão.
 > Cada caso tem resultado esperado conferido de forma independente dos motores.
 
-**Casos:** 383 · **Rust (principal):** 383/383 (100.0%) · **TypeScript (legado):** 354/383 (92.4%)
+**Casos:** 403 · **Rust (principal):** 403/403 (100.0%) · **TypeScript (legado):** 361/403 (89.6%)
 
 | Categoria | Casos | Rust | TS |
 | :--- | ---: | ---: | ---: |
@@ -12,8 +12,9 @@
 | scalar | 110 | 110 (100.0%) | 106 (96.4%) |
 | stats | 73 | 73 (100.0%) | 71 (97.3%) |
 | time | 69 | 69 (100.0%) | 69 (100.0%) |
+| window | 20 | 20 (100.0%) | 7 (35.0%) |
 
-## Casos com falha (29)
+## Casos com falha (42)
 
 | Caso | Rust | TS |
 | :--- | :--- | :--- |
@@ -46,3 +47,16 @@
 | `scalar.text.format.thousands_pattern` | ✅ | ❌ "1.234.567" |
 | `stats.rankx.blank_target_ranks_as_zero` | ✅ | ❌ null |
 | `stats.rankx.sum_without_calculate_ties_all` | ✅ | ❌ 8 |
+| `window.calendarauto.fiscal_july_days` | ✅ | ❌ 365 |
+| `window.calendarauto.fiscal_july_start_year` | ✅ | ❌ null |
+| `window.index.last_in_partition` | ✅ | ❌ 215 |
+| `window.index.top_price_desc` | ✅ | ❌ 1135 |
+| `window.offset.first_row_previous_is_blank` | ✅ | ❌ 95 |
+| `window.offset.partitioned_boundary_is_blank` | ✅ | ❌ 320 |
+| `window.offset.partitioned_next` | ✅ | ❌ 320 |
+| `window.offset.previous_product_by_price` | ✅ | ❌ 320 |
+| `window.rank.dense_with_ties` | ✅ | ❌ 1 |
+| `window.rank.skip_with_ties` | ✅ | ❌ 1 |
+| `window.rownumber.tie_broken_by_client_name` | ✅ | ❌ {"__isDaxTable":true,"columns":["Value","RowNumber"],"rows":[{"Value":{"__isModifier":true,"type":"ALL","tableId":"d_Cliente","tableName":"d_Cliente","columns":["Cliente","Cidade"]},"RowNumber":1}]} |
+| `window.window.moving_two_items` | ✅ | ❌ erro: Não foi possível converter o texto "[object Object]" em núme |
+| `window.window.running_total` | ✅ | ❌ erro: Não foi possível converter o texto "[object Object]" em núme |

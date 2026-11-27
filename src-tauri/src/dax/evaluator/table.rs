@@ -33,6 +33,9 @@ pub(super) fn eval_table_expr<'a>(
     if let Expr::Call { name, args } = expr {
         let upper = name.to_uppercase();
         if matches!(upper.as_str(), "VALUES" | "DISTINCT" | "ALL" | "ALLSELECTED") {
+            if args.len() >= 2 && args.iter().all(|a| matches!(a, Expr::TableColRef { .. })) {
+                return eval_multicol_table_fn(&upper, args, model, ctx);
+            }
             if let Some(Expr::TableColRef { table, column }) = args.first() {
                 // VALUES/DISTINCT/ALL over a *single* column conceptually returns a
                 // one-column table. Materialize it as such (instead of returning the
@@ -176,8 +179,26 @@ pub(super) fn eval_table_expr<'a>(
         if upper == "SUMMARIZE" && !args.is_empty() {
             return eval_summarize(args, model, ctx, row_stack, vars);
         }
+        if upper == "SUMMARIZECOLUMNS" {
+            return eval_summarizecolumns(args, model, ctx, row_stack, vars);
+        }
         if (upper == "ADDCOLUMNS" || upper == "SELECTCOLUMNS") && !args.is_empty() {
             return eval_add_select_columns(upper == "ADDCOLUMNS", args, model, ctx, row_stack, vars);
+        }
+        if upper == "CALENDAR" {
+            return eval_calendar(args, model, ctx, row_stack, vars);
+        }
+        if upper == "CALENDARAUTO" {
+            return eval_calendarauto(args, model, ctx, row_stack, vars);
+        }
+        if upper == "OFFSET" {
+            return super::window::eval_offset(args, model, ctx, row_stack, vars);
+        }
+        if upper == "INDEX" {
+            return super::window::eval_index(args, model, ctx, row_stack, vars);
+        }
+        if upper == "WINDOW" {
+            return super::window::eval_window(args, model, ctx, row_stack, vars);
         }
         if name.eq_ignore_ascii_case("GENERATESERIES") {
             let start = args
@@ -604,4 +625,393 @@ pub(super) fn eval_base_table_expr<'a>(
         }
         _ => Err("Expressão de tabela não suportada neste iterador".to_string()),
     }
+}
+
+/// Multi-column `VALUES`/`DISTINCT`/`ALL`/`ALLSELECTED` over columns of the same model table.
+fn eval_multicol_table_fn<'a>(
+    upper: &str,
+    args: &[Expr],
+    model: &'a DaxModel,
+    ctx: &FilterContext,
+) -> Result<(TableEval<'a>, Vec<usize>, FilterContext), String> {
+    let mut cols: Vec<String> = Vec::with_capacity(args.len());
+    let mut table_name: Option<String> = None;
+    for a in args {
+        let Expr::TableColRef { table, column } = a else {
+            return Err(format!("{}: esperado Tabela[Coluna]", upper));
+        };
+        match &table_name {
+            None => table_name = Some(table.clone()),
+            Some(first) if !first.eq_ignore_ascii_case(table) => {
+                return Err(format!("{}: todas as colunas devem ser da mesma tabela", upper));
+            }
+            _ => {}
+        }
+        cols.push(column.clone());
+    }
+    let table_name = table_name.unwrap_or_default();
+    let tbl = model
+        .get_table(&table_name)
+        .ok_or_else(|| format!("Tabela '{}' não encontrada", table_name))?;
+    let mut cidxs = Vec::with_capacity(cols.len());
+    let mut col_types = Vec::with_capacity(cols.len());
+    for c in &cols {
+        let idx = tbl
+            .get_col_idx(c)
+            .ok_or_else(|| format!("Coluna '{}[{}]' não encontrada", table_name, c))?;
+        cidxs.push(idx);
+        col_types.push(tbl.col_types.get(idx).copied().unwrap_or(ColumnType::Text));
+    }
+
+    let (source_indices, base_ctx): (Vec<usize>, FilterContext) =
+        if upper == "VALUES" || upper == "DISTINCT" {
+            (model.get_visible_row_indices(&tbl.name, ctx), ctx.clone())
+        } else if upper == "ALLSELECTED" {
+            let shadow = ctx.shadow_ctx();
+            let mut restored = ctx.clone();
+            let tl = tbl.name.to_lowercase();
+            for c in &cols {
+                match shadow.filters.get(&tl).and_then(|m| m.get(&c.to_lowercase())) {
+                    Some(v) => restored.set_column_filter(&tbl.name, c, v.clone()),
+                    None => restored.clear_column(&tbl.name, c),
+                }
+            }
+            (model.get_visible_row_indices(&tbl.name, &restored), restored)
+        } else {
+            let mut cleared = ctx.clone();
+            for c in &cols {
+                cleared.clear_column(&tbl.name, c);
+            }
+            ((0..tbl.rows.len()).collect(), cleared)
+        };
+
+    let mut seen = HashSet::new();
+    let mut rows = Vec::new();
+    for r_idx in source_indices {
+        let vals: Vec<DaxValue> = cidxs.iter().map(|&ci| tbl.rows[r_idx][ci].clone()).collect();
+        let key = vals
+            .iter()
+            .map(|v| v.canonical_key())
+            .collect::<Vec<_>>()
+            .join("\u{1}");
+        if seen.insert(key) {
+            rows.push(vals);
+        }
+    }
+
+    let qual_cols: Vec<String> = cols
+        .iter()
+        .map(|c| qualified_col_name(&tbl.name, c))
+        .collect();
+    let col_index = qual_cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.to_lowercase(), i))
+        .collect();
+    let n = rows.len();
+    let synth = DaxTableData {
+        name: tbl.name.clone(),
+        columns: qual_cols,
+        col_index,
+        col_types,
+        rows,
+        sort_by_columns: HashMap::new(),
+    };
+    Ok((TableEval::Owned(synth), (0..n).collect(), base_ctx))
+}
+
+fn build_calendar_range(name: &str, range: Option<(i64, i64)>) -> Result<DaxTableData, String> {
+    let mut col_index = HashMap::new();
+    col_index.insert("date".to_string(), 0);
+    let rows = match range {
+        None => Vec::new(),
+        Some((start, end)) => {
+            if start > end {
+                return Err(format!("{}: data inicial maior que data final", name));
+            }
+            let len = (end - start + 1).clamp(0, 100_000) as usize;
+            (0..len)
+                .map(|offset| vec![DaxValue::DateTime((start + offset as i64) as f64)])
+                .collect()
+        }
+    };
+    Ok(DaxTableData {
+        name: name.to_string(),
+        columns: vec!["Date".to_string()],
+        col_index,
+        col_types: vec![ColumnType::Date],
+        rows,
+        sort_by_columns: HashMap::new(),
+    })
+}
+
+/// `CALENDAR(start_date, end_date)`
+fn eval_calendar<'a>(
+    args: &[Expr],
+    model: &'a DaxModel,
+    ctx: &FilterContext,
+    row_stack: &[RowContext<'_>],
+    vars: &HashMap<String, DaxValue>,
+) -> Result<(TableEval<'a>, Vec<usize>, FilterContext), String> {
+    if args.len() < 2 {
+        return Err("CALENDAR requer (start_date, end_date)".to_string());
+    }
+    let start_s = evaluate_ast(&args[0], model, ctx, row_stack, vars)?.as_date_serial();
+    let end_s = evaluate_ast(&args[1], model, ctx, row_stack, vars)?.as_date_serial();
+    let range = match (start_s, end_s) {
+        (Some(s), Some(e)) if s.is_finite() && e.is_finite() => {
+            Some((s.floor() as i64, e.floor() as i64))
+        }
+        _ => None,
+    };
+    let tbl = build_calendar_range("CALENDAR", range)?;
+    let n = tbl.rows.len();
+    Ok((TableEval::Owned(tbl), (0..n).collect(), ctx.clone()))
+}
+
+/// `CALENDARAUTO([fiscal_year_end_month])`
+fn eval_calendarauto<'a>(
+    args: &[Expr],
+    model: &'a DaxModel,
+    ctx: &FilterContext,
+    row_stack: &[RowContext<'_>],
+    vars: &HashMap<String, DaxValue>,
+) -> Result<(TableEval<'a>, Vec<usize>, FilterContext), String> {
+    let fm: u32 = match args.first() {
+        None | Some(Expr::Blank) => 12,
+        Some(e) => {
+            let v = evaluate_ast(e, model, ctx, row_stack, vars)?;
+            if v.is_blank() {
+                12
+            } else {
+                let n = v.as_f64().unwrap_or(0.0).round() as i64;
+                if !(1..=12).contains(&n) {
+                    return Err("CALENDARAUTO: mês fiscal deve estar entre 1 e 12".to_string());
+                }
+                n as u32
+            }
+        }
+    };
+
+    let mut min_day: Option<i64> = None;
+    let mut max_day: Option<i64> = None;
+    for tbl in model.tables.values() {
+        for (cidx, cty) in tbl.col_types.iter().enumerate() {
+            if *cty != ColumnType::Date {
+                continue;
+            }
+            for row in &tbl.rows {
+                if let Some(s) = row[cidx].as_date_serial().filter(|x| x.is_finite()) {
+                    let d = s.floor() as i64;
+                    min_day = Some(min_day.map_or(d, |m| m.min(d)));
+                    max_day = Some(max_day.map_or(d, |m| m.max(d)));
+                }
+            }
+        }
+    }
+
+    let range = match (min_day, max_day) {
+        (Some(mn), Some(mx)) => {
+            let (min_y, min_m, _) = functions::serial_to_civil(mn as f64);
+            let (max_y, max_m, _) = functions::serial_to_civil(mx as f64);
+            if fm == 12 {
+                let start = functions::civil_to_serial(min_y, 1, 1) as i64;
+                let end = functions::civil_to_serial(max_y, 12, 31) as i64;
+                Some((start, end))
+            } else {
+                let start_y = if min_m <= fm { min_y - 1 } else { min_y };
+                let start = functions::civil_to_serial(start_y, fm + 1, 1) as i64;
+                let end_y = if max_m <= fm { max_y } else { max_y + 1 };
+                let end = (functions::civil_to_serial(end_y, fm + 1, 1) as i64) - 1;
+                Some((start, end))
+            }
+        }
+        _ => None,
+    };
+
+    let tbl = build_calendar_range("CALENDARAUTO", range)?;
+    let n = tbl.rows.len();
+    Ok((TableEval::Owned(tbl), (0..n).collect(), ctx.clone()))
+}
+
+/// `SUMMARIZECOLUMNS(groupBy_col..., [filterTable...], ["name", expr]...)`
+fn eval_summarizecolumns<'a>(
+    args: &[Expr],
+    model: &'a DaxModel,
+    ctx: &FilterContext,
+    row_stack: &[RowContext<'_>],
+    vars: &HashMap<String, DaxValue>,
+) -> Result<(TableEval<'a>, Vec<usize>, FilterContext), String> {
+    let mut g_end = 0;
+    let mut group_cols: Vec<(String, String)> = Vec::new();
+    while let Some(Expr::TableColRef { table, column }) = args.get(g_end) {
+        group_cols.push((table.clone(), column.clone()));
+        g_end += 1;
+    }
+
+    // Trailing extension pairs `("name", expr)`.
+    let ext_start = (g_end..=args.len())
+        .find(|&i| {
+            (args.len() - i) % 2 == 0
+                && (i..args.len())
+                    .step_by(2)
+                    .all(|k| matches!(args[k], Expr::Text(_)))
+        })
+        .unwrap_or(args.len());
+
+    let filter_args = &args[g_end..ext_start];
+    let extensions = parse_name_expr_pairs("SUMMARIZECOLUMNS", &args[ext_start..])?;
+
+    let mut eval_ctx = ctx.clone();
+    for f in filter_args {
+        apply_calculate_modifier(f, model, ctx, &mut eval_ctx, row_stack, vars)?;
+    }
+
+    if group_cols.is_empty() {
+        let col_names: Vec<String> = extensions.iter().map(|(n, _)| n.clone()).collect();
+        if extensions.is_empty() {
+            return Ok((
+                TableEval::Owned(synth_table("SUMMARIZECOLUMNS".into(), col_names, Vec::new())),
+                Vec::new(),
+                eval_ctx,
+            ));
+        }
+        let mut vals = Vec::with_capacity(extensions.len());
+        for (_, e) in &extensions {
+            vals.push(evaluate_ast(e, model, &eval_ctx, row_stack, vars)?);
+        }
+        let rows = if vals.iter().all(DaxValue::is_blank) {
+            Vec::new()
+        } else {
+            vec![vals]
+        };
+        let n = rows.len();
+        return Ok((
+            TableEval::Owned(synth_table("SUMMARIZECOLUMNS".into(), col_names, rows)),
+            (0..n).collect(),
+            eval_ctx,
+        ));
+    }
+
+    // Group requested columns by source table to form distinct visible combinations per table,
+    // then take the Cartesian product across distinct tables mapped back to original column order.
+    let mut table_order: Vec<String> = Vec::new();
+    let mut by_table: HashMap<String, Vec<(usize, usize)>> = HashMap::new(); // table_lower -> [(orig_pos, tbl_cidx)]
+    let mut group_types = Vec::with_capacity(group_cols.len());
+    for (pos, (t, c)) in group_cols.iter().enumerate() {
+        let mt = model
+            .get_table(t)
+            .ok_or_else(|| format!("SUMMARIZECOLUMNS: tabela '{}' não encontrada", t))?;
+        let cidx = mt
+            .get_col_idx(c)
+            .ok_or_else(|| format!("SUMMARIZECOLUMNS: coluna '{}[{}]' não encontrada", t, c))?;
+        group_types.push(mt.col_types.get(cidx).copied().unwrap_or(ColumnType::Text));
+        let tl = mt.name.to_lowercase();
+        if !by_table.contains_key(&tl) {
+            table_order.push(mt.name.clone());
+        }
+        by_table.entry(tl).or_default().push((pos, cidx));
+    }
+
+    let mut per_table_tuples: Vec<(Vec<usize>, Vec<Vec<DaxValue>>)> =
+        Vec::with_capacity(table_order.len());
+    for tname in &table_order {
+        let tbl = model.get_table(tname).unwrap();
+        let cols_spec = &by_table[&tname.to_lowercase()];
+        let orig_positions: Vec<usize> = cols_spec.iter().map(|&(p, _)| p).collect();
+        let cidxs: Vec<usize> = cols_spec.iter().map(|&(_, ci)| ci).collect();
+        let mut seen = HashSet::new();
+        let mut tuples = Vec::new();
+        for r_idx in model.get_visible_row_indices(tname, &eval_ctx) {
+            let tup: Vec<DaxValue> = cidxs.iter().map(|&ci| tbl.rows[r_idx][ci].clone()).collect();
+            let key = tup
+                .iter()
+                .map(|v| v.canonical_key())
+                .collect::<Vec<_>>()
+                .join("\u{1}");
+            if seen.insert(key) {
+                tuples.push(tup);
+            }
+        }
+        per_table_tuples.push((orig_positions, tuples));
+    }
+
+    let max_combos = 100_000usize;
+    let mut combos: Vec<Vec<DaxValue>> = vec![vec![DaxValue::Blank; group_cols.len()]];
+    for (orig_positions, tuples) in &per_table_tuples {
+        if tuples.is_empty() {
+            combos.clear();
+            break;
+        }
+        let mut next = Vec::with_capacity((combos.len() * tuples.len()).min(max_combos));
+        'outer: for base_row in &combos {
+            for tup in tuples {
+                if next.len() >= max_combos {
+                    break 'outer;
+                }
+                let mut r = base_row.clone();
+                for (&pos, val) in orig_positions.iter().zip(tup.iter()) {
+                    r[pos] = val.clone();
+                }
+                next.push(r);
+            }
+        }
+        combos = next;
+    }
+
+    let mut columns: Vec<String> = group_cols
+        .iter()
+        .map(|(t, c)| qualified_col_name(t, c))
+        .collect();
+    let mut groups = DaxTableData {
+        name: "SUMMARIZECOLUMNS".to_string(),
+        columns: columns.clone(),
+        col_index: columns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.to_lowercase(), i))
+            .collect(),
+        col_types: group_types.clone(),
+        rows: combos,
+        sort_by_columns: HashMap::new(),
+    };
+
+    if !extensions.is_empty() {
+        let mut kept_rows = Vec::with_capacity(groups.rows.len());
+        for g_idx in 0..groups.rows.len() {
+            let rc = RowContext {
+                table: &groups,
+                row_idx: g_idx,
+            };
+            let group_ctx = apply_lineage_transition(model, &eval_ctx, &rc);
+            let mut stack = row_stack.to_vec();
+            stack.push(rc);
+            let mut ext_vals = Vec::with_capacity(extensions.len());
+            for (_, e) in &extensions {
+                ext_vals.push(evaluate_ast(e, model, &group_ctx, &stack, vars)?);
+            }
+            if ext_vals.iter().any(|v| !v.is_blank()) {
+                let mut full_row = groups.rows[g_idx].clone();
+                full_row.extend(ext_vals);
+                kept_rows.push(full_row);
+            }
+        }
+        columns.extend(extensions.iter().map(|(n, _)| n.clone()));
+        group_types.extend(vec![ColumnType::Decimal; extensions.len()]);
+        groups = DaxTableData {
+            name: "SUMMARIZECOLUMNS".to_string(),
+            col_index: columns
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (c.to_lowercase(), i))
+                .collect(),
+            columns,
+            col_types: group_types,
+            rows: kept_rows,
+            sort_by_columns: HashMap::new(),
+        };
+    }
+
+    let n = groups.rows.len();
+    Ok((TableEval::Owned(groups), (0..n).collect(), eval_ctx))
 }

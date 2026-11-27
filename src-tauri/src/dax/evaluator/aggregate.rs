@@ -213,11 +213,15 @@ pub(super) fn eval_x_aggregate(
         return Ok(DaxValue::number_smart(cnt as f64));
     }
     let mut vals = Vec::new();
+    let mut all_datetime = true;
     for r_idx in row_indices {
         let mut next_stack = row_stack.to_vec();
         next_stack.push(RowContext { table: table_data, row_idx: r_idx });
         let v = evaluate_ast(&args[1], model, iter_ctx, &next_stack, vars)?;
         if !v.is_blank() {
+            if !matches!(v, DaxValue::DateTime(_)) {
+                all_datetime = false;
+            }
             if let Some(n) = v.as_f64() {
                 vals.push(n);
             }
@@ -241,7 +245,11 @@ pub(super) fn eval_x_aggregate(
         "GEOMEANX" => calc_geomean(&vals),
         _ => None,
     };
-    Ok(res.map(DaxValue::number_smart).unwrap_or(DaxValue::Blank))
+    if all_datetime && matches!(fname, "MINX" | "MAXX") {
+        Ok(res.map(DaxValue::DateTime).unwrap_or(DaxValue::Blank))
+    } else {
+        Ok(res.map(DaxValue::number_smart).unwrap_or(DaxValue::Blank))
+    }
 }
 
 /// DAX `PERCENTILEX.INC`, `PERCENTILEX.EXC`.

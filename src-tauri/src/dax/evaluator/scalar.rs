@@ -1,7 +1,6 @@
 //! Logical, math, text and date-part functions whose arguments are evaluated lazily.
 
 use super::*;
-use crate::dax::functions::parse_iso_ymd;
 
 /// DAX `ISBLANK`.
 pub(super) fn eval_isblank(
@@ -325,8 +324,14 @@ pub(super) fn eval_date_part(
     row_stack: &[RowContext<'_>],
     vars: &HashMap<String, DaxValue>,
 ) -> Result<DaxValue, String> {
-    let s = eval_arg(args, 0, model, ctx, row_stack, vars)?.as_display_string();
-    if let Some((y, m, d)) = parse_iso_ymd(&s) {
+    let v = eval_arg(args, 0, model, ctx, row_stack, vars)?;
+    let serial = v.as_date_serial().or_else(|| match v {
+        DaxValue::Integer(n) => Some(n as f64),
+        DaxValue::Decimal(n) if n.is_finite() => Some(n),
+        _ => None,
+    });
+    if let Some(s) = serial {
+        let (y, m, d) = crate::dax::functions::serial_to_civil(s);
         let val = match fname {
             "YEAR" => y as f64,
             "MONTH" => m as f64,

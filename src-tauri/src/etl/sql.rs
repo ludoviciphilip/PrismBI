@@ -2144,4 +2144,18 @@ mod tests_cov {
         assert!(sql.starts_with("WITH \"__etl_s0\" AS (SELECT 1)"));
         assert!(sql.contains("LIMIT 10"));
     }
+
+    #[test]
+    fn serial_to_timestamp_converts_excel_serial_in_duckdb() {
+        let expr = serial_to_timestamp("CAST(\"col\" AS DOUBLE)");
+        assert!(expr.contains("1899-12-30 00:00:00"));
+        let conn = duckdb::Connection::open_in_memory().expect("duckdb");
+        let sql = format!(
+            "SELECT strftime({}, '%Y-%m-%d %H:%M:%S') FROM (SELECT 45322.5::DOUBLE AS col)",
+            expr
+        );
+        let formatted: String = conn.query_row(&sql, [], |r| r.get(0)).expect("query");
+        // Serial 45322 from 1899-12-30 is 2024-01-31; .5 day = 12:00:00
+        assert_eq!(formatted, "2024-01-31 12:00:00");
+    }
 }

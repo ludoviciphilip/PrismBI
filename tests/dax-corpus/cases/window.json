@@ -1,0 +1,118 @@
+{
+  "model": "vendas",
+  "category": "window",
+  "description": "Funções de tabela e janela no motor Rust (CALENDAR, CALENDARAUTO, SUMMARIZECOLUMNS, OFFSET, INDEX, WINDOW, RANK, ROWNUMBER). Valores conferidos manualmente sobre models/vendas.json.",
+  "cases": [
+    {
+      "id": "window.calendar.leap_quarter_days",
+      "expr": "COUNTROWS(CALENDAR(DATE(2024, 1, 1), DATE(2024, 3, 31)))",
+      "expected": 91
+    },
+    {
+      "id": "window.calendar.feb_non_leap",
+      "expr": "COUNTROWS(CALENDAR(DATE(2025, 2, 1), DATE(2025, 2, 28)))",
+      "expected": 28
+    },
+    {
+      "id": "window.calendarauto.default_dec",
+      "expr": "COUNTROWS(CALENDARAUTO())",
+      "expected": 731
+    },
+    {
+      "id": "window.calendarauto.fiscal_july_days",
+      "expr": "COUNTROWS(CALENDARAUTO(7))",
+      "expected": 1096
+    },
+    {
+      "id": "window.calendarauto.fiscal_july_start_year",
+      "expr": "YEAR(MINX(CALENDARAUTO(7), [Date]))",
+      "expected": 2023
+    },
+    {
+      "id": "window.summarizecolumns.categories_count",
+      "expr": "COUNTROWS(SUMMARIZECOLUMNS(d_Produto[Categoria], \"Total\", [Total Vendas]))",
+      "expected": 2
+    },
+    {
+      "id": "window.summarizecolumns.sum_totals",
+      "expr": "SUMX(SUMMARIZECOLUMNS(d_Produto[Categoria], \"Total\", [Total Vendas]), [Total])",
+      "expected": 1135
+    },
+    {
+      "id": "window.summarizecolumns.omits_all_blank_combos",
+      "expr": "COUNTROWS(SUMMARIZECOLUMNS(d_Cliente[Cliente], d_Produto[Categoria], \"Total\", [Total Vendas]))",
+      "expected": 5,
+      "notes": "Carla não comprou Papelaria, então a linha (Carla, Papelaria) é omitida."
+    },
+    {
+      "id": "window.summarizecolumns.with_filter_table",
+      "expr": "COUNTROWS(SUMMARIZECOLUMNS(d_Cliente[Cliente], FILTER(ALL(d_Produto), d_Produto[Categoria] = \"Papelaria\"), \"Total\", [Total Vendas]))",
+      "expected": 2
+    },
+    {
+      "id": "window.offset.previous_product_by_price",
+      "expr": "CALCULATE([Total Vendas], OFFSET(-1, ALL(d_Produto[Produto], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC)))",
+      "filters": [{ "table": "d_Produto", "column": "Produto", "values": ["Mouse"] }],
+      "expected": 120
+    },
+    {
+      "id": "window.offset.first_row_previous_is_blank",
+      "expr": "CALCULATE([Total Vendas], OFFSET(-1, ALL(d_Produto[Produto], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC)))",
+      "filters": [{ "table": "d_Produto", "column": "Produto", "values": ["Caneta"] }],
+      "expected": null
+    },
+    {
+      "id": "window.offset.partitioned_next",
+      "expr": "CALCULATE([Total Vendas], OFFSET(1, ALL(d_Produto[Produto], d_Produto[Categoria], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC), DEFAULT, PARTITIONBY(d_Produto[Categoria])))",
+      "filters": [{ "table": "d_Produto", "column": "Produto", "values": ["Mouse"] }],
+      "expected": 600
+    },
+    {
+      "id": "window.offset.partitioned_boundary_is_blank",
+      "expr": "CALCULATE([Total Vendas], OFFSET(-1, ALL(d_Produto[Produto], d_Produto[Categoria], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC), DEFAULT, PARTITIONBY(d_Produto[Categoria])))",
+      "filters": [{ "table": "d_Produto", "column": "Produto", "values": ["Mouse"] }],
+      "expected": null
+    },
+    {
+      "id": "window.index.top_price_desc",
+      "expr": "CALCULATE([Total Vendas], INDEX(1, ALL(d_Produto[Produto], d_Produto[Preco]), ORDERBY(d_Produto[Preco], DESC)))",
+      "expected": 600
+    },
+    {
+      "id": "window.index.last_in_partition",
+      "expr": "CALCULATE([Total Vendas], INDEX(-1, ALL(d_Produto[Produto], d_Produto[Categoria], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC), DEFAULT, PARTITIONBY(d_Produto[Categoria])))",
+      "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Papelaria"] }],
+      "expected": 120
+    },
+    {
+      "id": "window.window.running_total",
+      "expr": "CALCULATE([Total Vendas], WINDOW(1, ABS, 0, REL, ALL(d_Produto[Produto], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC)))",
+      "filters": [{ "table": "d_Produto", "column": "Produto", "values": ["Mouse"] }],
+      "expected": 535
+    },
+    {
+      "id": "window.window.moving_two_items",
+      "expr": "CALCULATE([Total Vendas], WINDOW(-1, REL, 0, REL, ALL(d_Produto[Produto], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC)))",
+      "filters": [{ "table": "d_Produto", "column": "Produto", "values": ["Mouse"] }],
+      "expected": 440
+    },
+    {
+      "id": "window.rank.skip_with_ties",
+      "expr": "RANK(SKIP, ALL(d_Cliente[Cliente], d_Cliente[Cidade]), ORDERBY(d_Cliente[Cidade], ASC))",
+      "filters": [{ "table": "d_Cliente", "column": "Cliente", "values": ["Bruno"] }],
+      "expected": 3
+    },
+    {
+      "id": "window.rank.dense_with_ties",
+      "expr": "RANK(DENSE, ALL(d_Cliente[Cliente], d_Cliente[Cidade]), ORDERBY(d_Cliente[Cidade], ASC))",
+      "filters": [{ "table": "d_Cliente", "column": "Cliente", "values": ["Bruno"] }],
+      "expected": 2
+    },
+    {
+      "id": "window.rownumber.tie_broken_by_client_name",
+      "expr": "ROWNUMBER(ALL(d_Cliente[Cliente], d_Cliente[Cidade]), ORDERBY(d_Cliente[Cidade], ASC))",
+      "filters": [{ "table": "d_Cliente", "column": "Cliente", "values": ["Carla"] }],
+      "expected": 2
+    }
+  ]
+}
