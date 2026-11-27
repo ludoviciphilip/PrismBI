@@ -904,7 +904,7 @@ mod tests {
             table_id: table.into(),
             column: column.into(),
             values: values.iter().map(|v| json!(v)).collect(),
-        }
+         ..Default::default() }
     }
 
     #[test]

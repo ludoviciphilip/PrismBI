@@ -34,6 +34,14 @@ pub(super) struct Joiner<'m> {
     pub(super) base_duckdb: String,
     extra: Option<(String, String)>,
     join_sql: Option<String>,
+    /// v0.11 Frente H (items c/d/e): set by `set_base_table` to the fact-side
+    /// join column (`b1.<fk>`) when the category is a dimension column (base
+    /// re-based, fact joined in as `b1`). `NULL` there means "no fact row
+    /// joined to this dimension row" — the LEFT JOIN produced a row anyway,
+    /// so `COUNT(*)` can't tell a real group from a phantom one; this marker
+    /// can. `None` when there's no such ambiguity (base stayed the fact
+    /// table), in which case callers use a `COUNT(*)`-equivalent instead.
+    dim_join_presence: Option<String>,
 }
 
 impl<'m> Joiner<'m> {
@@ -46,11 +54,22 @@ impl<'m> Joiner<'m> {
             fact_duckdb,
             extra: None,
             join_sql: None,
+            dim_join_presence: None,
         }
     }
 
     pub(super) fn fact_key_for_measures(&self) -> String {
         self.fact_key.clone()
+    }
+
+    /// v0.11 Frente H (items c/d/e): `"1"` when there's no fact join (base
+    /// is still the fact table, or no join happened at all) — a plain
+    /// `COUNT(CASE WHEN cond THEN 1 END)` already tells "no rows" from
+    /// "some rows" correctly in that case. Otherwise the fact-side join
+    /// column set by `set_base_table`, which is `NULL` exactly when the
+    /// `LEFT JOIN` found no matching fact row for this dimension row.
+    pub(super) fn row_presence_sql(&self) -> String {
+        self.dim_join_presence.clone().unwrap_or_else(|| "1".to_string())
     }
 
     pub(super) fn join_sql(&self) -> String {
@@ -79,8 +98,12 @@ impl<'m> Joiner<'m> {
             .duckdb_table_name(table_key)
             .ok_or_else(|| format!("tabela '{}' sem tabela DuckDB", table_key))?
             .to_string();
+        // v0.11 Frente H (item b): `IS NOT DISTINCT FROM` instead of `=` so a
+        // genuinely BLANK (NULL) FK matches a genuinely BLANK dimension key,
+        // the same way the DAX evaluator's relationship propagation does
+        // (`ValueKey::Blank` is a normal, matchable key there, not excluded).
         self.join_sql = Some(format!(
-            "LEFT JOIN {} AS b1 ON b1.{} = b0.{}",
+            "LEFT JOIN {} AS b1 ON b1.{} IS NOT DISTINCT FROM b0.{}",
             quote_ident(&self.fact_duckdb),
             quote_ident(&rel.from_column),
             quote_ident(&rel.to_column),
@@ -88,6 +111,7 @@ impl<'m> Joiner<'m> {
         self.base_key = table_key.to_string();
         self.base_duckdb = dim_duckdb;
         self.extra = Some((self.fact_key.clone(), "b1".to_string()));
+        self.dim_join_presence = Some(format!("b1.{}", quote_ident(&rel.from_column)));
         Ok(())
     }
 
@@ -122,7 +146,7 @@ impl<'m> Joiner<'m> {
             .ok_or_else(|| format!("tabela '{}' sem tabela DuckDB", table_key))?
             .to_string();
         self.join_sql = Some(format!(
-            "LEFT JOIN {} AS b1 ON b0.{} = b1.{}",
+            "LEFT JOIN {} AS b1 ON b0.{} IS NOT DISTINCT FROM b1.{}",
             quote_ident(&dim_duckdb),
             quote_ident(&rel.from_column),
             quote_ident(&rel.to_column),
