@@ -60,6 +60,7 @@ fn sync_payload() -> DaxModelSyncPayload {
             column_types: vec![Some("number".into()), Some("number".into())],
             duckdb_table: Some("big".into()),
             sort_by_columns: Default::default(),
+            ..Default::default()
         }],
         relationships: vec![],
         measures: vec![],

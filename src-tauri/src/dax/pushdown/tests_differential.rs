@@ -43,6 +43,7 @@ fn build_model(
             column_types: decl,
             duckdb_table: Some(duckdb_name.to_string()),
             sort_by_columns: Default::default(),
+            ..Default::default()
         });
     }
     let mut model = DaxModel::new();
