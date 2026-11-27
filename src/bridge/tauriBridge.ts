@@ -139,6 +139,9 @@ export interface PbiVisualMeta {
   valueFields: string[];
   /** v0.10 Frente G: projeções extras de Category/Rows (hierarquia). */
   drillFields?: string[];
+  /** v0.11 Rodada 2 (Frente I): projeções extras de Columns/Series/Legend
+   * (níveis extras das COLUNAS da matriz, depois de `legendField`). */
+  legendDrillFields?: string[];
   columnCount?: number | null;
   slicerMode?: string | null;
   actionType?: string | null;
@@ -273,6 +276,9 @@ export interface ExportPbipPayload {
       /** v0.10 Rodada 2 (seams H↔G): campos das linhas da matriz hierárquica
        * (N níveis). O 1º espelha xAxisField e não é duplicado na exportação. */
       matrixRowFields?: string[];
+      /** v0.11 Rodada 2 (Frente I): campos das COLUNAS da matriz hierárquica
+       * (N níveis). O 1º espelha legendField e não é duplicado na exportação. */
+      matrixColumnFields?: string[];
     }[];
   }[];
   themeName?: string | null;
@@ -609,6 +615,11 @@ export interface NativeVisualQueryRequest {
   matrixExpandDepth?: number;
   matrixExpanded?: unknown[][];
   matrixCollapsed?: unknown[][];
+  /** v0.11 Frente I: colunas da matriz (N níveis) e estado de expansão. */
+  matrixColumns?: { field: string; datePart?: string | null }[];
+  matrixColumnExpandDepth?: number;
+  matrixColumnExpanded?: unknown[][];
+  matrixColumnCollapsed?: unknown[][];
 }
 
 export interface NativeMatrixNodeDto {
@@ -619,6 +630,15 @@ export interface NativeMatrixNodeDto {
   hasChildren: boolean;
   expanded: boolean;
   children: NativeMatrixNodeDto[];
+}
+
+export interface NativeMatrixColumnNodeDto {
+  key: unknown;
+  label: string;
+  hasChildren: boolean;
+  expanded: boolean;
+  value: number | null;
+  children: NativeMatrixColumnNodeDto[];
 }
 
 export interface NativeVisualSeries {
@@ -641,7 +661,13 @@ export interface NativeVisualQueryResult {
   engine: 'duckdb' | 'rust-native' | string;
   /** v0.10 Frente G: chave de cada nível por categoria (alinhado com `categories`). */
   categoryKeys?: unknown[][];
-  matrix?: { rows: NativeMatrixNodeDto[]; columnTotals: (number | null)[]; grandTotal?: number | null } | null;
+  matrix?: {
+    rows: NativeMatrixNodeDto[];
+    columnTotals: (number | null)[];
+    grandTotal?: number | null;
+    /** v0.11 Frente I: árvore de colunas (presente só com `matrixColumns`). */
+    columnHeader?: NativeMatrixColumnNodeDto[] | null;
+  } | null;
 }
 
 export async function queryVisualNative(

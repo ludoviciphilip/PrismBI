@@ -96,6 +96,24 @@ export function resolveMatrixRowLevels(dc: VisualDataConfig, typeOf: ColumnTypeL
   return resolveDrillLevels(dc, typeOf);
 }
 
+/**
+ * v0.11 Rodada 2 (Frente I): níveis das COLUNAS da matriz (N níveis), paridade
+ * com `resolveMatrixRowLevels` mas sem o espelho de `xAxisField` (o campo
+ * "Colunas" do painel é só `matrixColumnFields`; a migração copia a legenda
+ * antiga para o 1º nível — ver `migrations/drill.ts`). Com 1 nível só, igual
+ * às linhas, uma coluna de data com `drillMode` gravado ganha a hierarquia
+ * automática Ano → Trimestre → Mês → Dia.
+ */
+export function resolveMatrixColumnLevels(dc: VisualDataConfig, typeOf: ColumnTypeLookup): DrillLevel[] {
+  const stored = (dc.matrixColumnFields || []).filter(Boolean);
+  if (stored.length > 1) return stored.map(plainLevel);
+  if (stored.length === 1) {
+    if (dc.drillMode !== undefined && typeOf(stored[0]) === 'date') return dateHierarchy(stored[0]);
+    return [plainLevel(stored[0])];
+  }
+  return [];
+}
+
 export function getDrillState(dc: VisualDataConfig, levels: DrillLevel[]): DrillState {
   const max = Math.max(0, levels.length - 1);
   const raw = Number.isFinite(dc.currentDrillLevel) ? Math.trunc(dc.currentDrillLevel as number) : 0;
