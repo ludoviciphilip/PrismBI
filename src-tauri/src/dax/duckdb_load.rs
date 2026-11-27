@@ -256,7 +256,7 @@ pub fn load_table_from_duckdb(
 
     LOAD_COUNT.with(|c| c.set(c.get() + 1));
 
-    Ok(super::DaxTableData {
+    Ok(super::DaxTableData { is_calculated: false, 
         name: table_name.to_string(),
         columns: col_names,
         col_index,

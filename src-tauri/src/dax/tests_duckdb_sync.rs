@@ -32,7 +32,7 @@ fn sum_and_count_over_20000_rows_via_duckdb_sync() {
             rows: vec![],
             column_types: vec![],
             duckdb_table: Some("fVendas".into()),
-            sort_by_columns: Default::default(),
+            sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
         }],
         relationships: vec![],
         measures: vec![],
@@ -133,7 +133,7 @@ fn version_cache_skips_reload_when_table_unchanged() {
         rows: vec![],
         column_types: vec![],
         duckdb_table: Some(name.into()),
-        sort_by_columns: Default::default(),
+        sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
     }];
 
     let before = load_count_for_test();
@@ -174,7 +174,7 @@ fn missing_duckdb_table_errors_and_model_falls_back_to_json_rows() {
             }],
             column_types: vec![],
             duckdb_table: Some("does_not_exist".into()),
-            sort_by_columns: Default::default(),
+            sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
         }],
         relationships: vec![],
         measures: vec![],
