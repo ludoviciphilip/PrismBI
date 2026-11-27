@@ -314,4 +314,17 @@ export interface Translations {
     selectTableOrWriteSql: string;
     importSuccess: string;
   };
+  /** v0.11 (atalhos de teclado): toasts dos atalhos e diálogo "Atalhos de teclado". */
+  shortcuts: {
+    toastSaved: string;
+    toastSaveFailed: string;
+    toastExported: string;
+    dialogTitle: string;
+    dialogSubtitle: string;
+    searchPlaceholder: string;
+    noResults: string;
+    menuItem: string;
+    columnAction: string;
+    columnShortcut: string;
+  };
 }

@@ -268,6 +268,12 @@ interface BiState {
   deleteVisual: (id: string) => void;
   moveVisualsDelta: (ids: string[], dx: number, dy: number) => void;
   deleteSelectedVisuals: () => void;
+  /** v0.11 (atalhos de teclado): clipboard interno de visuais para Ctrl+C/Ctrl+V. */
+  visualClipboard: Visual[] | null;
+  copySelectedVisuals: () => void;
+  pasteVisuals: () => void;
+  duplicateSelectedVisuals: () => void;
+  selectAllVisualsOnPage: () => void;
   alignSelectedVisuals: (
     mode: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom' | 'distribute-h' | 'distribute-v'
   ) => void;
@@ -441,6 +447,9 @@ interface BiState {
   setCanvasSizeModalOpen: (open: boolean) => void;
   updateModalOpen: boolean;
   setUpdateModalOpen: (open: boolean) => void;
+  /** v0.11 (atalhos de teclado): diálogo "Atalhos de teclado" (Ctrl+/ ou ?). */
+  shortcutsModalOpen: boolean;
+  setShortcutsModalOpen: (open: boolean) => void;
   availableUpdate: UpdateCheckResult | null;
   setAvailableUpdate: (update: UpdateCheckResult | null) => void;
 
@@ -1935,6 +1944,7 @@ export const useBiStore = create<BiState>((set, get) => {
     activePageId: defaultPageId,
     selectedVisualId: null,
     selectedVisualIds: [],
+    visualClipboard: null,
     canvasZoom: 100,
     isPresentationMode: false,
     layoutMode: 'desktop',
@@ -2150,6 +2160,83 @@ export const useBiStore = create<BiState>((set, get) => {
           selectedVisualIds: [],
         }
       );
+    },
+
+    // v0.11 (atalhos de teclado): Ctrl+C/Ctrl+V/Ctrl+D no canvas do relatório.
+    copySelectedVisuals: () => {
+      const ids = get().selectedVisualIds;
+      if (!ids.length) return;
+      const activePage = get().pages.find(p => p.id === get().activePageId);
+      if (!activePage) return;
+      const idSet = new Set(ids);
+      const visuals = activePage.visuals.filter(v => idSet.has(v.id));
+      if (!visuals.length) return;
+      set({ visualClipboard: visuals.map(v => ({ ...v })) });
+    },
+
+    pasteVisuals: () => {
+      const clip = get().visualClipboard;
+      if (!clip || !clip.length) return;
+      const activePageId = get().activePageId;
+      const activePage = get().pages.find(p => p.id === activePageId);
+      if (!activePage) return;
+      const { width: canvasWidth, height: canvasHeight } = getEffectiveCanvasSize(activePage);
+      const offset = 24;
+      const newVisuals = clip.map(v => ({
+        ...v,
+        id: 'vis_' + Math.random().toString(36).substr(2, 6),
+        x: Math.max(0, Math.min(Math.max(0, canvasWidth - v.w), Math.round(v.x + offset))),
+        y: Math.max(0, Math.min(Math.max(0, canvasHeight - v.h), Math.round(v.y + offset))),
+      }));
+
+      pushPagesHistory(
+        get().pages.map(p =>
+          p.id === activePageId ? { ...p, visuals: [...p.visuals, ...newVisuals] } : p
+        ),
+        {
+          selectedVisualId: newVisuals[newVisuals.length - 1].id,
+          selectedVisualIds: newVisuals.map(v => v.id),
+        }
+      );
+    },
+
+    duplicateSelectedVisuals: () => {
+      const ids = get().selectedVisualIds;
+      if (!ids.length) return;
+      const activePageId = get().activePageId;
+      const activePage = get().pages.find(p => p.id === activePageId);
+      if (!activePage) return;
+      const { width: canvasWidth, height: canvasHeight } = getEffectiveCanvasSize(activePage);
+      const idSet = new Set(ids);
+      const selected = activePage.visuals.filter(v => idSet.has(v.id));
+      if (!selected.length) return;
+      const offset = 24;
+      const newVisuals = selected.map(v => ({
+        ...v,
+        id: 'vis_' + Math.random().toString(36).substr(2, 6),
+        x: Math.max(0, Math.min(Math.max(0, canvasWidth - v.w), Math.round(v.x + offset))),
+        y: Math.max(0, Math.min(Math.max(0, canvasHeight - v.h), Math.round(v.y + offset))),
+      }));
+
+      pushPagesHistory(
+        get().pages.map(p =>
+          p.id === activePageId ? { ...p, visuals: [...p.visuals, ...newVisuals] } : p
+        ),
+        {
+          selectedVisualId: newVisuals[newVisuals.length - 1].id,
+          selectedVisualIds: newVisuals.map(v => v.id),
+        }
+      );
+    },
+
+    selectAllVisualsOnPage: () => {
+      const activePage = get().pages.find(p => p.id === get().activePageId);
+      if (!activePage) return;
+      const ids = activePage.visuals.filter(v => !v.formatConfig?.hidden).map(v => v.id);
+      set({
+        selectedVisualIds: ids,
+        selectedVisualId: ids[ids.length - 1] || null,
+      });
     },
 
     alignSelectedVisuals: (mode) => {
@@ -3110,6 +3197,8 @@ export const useBiStore = create<BiState>((set, get) => {
     setCanvasSizeModalOpen: (open) => set({ canvasSizeModalOpen: open }),
     updateModalOpen: false,
     setUpdateModalOpen: (open) => set({ updateModalOpen: open }),
+    shortcutsModalOpen: false,
+    setShortcutsModalOpen: (open) => set({ shortcutsModalOpen: open }),
     availableUpdate: null,
     setAvailableUpdate: (availableUpdate) => set({ availableUpdate }),
 
@@ -3155,6 +3244,7 @@ export const useBiStore = create<BiState>((set, get) => {
         canUndo: false,
         canRedo: false,
         activeView: 'report' as ActiveView,
+        visualClipboard: null,
         filters: [],
         bookmarks: [],
         dashboardTiles: [],
@@ -3312,6 +3402,7 @@ export const useBiStore = create<BiState>((set, get) => {
         activePageId: state.activePageId || state.pages?.[0]?.id || defaultPageId,
         selectedVisualId: null,
         selectedVisualIds: [],
+        visualClipboard: null,
         historyPast: [],
         historyFuture: [],
         canUndo: false,

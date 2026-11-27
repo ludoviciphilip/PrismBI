@@ -32,6 +32,9 @@ import { CanvasSizeModal } from './components/modals/CanvasSizeModal';
 import { UpdateModal } from './components/modals/UpdateModal';
 import { WelcomeScreen } from './components/welcome/WelcomeScreen';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
+import { ShortcutToast } from './components/shared/ShortcutToast';
+import { KeyboardShortcutsModal } from './components/modals/KeyboardShortcutsModal';
+import { useGlobalShortcuts } from './services/shortcuts/useGlobalShortcuts';
 import { isTauriRuntime, checkForUpdatesNative } from './bridge/tauriBridge';
 import { APP_VERSION } from './version';
 import { useUiPrefs } from './store/useUiPrefs';
@@ -56,6 +59,9 @@ export default function App() {
   const setShowFieldsPane = (v: boolean) => setPaneHidden('fields', !v);
   const setShowBookmarksPane = (v: boolean) => setPaneHidden('bookmarks', !v);
   const setShowSelectionPane = (v: boolean) => setPaneHidden('selection', !v);
+
+  // v0.11 (atalhos de teclado): hook global único — ver src/services/shortcuts.
+  useGlobalShortcuts();
 
   // Silent background check for app updates on startup (Tauri desktop only)
   useEffect(() => {
@@ -108,6 +114,8 @@ export default function App() {
       <>
         <WelcomeScreen />
         <UpdateModal />
+        <KeyboardShortcutsModal />
+        <ShortcutToast />
       </>
     );
   }
@@ -192,6 +200,8 @@ export default function App() {
       <AiSettingsModal />
       <CanvasSizeModal />
       <UpdateModal />
+      <KeyboardShortcutsModal />
+      <ShortcutToast />
     </div>
   );
 }
