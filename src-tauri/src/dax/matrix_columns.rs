@@ -83,7 +83,7 @@ fn build_tree(
         let has_children = depth + 1 < levels.len();
         let expanded = has_children && is_column_expanded(req, path);
         let children = if expanded {
-            build_tree(model, req, base_ctx, agg, primary_field, depth + 1, path, steps, leaves_out)
+            build_tree(model, req, &vctx, agg, primary_field, depth + 1, path, steps, leaves_out)
         } else {
             leaves_out.push(ColumnLeafPath { steps: steps.clone() });
             Vec::new()
@@ -300,5 +300,53 @@ mod tests {
         let mx = res.matrix.unwrap();
         assert_eq!(mx.column_header.unwrap().len(), 2);
         assert_eq!(mx.column_totals.len(), 2);
+    }
+
+    /// Regressão: ao expandir um nível de coluna, o nível FILHO deve enumerar
+    /// só os valores que co-ocorrem com o pai (ex.: cidades de "Norte"), nunca
+    /// todas as cidades da tabela inteira — senão colunas de outro grupo
+    /// "vazam" para dentro do grupo expandido.
+    #[test]
+    fn expanding_a_column_group_only_enumerates_its_own_children() {
+        let row = |cat: &str, reg: &str, cid: &str, cli: &str, val: f64| {
+            let mut m = serde_json::Map::new();
+            m.insert("Categoria".into(), serde_json::json!(cat));
+            m.insert("Regiao".into(), serde_json::json!(reg));
+            m.insert("Cidade".into(), serde_json::json!(cid));
+            m.insert("Cliente".into(), serde_json::json!(cli));
+            m.insert("Valor".into(), serde_json::json!(val));
+            m
+        };
+        let mut model = DaxModel::new();
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![DaxTableInput {
+                name: "fVendas".into(),
+                columns: vec!["Categoria".into(), "Regiao".into(), "Cidade".into(), "Cliente".into(), "Valor".into()],
+                rows: vec![
+                    row("A", "Norte", "Belem", "c1", 1.0),
+                    row("A", "Norte", "Manaus", "c2", 2.0),
+                    row("A", "Sul", "POA", "c3", 3.0),
+                    row("A", "Sul", "Curitiba", "c4", 4.0),
+                ],
+                ..Default::default()
+            }],
+            relationships: Vec::new(),
+            measures: Vec::new(),
+        });
+        let mut r = req("Cliente", "DISTINCTCOUNT");
+        r.matrix_columns = vec![
+            NativeGroupLevel { field: "Regiao".into(), date_part: None },
+            NativeGroupLevel { field: "Cidade".into(), date_part: None },
+        ];
+        r.matrix_column_expanded = vec![vec![serde_json::json!("Norte")]];
+        let res = execute_visual_query(&model, &r).unwrap();
+        let header = res.matrix.unwrap().column_header.unwrap();
+        let norte = header.iter().find(|n| n.label == "Norte").unwrap();
+        assert!(norte.expanded);
+        // Só Belem e Manaus (cidades de Norte) — nunca POA/Curitiba (de Sul).
+        assert_eq!(norte.children.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), vec!["Belem", "Manaus"]);
+        let sul = header.iter().find(|n| n.label == "Sul").unwrap();
+        assert!(!sul.expanded);
+        assert!(sul.children.is_empty());
     }
 }
