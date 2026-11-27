@@ -692,6 +692,12 @@ export interface NativeVisualQueryRequest {
   matrixColumnExpandDepth?: number;
   matrixColumnExpanded?: unknown[][];
   matrixColumnCollapsed?: unknown[][];
+  /** v0.11 Rodada 2, Frente E: Cálculos Visuais avaliados no Rust sobre a
+   * grade (categories/series) deste request — ver
+   * `src-tauri/src/dax/visual_calcs/formula.rs`. Com isso, visuais com
+   * Cálculos Visuais também usam o caminho nativo (não ficam mais de fora
+   * de `supportsNativeRustQuery` em `VisualCard.tsx`). */
+  visualCalculations?: { name: string; formula: string }[];
 }
 
 export interface NativeMatrixNodeDto {
@@ -763,8 +769,11 @@ export interface NativeTableQueryRequest {
   rawFields?: string[];
   valueFields?: string[];
   aggregation?: string;
-  filters?: { tableId: string; column: string; values: unknown[] }[];
+  filters?: { tableId: string; column: string; values: unknown[]; operator?: string }[];
   sortField?: string;
+  /** v0.11 Rodada 2, Frente E: sort by a DIFFERENT column's values (Power BI's
+   * "Classificar por coluna"); must also be present among groupFields/rawFields. */
+  sortByColumn?: string;
   sortOrder?: 'asc' | 'desc';
   topN?: number;
   offset?: number;
@@ -776,6 +785,10 @@ export interface NativeTableQueryResult {
   rows: { values: unknown[] }[];
   totalRowCount: number;
   totalRow?: { values: unknown[] } | null;
+  /** v0.11 Rodada 2, Frente E: min/max over the FULL result (not just the
+   * returned page) per numeric column — feeds conditional-formatting
+   * gradients without the client ever seeing every row. */
+  columnMinMax?: Record<string, [number, number]>;
   queryTimeMs: number;
   engine: string;
 }
@@ -797,7 +810,7 @@ export interface NativeScatterQueryRequest {
   sizeField?: string;
   legendField?: string;
   aggregation?: string;
-  filters?: { tableId: string; column: string; values: unknown[] }[];
+  filters?: { tableId: string; column: string; values: unknown[]; operator?: string }[];
   maxPoints?: number;
 }
 

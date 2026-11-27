@@ -291,7 +291,31 @@ describe('conversões do caminho nativo (contrato com query_planner.rs)', () => 
     ]);
     const f: Filter = { id: 'f', level: 'report', tableId: 'fv', column: 'Cliente', operator: 'in', value: ['c1'] };
     expect(baseNativeRequest(visual({ xAxisField: 'Regiao', yAxisFields: ['Clientes'] }), [f]).filters).toEqual([
-      { tableId: 'fv', column: 'Cliente', values: ['c1'] },
+      { tableId: 'fv', column: 'Cliente', operator: 'in', values: ['c1'] },
+    ]);
+  });
+
+  it('bug fix v0.11 Rodada 2: filtro "between" preserva o operador em vez de virar IN com só as duas pontas', async () => {
+    // Regressão: toNativeFilters/baseNativeRequest espalhavam f.value direto em
+    // `values` sem levar f.operator, então um filtro `between` (segmentador
+    // "Entre" / data relativa, que guarda `value: [from, to]`) virava uma lista
+    // IN com só os dois extremos — perdendo tudo no meio do intervalo. Isso
+    // vale tanto para o drill quanto para a matriz (ambos passam por
+    // `baseNativeRequest`/`toNativeFilters`).
+    const { toNativeFilters, baseNativeRequest } = await import('../engineQuery');
+    const between: Filter = {
+      id: 'f2',
+      level: 'report',
+      tableId: 'fv',
+      column: 'Data',
+      operator: 'between',
+      value: ['2024-01-01', '2024-12-31'],
+    };
+    expect(toNativeFilters([between])).toEqual([
+      { tableId: 'fv', column: 'Data', operator: 'between', values: ['2024-01-01', '2024-12-31'] },
+    ]);
+    expect(baseNativeRequest(visual({ xAxisField: 'Regiao', yAxisFields: ['Clientes'] }), [between]).filters).toEqual([
+      { tableId: 'fv', column: 'Data', operator: 'between', values: ['2024-01-01', '2024-12-31'] },
     ]);
   });
 
