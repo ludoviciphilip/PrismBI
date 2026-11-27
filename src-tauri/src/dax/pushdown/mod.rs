@@ -93,6 +93,7 @@ use super::query_planner::{
 use super::{ColumnType, DaxModel, NativeFilterInput};
 use duckdb::Connection;
 use join::Joiner;
+use std::collections::HashSet;
 use std::time::Instant;
 use translate::{render_agg, resolve_y_agg, YAgg};
 
@@ -152,6 +153,16 @@ pub fn try_pushdown(
         .ok_or_else(|| format!("tabela base '{}' sem tabela DuckDB (dados de amostra?)", fact_key))?
         .to_string();
     let mut joiner = Joiner::new(model, fact_key, fact_duckdb);
+    // v0.11 Frente H (item f): the (table, column) pairs the visual's own
+    // filters apply, so a measure's CALCULATE filter on the same column can
+    // be rejected instead of wrongly intersected with the shared WHERE —
+    // see `translate::translate_calc_filter`.
+    let outer_filter_cols: HashSet<(String, String)> = req
+        .filters
+        .iter()
+        .filter(|f| !f.values.is_empty())
+        .map(|f| (f.table_id.to_lowercase(), f.column.to_lowercase()))
+        .collect();
 
     if is_single_value_shape(req) {
         let mut wheres: Vec<String> = Vec::new();
@@ -160,7 +171,7 @@ pub fn try_pushdown(
                 wheres.push(cond);
             }
         }
-        return execute_single_value(model, conn, req, agg, &mut joiner, &wheres, t0);
+        return execute_single_value(model, conn, req, agg, &mut joiner, &wheres, &outer_filter_cols, t0);
     }
 
     let raw_cat = req.x_axis_field.as_deref().unwrap_or("");
@@ -195,14 +206,14 @@ pub fn try_pushdown(
         }
     }
 
-    execute_grouped(model, conn, req, agg, &mut joiner, &wheres, &cat_col_sql, cat_ct, t0)
+    execute_grouped(model, conn, req, agg, &mut joiner, &wheres, &cat_col_sql, cat_ct, &outer_filter_cols, t0)
 }
 
-/// Translates one `NativeFilterInput` (value-list / IN filter) into a SQL
-/// condition, joining its table onto the fact table if needed. `None` means
-/// "no values" — `build_filter_context` treats an empty value list as "no
-/// filter at all" (see `dax::build_filter_context`), not "match nothing", so
-/// pushdown must do the same instead of emitting `IN ()`.
+/// Translates one `NativeFilterInput` (value-list / IN, or `between`) into a
+/// SQL condition, joining its table onto the fact table if needed. `None`
+/// means "no values" — `build_filter_context` treats an empty value list as
+/// "no filter at all" (see `dax::build_filter_context`), not "match
+/// nothing", so pushdown must do the same instead of emitting `IN ()`.
 fn translate_value_filter(
     model: &DaxModel,
     joiner: &mut Joiner<'_>,
@@ -219,9 +230,25 @@ fn translate_value_filter(
         .ok_or_else(|| format!("filtro em coluna desconhecida '{}.{}'", f.table_id, f.column))?;
     let ct = tbl.col_types[cidx];
     let col_ref = joiner.col_ref(&tbl.name.to_lowercase(), &f.column)?;
-    let lits: Result<Vec<String>, String> = f.values.iter().map(|v| literal::literal_sql(ct, v)).collect();
-    let lits = lits?;
-    Ok(Some(format!("{} IN ({})", col_ref, lits.join(", "))))
+    // v0.11 Frente H (item h): `between` (segmentador "Entre", relative-date
+    // windows) is an inclusive *range*, not a 2-value IN list — see
+    // `FilterContext::range_filters` for the DAX-path twin of this. Only
+    // numeric/boolean columns are supported in SQL here (Text ordering and
+    // Date serial<->SQL-DATE conversion both reject, same as `literal_sql`).
+    if f.operator.as_deref() == Some("between") {
+        if f.values.len() < 2 {
+            return Err("filtro 'between' exige 2 valores".to_string());
+        }
+        if matches!(ct, ColumnType::Text | ColumnType::Date | ColumnType::Currency) {
+            return Err("filtro 'between' nessa coluna não suportado no pushdown (round 2)".to_string());
+        }
+        let lo = literal::literal_sql(ct, &f.values[0])?;
+        let hi = literal::literal_sql(ct, &f.values[1])?;
+        return Ok(Some(format!("{} BETWEEN {} AND {}", col_ref, lo, hi)));
+    }
+    // v0.11 Frente H (item a): case/blank-aware IN, same fold the DAX
+    // evaluator's `value_key()` uses — see `literal::in_cond`.
+    literal::in_cond(ct, &col_ref, &f.values).map(Some)
 }
 
 fn where_clause(wheres: &[String]) -> String {
@@ -237,6 +264,7 @@ fn where_clause(wheres: &[String]) -> String {
 /// agg0, agg1, ... FROM fact <joins> WHERE ...` with no `GROUP BY`, which
 /// DuckDB always answers with exactly one row (NULL aggregates on no
 /// matching rows), matching `eval_field_value`'s `unwrap_or(0.0)`.
+#[allow(clippy::too_many_arguments)]
 fn execute_single_value(
     model: &DaxModel,
     conn: &Connection,
@@ -244,6 +272,7 @@ fn execute_single_value(
     agg: &str,
     joiner: &mut Joiner<'_>,
     wheres: &[String],
+    outer_filter_cols: &HashSet<(String, String)>,
     t0: Instant,
 ) -> Result<NativeVisualQueryResult, String> {
     let is_card = matches!(req.visual_type.as_str(), "card" | "kpi" | "gauge");
@@ -267,12 +296,13 @@ fn execute_single_value(
     }
     let mut yaggs: Vec<YAgg> = Vec::with_capacity(req.y_axis_fields.len());
     for raw in &req.y_axis_fields {
-        yaggs.push(resolve_y_agg(model, joiner, &req.table_id, raw, agg)?);
+        yaggs.push(resolve_y_agg(model, joiner, &req.table_id, raw, agg, outer_filter_cols)?);
     }
+    let presence_sql = joiner.row_presence_sql();
 
     let select: Vec<String> = yaggs
         .iter()
-        .map(|y| format!("CAST({} AS DOUBLE)", render_agg(&y.agg_call, y.case_cond.as_deref())))
+        .map(|y| format!("CAST({} AS DOUBLE)", render_agg(&y.agg_call, y.case_cond.as_deref(), &presence_sql)))
         .collect();
     let sql = format!(
         "SELECT {} FROM {} AS b0{}{}",
@@ -327,6 +357,7 @@ fn execute_grouped(
     wheres: &[String],
     cat_col_sql: &str,
     cat_ct: ColumnType,
+    outer_filter_cols: &HashSet<(String, String)>,
     t0: Instant,
 ) -> Result<NativeVisualQueryResult, String> {
     // Empty text ("") is blank for DAX display purposes too; normalize it to
@@ -348,12 +379,13 @@ fn execute_grouped(
     }
     let mut yaggs: Vec<YAgg> = Vec::with_capacity(y_names.len());
     for raw in &y_names {
-        yaggs.push(resolve_y_agg(model, joiner, &req.table_id, raw, agg)?);
+        yaggs.push(resolve_y_agg(model, joiner, &req.table_id, raw, agg, outer_filter_cols)?);
     }
+    let presence_sql = joiner.row_presence_sql();
 
     let y_selects: Vec<String> = yaggs
         .iter()
-        .map(|y| format!("CAST({} AS DOUBLE)", render_agg(&y.agg_call, y.case_cond.as_deref())))
+        .map(|y| format!("CAST({} AS DOUBLE)", render_agg(&y.agg_call, y.case_cond.as_deref(), &presence_sql)))
         .collect();
     let sql = format!(
         "SELECT {cat} AS cat, {ys} FROM {base} AS b0{joins}{wh} GROUP BY {cat} ORDER BY ({cat} IS NULL) DESC, {cat} ASC",

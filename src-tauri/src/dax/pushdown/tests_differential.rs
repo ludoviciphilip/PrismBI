@@ -163,7 +163,7 @@ fn filter_pushdown_matches_dax() {
         table_id: "dCategoria".into(),
         column: "Nome".into(),
         values: vec![serde_json::json!("A"), serde_json::json!("B")],
-    });
+     ..Default::default() });
     assert_parity(&model, &conn, &r, "SUM");
     let dax = execute_visual_query(&model, &r).unwrap();
     assert_eq!(dax.categories, vec!["A", "B"]);
@@ -328,4 +328,296 @@ fn env_flag_disables_pushdown_both_paths_covered() {
     assert_eq!(off.series[0].data, on.series[0].data);
 
     std::env::remove_var("VETROBI_PUSHDOWN");
+}
+
+// ---------------------------------------------------------------------------
+// v0.11 Frente H (Rodada 2): confirms/fixes the Rodada 1 pushdown-vs-DAX
+// divergences raised in the review. Each test below targets exactly one
+// item from the brief.
+// ---------------------------------------------------------------------------
+
+/// Item (a): text comparisons are case/trim-insensitive in DAX
+/// (`DaxValue::value_key`'s `Text` branch) — a visual filter value typed in
+/// a different case than the stored data must still match, in both engines.
+#[test]
+fn text_filter_is_case_insensitive_like_dax() {
+    let conn = open_mem();
+    let model = base_fixture(&conn);
+    let mut r = req("column", Some("dCategoria.Nome"), &["Valor"], Some("SUM"));
+    // Stored value is "A"; the filter is typed lowercase, like a user
+    // retyping a slicer selection or a bookmark captured with different casing.
+    r.filters.push(crate::dax::NativeFilterInput {
+        table_id: "dCategoria".into(),
+        column: "Nome".into(),
+        values: vec![serde_json::json!("a")],
+        operator: None,
+    });
+    assert_parity(&model, &conn, &r, "SUM");
+    let dax = execute_visual_query(&model, &r).unwrap();
+    assert_eq!(dax.categories, vec!["A"], "lowercase filter value must still match the stored 'A'");
+    assert_eq!(dax.series[0].data, vec![Some(150.0)]);
+}
+
+/// Item (b): a genuinely BLANK (NULL) key on both sides of a relationship
+/// matches in DAX's relationship propagation (`ValueKey::Blank` is a normal
+/// matchable key, not specially excluded) — a plain SQL `=` join would drop
+/// that pairing since `NULL = NULL` is unknown in SQL.
+#[test]
+fn blank_matches_blank_across_the_relationship() {
+    let conn = open_mem();
+    conn.execute_batch(
+        "CREATE TABLE dCategoria (Id INTEGER, Nome VARCHAR);
+         INSERT INTO dCategoria VALUES (1, 'A'), (NULL, 'SemChave');
+         CREATE TABLE fVendas (CategoriaId INTEGER, Valor DOUBLE);
+         INSERT INTO fVendas VALUES (1, 100.0), (NULL, 999.0);",
+    )
+    .expect("seed blank-key fixture");
+    let model = build_model(
+        &conn,
+        &[
+            ("dCategoria", "dCategoria", &[Some("number"), Some("text")]),
+            ("fVendas", "fVendas", &[Some("number"), Some("number")]),
+        ],
+        vec![DaxRelationshipInput {
+            from_table: "fVendas".into(),
+            from_column: "CategoriaId".into(),
+            to_table: "dCategoria".into(),
+            to_column: "Id".into(),
+            cross_filter_direction: "single".into(),
+            is_active: true,
+        }],
+        vec![],
+    );
+    let r = req("column", Some("dCategoria.Nome"), &["Valor"], Some("SUM"));
+    assert_parity(&model, &conn, &r, "SUM");
+    let dax = execute_visual_query(&model, &r).unwrap();
+    // The blank FK (999.0) must land under the dimension's own blank-keyed
+    // row ("SemChave"), not get dropped or bucketed as a generic orphan.
+    let idx = dax.categories.iter().position(|c| c == "SemChave").expect("SemChave category present");
+    assert_eq!(dax.series[0].data[idx], Some(999.0));
+}
+
+/// Items (c)/(d): COUNT/COUNTROWS/DISTINCTCOUNT return BLANK, not 0, for a
+/// dimension member with no matching fact rows at all — Power BI drops that
+/// member from the visual (`dax.guide`: "If the table has no rows, COUNTROWS
+/// returns BLANK, not 0"), exactly the rule `query_planner::execute_grouped`
+/// already uses to drop any-value-blank rows after fetch.
+#[test]
+fn count_family_is_blank_not_zero_for_member_without_facts() {
+    let conn = open_mem();
+    conn.execute_batch(
+        "CREATE TABLE dCategoria (Id INTEGER, Nome VARCHAR);
+         INSERT INTO dCategoria VALUES (1, 'A'), (2, 'SemVendas');
+         CREATE TABLE fVendas (CategoriaId INTEGER, Valor DOUBLE);
+         INSERT INTO fVendas VALUES (1, 100.0), (1, 50.0);",
+    )
+    .expect("seed no-facts fixture");
+    let model = build_model(
+        &conn,
+        &[
+            ("dCategoria", "dCategoria", &[Some("number"), Some("text")]),
+            ("fVendas", "fVendas", &[Some("number"), Some("number")]),
+        ],
+        vec![DaxRelationshipInput {
+            from_table: "fVendas".into(),
+            from_column: "CategoriaId".into(),
+            to_table: "dCategoria".into(),
+            to_column: "Id".into(),
+            cross_filter_direction: "single".into(),
+            is_active: true,
+        }],
+        vec![],
+    );
+    for agg in ["COUNT", "DISTINCTCOUNT"] {
+        let r = req("column", Some("dCategoria.Nome"), &["Valor"], Some(agg));
+        assert_parity(&model, &conn, &r, agg);
+        let dax = execute_visual_query(&model, &r).unwrap();
+        // "SemVendas" must have disappeared from the visual entirely (BLANK
+        // dropped, like every other blank-value row), not show up as 0.
+        assert!(!dax.categories.contains(&"SemVendas".to_string()), "agg={} should drop the member without facts", agg);
+    }
+}
+
+/// Item (e): `DISTINCTCOUNT` counts a stored BLANK as one of its distinct
+/// values (`dax.guide/DISTINCTCOUNT`), unlike plain SQL `COUNT(DISTINCT
+/// col)` which drops `NULL`s.
+#[test]
+fn distinctcount_counts_blank_as_a_value() {
+    let conn = open_mem();
+    conn.execute_batch(
+        "CREATE TABLE dCategoria (Id INTEGER, Nome VARCHAR);
+         INSERT INTO dCategoria VALUES (1, 'A');
+         CREATE TABLE fVendas (CategoriaId INTEGER, Valor DOUBLE);
+         INSERT INTO fVendas VALUES (1, 100.0), (1, 100.0), (1, NULL);",
+    )
+    .expect("seed distinctcount-blank fixture");
+    let model = build_model(
+        &conn,
+        &[
+            ("dCategoria", "dCategoria", &[Some("number"), Some("text")]),
+            ("fVendas", "fVendas", &[Some("number"), Some("number")]),
+        ],
+        vec![DaxRelationshipInput {
+            from_table: "fVendas".into(),
+            from_column: "CategoriaId".into(),
+            to_table: "dCategoria".into(),
+            to_column: "Id".into(),
+            cross_filter_direction: "single".into(),
+            is_active: true,
+        }],
+        vec![],
+    );
+    let r = req("column", Some("dCategoria.Nome"), &["Valor"], Some("DISTINCTCOUNT"));
+    assert_parity(&model, &conn, &r, "DISTINCTCOUNT");
+    let dax = execute_visual_query(&model, &r).unwrap();
+    // Distinct values are {100, BLANK} = 2, not 1 (which plain `COUNT(DISTINCT)` would give).
+    assert_eq!(dax.series[0].data, vec![Some(2.0)]);
+}
+
+/// Item (f): `CALCULATE`'s filter argument *replaces* the context filter on
+/// the same column; it never intersects with an outer (visual-level) filter
+/// on that column. Pushdown's shared `WHERE` can't express a per-series
+/// override, so it must reject and fall back to the (correct) DAX engine.
+#[test]
+fn calculate_filter_overriding_outer_filter_falls_back_to_dax() {
+    let conn = open_mem();
+    conn.execute_batch(
+        "CREATE TABLE dCategoria (Id INTEGER, Nome VARCHAR);
+         INSERT INTO dCategoria VALUES (1, 'A'), (2, 'B');
+         CREATE TABLE fVendas (CategoriaId INTEGER, Valor DOUBLE, Regiao VARCHAR);
+         INSERT INTO fVendas VALUES
+            (1, 100.0, 'Norte'), (1, 50.0, 'Sul'),
+            (2, 300.0, 'Norte'), (2, 10.0, 'Sul');",
+    )
+    .expect("seed override fixture");
+    let model = build_model(
+        &conn,
+        &[
+            ("dCategoria", "dCategoria", &[Some("number"), Some("text")]),
+            ("fVendas", "fVendas", &[Some("number"), Some("number"), Some("text")]),
+        ],
+        vec![DaxRelationshipInput {
+            from_table: "fVendas".into(),
+            from_column: "CategoriaId".into(),
+            to_table: "dCategoria".into(),
+            to_column: "Id".into(),
+            cross_filter_direction: "single".into(),
+            is_active: true,
+        }],
+        vec![DaxMeasureInput {
+            name: "ValorSul".into(),
+            table_name: "fVendas".into(),
+            formula: "CALCULATE(SUM(fVendas[Valor]), fVendas[Regiao] = \"Sul\")".into(),
+        }],
+    );
+    // The visual itself is filtered to Regiao=Norte, but the measure's own
+    // CALCULATE(..., Regiao="Sul") must override that, not AND with it.
+    let mut r = req("column", Some("dCategoria.Nome"), &["ValorSul"], Some("SUM"));
+    r.filters.push(crate::dax::NativeFilterInput {
+        table_id: "fVendas".into(),
+        column: "Regiao".into(),
+        values: vec![serde_json::json!("Norte")],
+        operator: None,
+    });
+    assert!(
+        try_pushdown(&model, &conn, &r, "SUM", Instant::now()).is_err(),
+        "pushdown must refuse to intersect a CALCULATE filter with an outer filter on the same column"
+    );
+    let via_conn = execute_visual_query_with_conn(&model, &r, Some(&conn)).unwrap();
+    let direct_dax = execute_visual_query(&model, &r).unwrap();
+    assert_eq!(via_conn.engine, "rust-native");
+    assert_eq!(via_conn.series[0].data, direct_dax.series[0].data);
+    // Sul total per category, unaffected by the outer Norte filter.
+    assert_eq!(direct_dax.series[0].data, vec![Some(50.0), Some(10.0)]);
+}
+
+/// Item (g): aggregating a column that lives on a *dimension* table (not
+/// the fact) fans out through the `LEFT JOIN` — each dimension row gets
+/// physically repeated once per matching fact row, so `SUM` over it would
+/// multiply by the fact row count instead of reading the dimension's own
+/// single value. Pushdown must reject this shape outright.
+#[test]
+fn aggregating_a_dimension_column_falls_back_to_dax() {
+    let conn = open_mem();
+    conn.execute_batch(
+        "CREATE TABLE dCategoria (Id INTEGER, Nome VARCHAR, Meta DOUBLE);
+         INSERT INTO dCategoria VALUES (1, 'A', 10.0), (2, 'B', 20.0);
+         CREATE TABLE fVendas (CategoriaId INTEGER, Valor DOUBLE);
+         INSERT INTO fVendas VALUES (1, 100.0), (1, 50.0), (1, 25.0), (2, 200.0);",
+    )
+    .expect("seed dim-column fixture");
+    let model = build_model(
+        &conn,
+        &[
+            ("dCategoria", "dCategoria", &[Some("number"), Some("text"), Some("number")]),
+            ("fVendas", "fVendas", &[Some("number"), Some("number")]),
+        ],
+        vec![DaxRelationshipInput {
+            from_table: "fVendas".into(),
+            from_column: "CategoriaId".into(),
+            to_table: "dCategoria".into(),
+            to_column: "Id".into(),
+            cross_filter_direction: "single".into(),
+            is_active: true,
+        }],
+        vec![],
+    );
+    // Grouped by category, but the y-field ("Meta") lives on the dimension,
+    // not the fact — category "A" has 3 matching fact rows, so a naive
+    // `SUM(b0.Meta)` over `dim LEFT JOIN fact` would read 10*3=30 instead of 10.
+    let r = req("column", Some("dCategoria.Nome"), &["dCategoria.Meta"], Some("SUM"));
+    assert!(
+        try_pushdown(&model, &conn, &r, "SUM", Instant::now()).is_err(),
+        "pushdown must refuse to aggregate a dimension column under a fact join"
+    );
+    let via_conn = execute_visual_query_with_conn(&model, &r, Some(&conn)).unwrap();
+    let direct_dax = execute_visual_query(&model, &r).unwrap();
+    assert_eq!(via_conn.engine, "rust-native");
+    assert_eq!(via_conn.series[0].data, direct_dax.series[0].data);
+    assert_eq!(direct_dax.series[0].data, vec![Some(10.0), Some(20.0)], "no fan-out by the fact join");
+}
+
+/// Item (h): a `between` range filter (segmentador "Entre") is an inclusive
+/// range, not a 2-value `IN` list — `VisualCard.tsx`'s request-building code
+/// used to flatten `{operator: "between", value: [lo, hi]}` into an IN list
+/// of exactly the two endpoints, losing everything strictly between them.
+#[test]
+fn between_filter_is_an_inclusive_range_not_a_two_value_in_list() {
+    let conn = open_mem();
+    let model = base_fixture(&conn);
+    let mut r = req("column", Some("dCategoria.Nome"), &["Valor"], Some("SUM"));
+    // fVendas.Valor has 100, 50, NULL, 200, 200, 10, 20, 500 — between
+    // {60, 250} should keep 100 and 200/200 (strictly between the two
+    // endpoints), which a naive IN(60, 250) list would miss entirely.
+    r.filters.push(crate::dax::NativeFilterInput {
+        table_id: "fVendas".into(),
+        column: "Valor".into(),
+        values: vec![serde_json::json!(60), serde_json::json!(250)],
+        operator: Some("between".into()),
+    });
+    assert_parity(&model, &conn, &r, "SUM");
+    let dax = execute_visual_query(&model, &r).unwrap();
+    assert_eq!(dax.categories, vec!["A", "B"]);
+    assert_eq!(dax.series[0].data, vec![Some(100.0), Some(400.0)]);
+}
+
+/// Item (i): a measure that references itself (directly or transitively)
+/// must raise a DAX error, not blow the native call stack.
+#[test]
+fn circular_measure_reference_errors_instead_of_overflowing_stack() {
+    let conn = open_mem();
+    conn.execute_batch("CREATE TABLE fVendas (Valor DOUBLE); INSERT INTO fVendas VALUES (1.0);")
+        .expect("seed circular-measure fixture");
+    let model = build_model(
+        &conn,
+        &[("fVendas", "fVendas", &[Some("number")])],
+        vec![],
+        vec![
+            DaxMeasureInput { name: "A".into(), table_name: "fVendas".into(), formula: "[B] + 1".into() },
+            DaxMeasureInput { name: "B".into(), table_name: "fVendas".into(), formula: "[A] + 1".into() },
+        ],
+    );
+    let ctx = crate::dax::build_filter_context(&[], &model);
+    let err = model.evaluate_dax("[A]", &ctx).expect_err("mutually circular measures must error, not overflow");
+    assert!(err.to_lowercase().contains("circular"), "error should name the cycle, got: {}", err);
 }
