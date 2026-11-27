@@ -2,6 +2,7 @@ pub mod connectors;
 pub mod dax;
 pub mod engine;
 pub mod etl;
+pub mod migrate_legacy;
 pub mod pbi;
 pub mod updater;
 
@@ -502,6 +503,22 @@ fn credentials_get(state: State<'_, AppState>, key: String) -> Result<Option<Str
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Migra dados do PrismBI (identifier antigo) para o VetroBI ANTES de
+    // qualquer janela/webview ser criada — veja migrate_legacy.rs. Usa a
+    // crate `dirs` diretamente (sem AppHandle) para rodar o mais cedo
+    // possível em run(), sem depender da inicialização do Tauri.
+    migrate_legacy::migrate_legacy_app_dirs(
+        &[
+            dirs::data_dir(),
+            dirs::config_dir(),
+            dirs::cache_dir(),
+            dirs::data_local_dir(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>(),
+    );
+
     let db = DuckDbStore::new_in_memory().expect("Falha ao inicializar DuckDB nativo");
 
     tauri::Builder::default()
