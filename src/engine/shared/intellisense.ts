@@ -1,6 +1,7 @@
 import { ALL_SCALAR_FUNCTIONS } from '../functions';
 import { Table, Measure, UserDefinedFunction, DaxSnippet } from '../../types/bi';
 import { UdfManager } from '../model/udfManager';
+import { buildModelParts, resolveDaxSnippet } from './snippetResolver';
 
 export interface CompletionItem {
   label: string;
@@ -264,15 +265,26 @@ export function getDaxCompletions(
     }
   }
 
-  // 6. Snippets
+  // 6. Snippets (v0.11 Rodada 2 bugfix): the measure-formula editor's
+  // "Snippet: ..." autocomplete inserts a bare measure BODY (no
+  // DEFINE/EVALUATE -- that's only needed by the DAX Query View, see
+  // `DaxQueryView.handleInsertSnippet`), but it must still reference REAL
+  // tables/columns/measures of the current model, not the static
+  // example names in `DaxSnippet.template`. A snippet the current model
+  // can't resolve (e.g. no date dimension) is simply left out of the
+  // completion list -- there's no inline "disabled" affordance here like
+  // the Query View's dropdown has.
+  const modelParts = buildModelParts(tables, measures);
   for (const snip of DAX_SNIPPETS) {
     if (!clean || snip.title.toLowerCase().includes(clean) || snip.category.toLowerCase().includes(clean)) {
+      const resolved = resolveDaxSnippet(snip.id, modelParts);
+      if (!resolved.enabled) continue;
       items.push({
         label: `Snippet: ${snip.title}`,
         kind: 'snippet',
         detail: snip.description,
-        documentation: snip.template,
-        insertText: snip.template,
+        documentation: resolved.measureBody,
+        insertText: resolved.measureBody,
         category: 'Snippets',
       });
     }

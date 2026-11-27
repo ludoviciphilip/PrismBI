@@ -25,6 +25,7 @@ import { DaxEngine } from '../../engine/daxEngine';
 import { globalDataEngine } from '../../engine/dataEngine';
 import { DaxQueryExecutionResult, DaxQueryTab, DaxQueryHistoryItem } from '../../types/bi';
 import { DAX_SNIPPETS, getSignatureHelpAtOffset, getDaxGuideUrl } from '../../engine/shared/intellisense';
+import { buildModelParts, resolveDaxSnippet } from '../../engine/shared/snippetResolver';
 import { UdfLibraryModal } from './UdfLibraryModal';
 import { DependencyGraphModal } from './DependencyGraphModal';
 import { DaxAiAssistantModal } from './DaxAiAssistantModal';
@@ -299,10 +300,10 @@ export const DaxQueryView: React.FC = () => {
     showToast('Resultado exportado com sucesso para CSV!');
   };
 
-  const handleInsertSnippet = (template: string) => {
+  const handleInsertSnippet = (query: string) => {
     if (!activeTab) return;
     const currentQuery = activeTab.query;
-    const newQuery = currentQuery ? `${currentQuery}\n\n${template}` : template;
+    const newQuery = currentQuery ? `${currentQuery}\n\n${query}` : query;
     updateDaxQueryText(activeTab.id, newQuery);
     showToast('Snippet inserido na consulta ativa.');
   };
@@ -412,16 +413,27 @@ export const DaxQueryView: React.FC = () => {
               <span>Snippets DAX</span>
             </button>
             <div className="absolute right-0 top-full mt-1 w-64 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-2xl py-1 z-30 hidden group-hover:block">
-              {DAX_SNIPPETS.map(snip => (
-                <button
-                  key={snip.id}
-                  onClick={() => handleInsertSnippet(snip.template)}
-                  className="w-full text-left px-3 py-2 text-xs text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/80 flex flex-col gap-0.5 cursor-pointer"
-                >
-                  <span className="font-semibold text-amber-700 dark:text-amber-300">{snip.title}</span>
-                  <span className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1">{snip.description}</span>
-                </button>
-              ))}
+              {DAX_SNIPPETS.map(snip => {
+                const resolved = resolveDaxSnippet(snip.id, buildModelParts(tables, measures));
+                return (
+                  <button
+                    key={snip.id}
+                    onClick={() => resolved.enabled && handleInsertSnippet(resolved.query)}
+                    disabled={!resolved.enabled}
+                    title={resolved.enabled ? undefined : resolved.disabledReason}
+                    className={`w-full text-left px-3 py-2 text-xs flex flex-col gap-0.5 ${
+                      resolved.enabled
+                        ? 'text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/80 cursor-pointer'
+                        : 'text-slate-400 dark:text-slate-600 opacity-60 cursor-not-allowed'
+                    }`}
+                  >
+                    <span className={`font-semibold ${resolved.enabled ? 'text-amber-700 dark:text-amber-300' : ''}`}>{snip.title}</span>
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1">
+                      {resolved.enabled ? snip.description : `Indisponível: ${resolved.disabledReason}`}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
