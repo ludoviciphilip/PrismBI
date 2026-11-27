@@ -322,6 +322,17 @@ export interface DaxModelSyncPayload {
     rows: Record<string, any>[];
     columnTypes?: (string | null)[];
     sortByColumns?: Record<string, string>;
+    /** True for a calculated table ("Nova tabela" / TMDL `calculated`
+     * partition). `columns`/`rows` are ignored by the Rust side when set;
+     * see `expression`. */
+    isCalculated?: boolean;
+    /** DAX table expression for a calculated table (CALENDAR, ADDCOLUMNS,
+     * SUMMARIZE, UNION, FILTER, DISTINCT, DATATABLE, ...). */
+    expression?: string;
+    /** Calculated columns on this table: column name -> DAX row expression
+     * (RELATED/RELATEDTABLE/EARLIER in scope). Works for both calculated
+     * and regular (imported) tables -- this is "Nova coluna". */
+    calculatedColumns?: Record<string, string>;
   }[];
   relationships: {
     fromTable: string;
@@ -437,6 +448,48 @@ export async function savePbipProject(
 
 export async function syncModelToRust(payload: DaxModelSyncPayload): Promise<number> {
   return await invoke<number>('sync_model_to_rust', { payload });
+}
+
+/** v0.11 Frente C: "Nova tabela" (guia Modelagem). Builds a calculated-table
+ * entry on top of `currentPayload` and re-syncs the whole model (there's no
+ * dedicated Tauri command -- `sync_model_to_rust` already materializes
+ * calculated tables from `isCalculated`/`expression`, in dependency order,
+ * with cycle detection; see `dax::calculated` on the Rust side). Any
+ * materialization error for `name` lands in the model's `calculatedErrors`
+ * and should be surfaced inline by the formula editor (not thrown here).
+ */
+export async function createCalculatedTable(
+  currentPayload: DaxModelSyncPayload,
+  name: string,
+  expression: string
+): Promise<number> {
+  const tables = currentPayload.tables.filter((t) => t.name.toLowerCase() !== name.toLowerCase());
+  tables.push({ name, columns: [], rows: [], isCalculated: true, expression });
+  return await syncModelToRust({ ...currentPayload, tables });
+}
+
+/** v0.11 Frente C: "Nova coluna" (guia Modelagem / painel Dados). Adds or
+ * replaces a calculated column's DAX expression on `tableName` and re-syncs.
+ * Works on both calculated and regular (imported) tables; RELATED,
+ * RELATEDTABLE and EARLIER are evaluated through the normal row-context
+ * stack on the Rust side.
+ */
+export async function addCalculatedColumn(
+  currentPayload: DaxModelSyncPayload,
+  tableName: string,
+  columnName: string,
+  expression: string
+): Promise<number> {
+  const tables = currentPayload.tables.map((t) => {
+    if (t.name.toLowerCase() !== tableName.toLowerCase()) return t;
+    const columns = t.columns.includes(columnName) ? t.columns : [...t.columns, columnName];
+    return {
+      ...t,
+      columns,
+      calculatedColumns: { ...(t.calculatedColumns ?? {}), [columnName]: expression },
+    };
+  });
+  return await syncModelToRust({ ...currentPayload, tables });
 }
 
 export async function evaluateDaxNative(
