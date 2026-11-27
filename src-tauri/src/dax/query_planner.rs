@@ -168,10 +168,16 @@ fn eval_field_opt(
     let non_zero = |n: f64| if n == 0.0 { None } else { Some(n) };
     match agg.to_uppercase().as_str() {
         "COUNT" => non_zero(visible.iter().filter(|&&i| !tbl.rows[i][cidx].is_blank()).count() as f64),
+        // v0.11 Frente H (item e; fix(dax)): DISTINCTCOUNT counts a stored
+        // BLANK as one of its distinct values (dax.guide: "DISTINCTCOUNT
+        // counts a blank value in the column as one of the values"), unlike
+        // plain `COUNT(DISTINCT ...)` SQL semantics. This implicit-visual-
+        // aggregation path used to filter blanks out before counting,
+        // undercounting by one whenever the column has at least one blank
+        // cell among non-blank ones.
         "DISTINCTCOUNT" => non_zero(
             visible
                 .iter()
-                .filter(|&&i| !tbl.rows[i][cidx].is_blank())
                 .map(|&i| tbl.rows[i][cidx].canonical_key())
                 .collect::<HashSet<_>>()
                 .len() as f64,
@@ -533,7 +539,7 @@ fn merge_drill_filter(model: &DaxModel, filters: &mut Vec<NativeFilterInput>, ne
             table_id: new.table_id,
             column: new.column,
             values,
-        }),
+         ..Default::default() }),
     }
 }
 
@@ -555,7 +561,7 @@ fn build_query_context(model: &DaxModel, req: &NativeVisualQueryRequest) -> Filt
                 table_id: tbl_name,
                 column: col,
                 values,
-            },
+             ..Default::default() },
         );
     }
     build_filter_context(&filters, model)
@@ -1036,7 +1042,7 @@ mod tests {
                     table_id: "fVendas".into(),
                     column: "Categoria".into(),
                     values: vec![serde_json::json!("A")],
-                }],
+                 ..Default::default() }],
                 ..Default::default()
             },
         )

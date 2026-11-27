@@ -907,7 +907,7 @@ mod tests {
                 table_id: "d_Mes".into(),
                 column: "MesNum".into(),
                 values: vec![json!(2)],
-            }],
+             ..Default::default() }],
             &model,
         );
         // Simulate a visual row cell where no slicer restricts d_Mes (shadow = unfiltered)
@@ -934,7 +934,7 @@ mod tests {
                 table_id: "d_Mes".into(),
                 column: "MesNum".into(),
                 values: vec![json!(1)],
-            }],
+             ..Default::default() }],
             &model,
         );
         ctx_jan.shadow = Some(std::sync::Arc::new(FilterContext::default()));
@@ -956,7 +956,7 @@ mod tests {
                 table_id: "d_Produto".into(),
                 column: "Produto".into(),
                 values: vec![json!("Caderno")],
-            }],
+             ..Default::default() }],
             &model,
         );
         let v = model
@@ -1000,7 +1000,7 @@ mod tests {
                 table_id: "d_Produto".into(),
                 column: "Categoria".into(),
                 values: vec![json!("Papelaria")],
-            }],
+             ..Default::default() }],
             &model,
         );
         assert_eq!(
@@ -1023,7 +1023,7 @@ mod tests {
                 table_id: "d_Mes".into(),
                 column: "MesNum".into(),
                 values: vec![json!(2)],
-            }],
+             ..Default::default() }],
             &model,
         );
         ctx_feb.shadow = Some(std::sync::Arc::new(FilterContext::default()));
@@ -1042,7 +1042,7 @@ mod tests {
                 table_id: "d_Mes".into(),
                 column: "MesNum".into(),
                 values: vec![json!(3)],
-            }],
+             ..Default::default() }],
             &model,
         );
         ctx_mar.shadow = Some(std::sync::Arc::new(FilterContext::default()));
@@ -1065,7 +1065,7 @@ mod tests {
                 table_id: "d_Produto".into(),
                 column: "Produto".into(),
                 values: vec![json!("Monitor")],
-            }],
+             ..Default::default() }],
             &model,
         );
         let skip = model
@@ -1089,7 +1089,7 @@ mod tests {
                 table_id: "d_Produto".into(),
                 column: "Produto".into(),
                 values: vec![json!("Mouse")],
-            }],
+             ..Default::default() }],
             &model,
         );
         let ctx_teclado = build_filter_context(
@@ -1097,7 +1097,7 @@ mod tests {
                 table_id: "d_Produto".into(),
                 column: "Produto".into(),
                 values: vec![json!("Teclado")],
-            }],
+             ..Default::default() }],
             &model,
         );
         let rn_m = model

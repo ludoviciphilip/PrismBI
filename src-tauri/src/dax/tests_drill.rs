@@ -207,8 +207,11 @@ fn matrix_with_legend_columns_has_engine_row_totals() {
     assert_eq!(res.series.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["L1", "L2", "L3", "L4"]);
     let m = res.matrix.unwrap();
     let sul = find(&m.rows, "Sul");
-    // Sul: L1 {c1,c2}=2, L2 {c1}=1, L3 {c1,c3}=2, L4 nada → 0 (DISTINCTCOUNT retorna 0).
-    assert_eq!(sul.values, vec![Some(2.0), Some(1.0), Some(2.0), Some(0.0)]);
+    // Sul: L1 {c1,c2}=2, L2 {c1}=1, L3 {c1,c3}=2, L4 nada → BLANK (v0.11
+    // Frente H item d/fix(dax): DISTINCTCOUNT sobre um conjunto vazio de
+    // linhas é BLANK no Power BI, não 0 — dax.guide/DISTINCTCOUNT: "When the
+    // function finds no rows to count, it returns a BLANK".
+    assert_eq!(sul.values, vec![Some(2.0), Some(1.0), Some(2.0), None]);
     // Total da linha Sul = {c1,c2,c3} = 3 (não 2+1+2 = 5).
     assert_eq!(sul.row_total, Some(3.0));
     // Totais das colunas: L1=2, L2=1, L3=2, L4=2; total geral = 4.
@@ -313,7 +316,7 @@ fn drill_filter_intersects_with_existing_filter_on_same_column() {
         table_id: "fPedidos".into(),
         column: "Data".into(),
         values: vec![json!("2023-11-05"), json!("2024-01-10")],
-    }];
+     ..Default::default() }];
     let res = execute_visual_query(&model, &req).unwrap();
     assert_eq!(res.category_keys, vec![vec![json!(1)]]);
     assert_eq!(res.series[0].data, vec![Some(5.0)]);
@@ -321,7 +324,7 @@ fn drill_filter_intersects_with_existing_filter_on_same_column() {
     // Drill num ano que o segmentador exclui = nada (não "sem filtro").
     let drill = vec![NativeDrillFilter { field: "Data".into(), date_part: Some("year".into()), value: json!(2022) }];
     let mut req = chart_req(vec![date_lvl("Data", "quarter")], drill);
-    req.filters = vec![NativeFilterInput { table_id: "fPedidos".into(), column: "Data".into(), values: vec![json!("2024-01-10")] }];
+    req.filters = vec![NativeFilterInput { table_id: "fPedidos".into(), column: "Data".into(), values: vec![json!("2024-01-10")], ..Default::default() }];
     let res = execute_visual_query(&model, &req).unwrap();
     assert!(res.categories.is_empty());
 }
