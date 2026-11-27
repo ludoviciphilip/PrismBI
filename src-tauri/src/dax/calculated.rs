@@ -268,7 +268,7 @@ mod tests {
 
     fn base_model() -> DaxModel {
         let mut model = DaxModel::new();
-        let sales = DaxTableInput {
+        let sales = DaxTableInput { column_format_strings: Default::default(),
             duckdb_table: None,
             name: "Sales".into(),
             columns: vec!["Date".into(), "Amount".into(), "CategoryId".into()],
@@ -288,7 +288,7 @@ mod tests {
             expression: None,
             calculated_columns: Default::default(),
         };
-        let categories = DaxTableInput {
+        let categories = DaxTableInput { column_format_strings: Default::default(),
             duckdb_table: None,
             name: "Categories".into(),
             columns: vec!["Id".into(), "Name".into()],

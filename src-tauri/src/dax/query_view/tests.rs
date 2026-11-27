@@ -16,7 +16,7 @@ use serde_json::json;
 /// Total Vendas = SUM(Vendas[Valor]) = 10+5+20+100 = 135.
 fn base_model() -> DaxModel {
     let mut model = DaxModel::new();
-    let produto = DaxTableInput {
+    let produto = DaxTableInput { column_format_strings: Default::default(),
         duckdb_table: None,
         name: "Produto".into(),
         columns: vec!["ProdutoID".into(), "Nome".into(), "Categoria".into()],
@@ -31,7 +31,7 @@ fn base_model() -> DaxModel {
         expression: None,
         calculated_columns: Default::default(),
     };
-    let vendas = DaxTableInput {
+    let vendas = DaxTableInput { column_format_strings: Default::default(),
         duckdb_table: None,
         name: "Vendas".into(),
         columns: vec!["ProdutoID".into(), "Valor".into(), "Qtd".into()],

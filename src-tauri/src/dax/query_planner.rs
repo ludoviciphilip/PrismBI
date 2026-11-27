@@ -1772,7 +1772,7 @@ mod tests {
             m
         };
         model.sync_from_payload(DaxModelSyncPayload {
-            tables: vec![DaxTableInput { duckdb_table: None,
+            tables: vec![DaxTableInput { column_format_strings: Default::default(), duckdb_table: None,
                 name: "fVendas".into(),
                 columns: vec!["Categoria".into(), "Valor".into()],
                 rows: vec![
@@ -1897,7 +1897,7 @@ mod tests {
         };
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
-            tables: vec![DaxTableInput {
+            tables: vec![DaxTableInput { column_format_strings: Default::default(),
                 name: "fFast".into(),
                 columns: vec!["Categoria".into(), "Valor".into(), "Qtd".into(), "Data".into()],
                 rows: vec![
@@ -2042,7 +2042,7 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     name: "dCategoria".into(),
                     columns: vec!["CatID".into(), "Categoria".into()],
                     rows: vec![
@@ -2057,7 +2057,7 @@ mod tests {
                     column_types: vec![Some("number".into()), Some("text".into())],
                     ..Default::default()
                 },
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     name: "fFast".into(),
                     columns: vec!["CatID".into(), "Valor".into(), "Qtd".into(), "Data".into()],
                     rows: vec![
@@ -2260,7 +2260,7 @@ mod tests {
         let mut two_rel = star_model_for_fastpath_diff();
         two_rel.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { name: "dOutro".into(), columns: vec!["Id".into()], rows: vec![], ..Default::default() },
+                DaxTableInput { column_format_strings: Default::default(), name: "dOutro".into(), columns: vec!["Id".into()], rows: vec![], ..Default::default() },
             ],
             relationships: vec![
                 DaxRelationshipInput {
@@ -2374,7 +2374,7 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     name: "dCal".into(),
                     columns: vec!["Data".into(), "MesNome".into(), "MesNum".into()],
                     rows: vec![
@@ -2386,7 +2386,7 @@ mod tests {
                     sort_by_columns: sort_by,
                     ..Default::default() 
                 },
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     name: "dEstrutura".into(),
                     columns: vec!["Linha".into(), "Ordem".into()],
                     rows: vec![
@@ -2398,7 +2398,7 @@ mod tests {
                     sort_by_columns: cat_sort_by,
                     ..Default::default() 
                 },
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     name: "fLanc".into(),
                     columns: vec!["Data".into(), "Linha".into(), "Valor".into()],
                     rows: vec![
@@ -2571,7 +2571,7 @@ mod tests {
             rows.push(m);
         }
         model.sync_from_payload(DaxModelSyncPayload {
-            tables: vec![DaxTableInput {
+            tables: vec![DaxTableInput { column_format_strings: Default::default(),
                 duckdb_table: None,
                 name: "fBig".into(),
                 columns: vec!["Categoria".into(), "Valor".into()],
@@ -2643,7 +2643,7 @@ mod tests {
             rows.push(m);
         }
         model.sync_from_payload(DaxModelSyncPayload {
-            tables: vec![DaxTableInput {
+            tables: vec![DaxTableInput { column_format_strings: Default::default(),
                 duckdb_table: None,
                 name: "fPts".into(),
                 columns: vec!["Categoria".into(), "Valor".into()],

@@ -177,13 +177,30 @@ fn open_pbip_project(
                                 .collect::<HashMap<String, String>>()
                         })
                         .unwrap_or_default();
+                    // v0.11 Rodada 2 Frente F: carry the TMDL formatString
+                    // per column so the DAX Query View's integer/year
+                    // columns don't get a grouping thousand separator that
+                    // isn't in the model's own format (see
+                    // `dax::query_view::qexec::DaxQueryColumn::format_string`).
+                    let column_format_strings = summary
+                        .tables
+                        .iter()
+                        .find(|tm| tm.name.eq_ignore_ascii_case(&t.table_name))
+                        .map(|tm| {
+                            tm.columns
+                                .iter()
+                                .filter_map(|c| c.format_string.as_ref().map(|fs| (c.name.clone(), fs.clone())))
+                                .collect::<HashMap<String, String>>()
+                        })
+                        .unwrap_or_default();
                     dax::DaxTableInput {
                         name: t.table_name.clone(),
                         columns: t.columns.iter().map(|c| c.name.clone()).collect(),
                         rows: t.rows.clone(),
                         column_types: vec![],
                         duckdb_table: Some(t.table_name.clone()),
-                        sort_by_columns, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
+                        sort_by_columns, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new(),
+                        column_format_strings,
                     }
                 })
                 .collect(),

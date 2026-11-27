@@ -152,8 +152,12 @@ fn first_quoted(msg: &str) -> Option<String> {
 }
 
 /// Best-effort position + length for an evaluator runtime-error message
-/// (see module doc for the message shapes this recognizes).
-fn locate_runtime_error(tokens: &[Token], chars: &[char], msg: &str) -> (Pos, usize) {
+/// (see module doc for the message shapes this recognizes). `pub(super)`
+/// so `qexec`'s query-level errors (`DEFINE`/`EVALUATE`, not just a single
+/// measure formula) can reuse the exact same token-scan instead of
+/// defaulting every runtime error to line 1 column 1 (see
+/// `qexec::locate_pos_for_message`).
+pub(super) fn locate_runtime_error(tokens: &[Token], chars: &[char], msg: &str) -> (Pos, usize) {
     let Some(q) = first_quoted(msg) else { return (Pos { line: 1, col: 1 }, 1) };
     if let Some(name) = q.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
         if let Some(p) = find_bracket_pos(tokens, chars, name) {

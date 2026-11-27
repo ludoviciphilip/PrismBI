@@ -58,7 +58,7 @@ fn stores_model() -> DaxModel {
         .collect();
     let mut model = DaxModel::new();
     model.sync_from_payload(DaxModelSyncPayload {
-        tables: vec![DaxTableInput {
+        tables: vec![DaxTableInput { column_format_strings: Default::default(),
             duckdb_table: None,
             name: "fVendas".into(),
             columns: vec!["Regiao".into(), "Cidade".into(), "Loja".into(), "Cliente".into(), "Valor".into()],
@@ -230,7 +230,7 @@ fn dates_model() -> DaxModel {
     let data = [("2023-11-05", 10), ("2024-01-10", 5), ("2024-02-20", 7), ("2024-04-01", 3), ("2024-12-31", 1)];
     let mut model = DaxModel::new();
     model.sync_from_payload(DaxModelSyncPayload {
-        tables: vec![DaxTableInput {
+        tables: vec![DaxTableInput { column_format_strings: Default::default(),
             duckdb_table: None,
             name: "fPedidos".into(),
             columns: vec!["Data".into(), "Valor".into()],
