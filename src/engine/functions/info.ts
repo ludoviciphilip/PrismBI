@@ -311,7 +311,7 @@ export function getInfoMetadataTable(viewName: string, context: any): DaxTableVa
     case 'ANNOTATIONS': {
       return toDaxTable([
         { Object: 'Model', AnnotationName: 'PBI_ProTooling', Value: '["DevMode"]' },
-        { Object: 'Engine', AnnotationName: 'VetroBIDAX', Value: 'v0.10.0' },
+        { Object: 'Engine', AnnotationName: 'VetroBIDAX', Value: 'v0.11.0' },
       ]);
     }
 
