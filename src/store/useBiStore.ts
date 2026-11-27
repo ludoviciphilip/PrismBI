@@ -792,6 +792,28 @@ setGlobalCurrency(initialCurrency);
 const initialThemeMode = getStoredThemeMode();
 const initialIsDark = applyThemeToDocument(initialThemeMode);
 
+/** v0.11 Rodada 2 Frente F (bugfix): fallback TMDL-style pattern derived
+ * from `Measure.format` (the generic currency/number/percentage/integer
+ * enum) when the measure has no real TMDL `formatString` (manually created
+ * measures, samples). `formatValue` (src/engine/shared/formatter.ts)
+ * understands the named "Currency"/"Percent" forms as well as numeric
+ * patterns, so this stays consistent with how the rest of the app formats
+ * these same measures.
+ */
+function measureFormatToTmdlPattern(format: Measure['format']): string {
+  switch (format) {
+    case 'currency':
+      return 'Currency';
+    case 'percentage':
+      return 'Percent';
+    case 'integer':
+      return '#,##0';
+    case 'number':
+    default:
+      return '#,##0.00';
+  }
+}
+
 async function pushModelToRustAsync(
   tables: Table[],
   relationships: Relationship[],
@@ -813,6 +835,15 @@ async function pushModelToRustAsync(
         columnTypes: t.columns.map(c => c.dataType ?? null),
         sortByColumns: Object.fromEntries(t.columns.filter(c => c.sortByColumn).map(c => [c.name, c.sortByColumn!])),
         duckdbTable: t.duckdbTable,
+        // v0.11 Rodada 2 Frente F (bugfix): the real sync path (this
+        // function) never sent the TMDL `formatString` the .pbip importer
+        // already stores on `Column.format` (PowerBiImportModal.tsx), so an
+        // integer/year column always fell back to the DAX Query View's
+        // generic grouped `formatNumber` ("2.026" instead of "2026"). Only
+        // the Rust-only `open_pbip_project` test/dev path filled this in.
+        columnFormatStrings: Object.fromEntries(
+          t.columns.filter(c => c.format).map(c => [c.name, c.format as string])
+        ),
       })),
       relationships: relationships.map(r => ({
         fromTable: r.fromTable,
@@ -826,6 +857,11 @@ async function pushModelToRustAsync(
         name: m.name,
         tableName: m.tableName,
         formula: m.formula,
+        // v0.11 Rodada 2 Frente F (bugfix): same gap as above, for
+        // measures. A `DEFINE MEASURE` built on top of a real measure in
+        // the DAX Query View (e.g. `Teste = [Faturamento] * 2`) can only
+        // inherit `Faturamento`'s format if it actually reaches Rust.
+        formatString: m.formatString || measureFormatToTmdlPattern(m.format),
       })),
     });
     onSynced?.();

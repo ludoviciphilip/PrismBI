@@ -339,6 +339,14 @@ export interface DaxModelSyncPayload {
      * (RELATED/RELATEDTABLE/EARLIER in scope). Works for both calculated
      * and regular (imported) tables -- this is "Nova coluna". */
     calculatedColumns?: Record<string, string>;
+    /** v0.11 Rodada 2 Frente F (bugfix): column name -> the model's TMDL
+     * `formatString` (e.g. `{ Ano: "0" }`), so the DAX Query View's grid
+     * keeps the model's own number format (no thousand separator on a
+     * year) instead of the UI's generic grouped `formatNumber`. Built by
+     * `pushModelToRustAsync` from `Column.format` -- see
+     * `dax::DaxTableInput::column_format_strings` / `qexec.rs` on the Rust
+     * side. */
+    columnFormatStrings?: Record<string, string>;
   }[];
   relationships: {
     fromTable: string;
@@ -348,7 +356,17 @@ export interface DaxModelSyncPayload {
     crossFilterDirection: string;
     isActive: boolean;
   }[];
-  measures: { name: string; tableName: string; formula: string }[];
+  measures: {
+    name: string;
+    tableName: string;
+    formula: string;
+    /** v0.11 Rodada 2 Frente F (bugfix): the measure's TMDL `formatString`
+     * when imported from a `.pbip`, or a pattern derived from `Measure.format`
+     * (currency/number/percentage/integer) otherwise. Lets a `DEFINE
+     * MEASURE` built on top of this one in the DAX Query View inherit its
+     * format (see `dax::DaxMeasureInput::format_string`). */
+    formatString?: string;
+  }[];
 }
 
 export function isTauriRuntime(): boolean {
