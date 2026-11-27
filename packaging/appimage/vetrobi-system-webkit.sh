@@ -1,5 +1,5 @@
 #! /usr/bin/env bash
-# PrismBI: usar o WebKitGTK do sistema quando ele for compatível.
+# VetroBI: usar o WebKitGTK do sistema quando ele for compatível.
 #
 # O WebKitGTK embutido no AppImage vem do Ubuntu 22.04 (onde o CI compila):
 # é uma versão antiga, sem o compositor com threads e sem renderização Skia
@@ -9,16 +9,16 @@
 # sistema e um ambiente GTK limpo. Caso contrário, este hook não faz nada e o
 # AppRun segue com o WebKit embutido.
 #
-# Forçar o embutido:  PRISMBI_USE_BUNDLED_WEBKIT=1 ./PrismBI.AppImage
+# Forçar o embutido:  VETROBI_USE_BUNDLED_WEBKIT=1 ./VetroBI.AppImage
 #
 # Este arquivo é "sourced" pelo AppRun ANTES do hook do GTK, então ainda não
 # há LD_LIBRARY_PATH/GTK_PATH apontando para dentro do AppImage.
 
-prismbi_try_system_webkit() {
-    [ "${PRISMBI_USE_BUNDLED_WEBKIT:-0}" = "1" ] && return 0
+vetrobi_try_system_webkit() {
+    [ "${VETROBI_USE_BUNDLED_WEBKIT:-${PRISMBI_USE_BUNDLED_WEBKIT:-0}}" = "1" ] && return 0
 
     local appdir="${APPDIR:-$this_dir}"
-    local bin="$appdir/usr/bin/prismbi"
+    local bin="$appdir/usr/bin/vetrobi"
     [ -x "$bin" ] || return 0
 
     local sys_proc=""
@@ -51,7 +51,7 @@ prismbi_try_system_webkit() {
         return 0
     fi
 
-    export PRISMBI_WEBKIT_SOURCE="system:$sys_proc"
+    export VETROBI_WEBKIT_SOURCE="system:$sys_proc"
     exec env -u LD_PRELOAD \
         -u GTK_PATH -u GTK_EXE_PREFIX -u GTK_DATA_PREFIX -u GTK_THEME \
         -u GTK_IM_MODULE_FILE -u GDK_PIXBUF_MODULE_FILE -u GIO_MODULE_DIR \
@@ -60,5 +60,5 @@ prismbi_try_system_webkit() {
         "$bin" "$@"
 }
 
-prismbi_try_system_webkit "$@"
-export PRISMBI_WEBKIT_SOURCE="bundled"
+vetrobi_try_system_webkit "$@"
+export VETROBI_WEBKIT_SOURCE="bundled"

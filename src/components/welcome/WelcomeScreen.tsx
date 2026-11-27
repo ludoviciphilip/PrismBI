@@ -133,11 +133,11 @@ export const WelcomeScreen: React.FC = () => {
       {/* Top Bar */}
       <header className="w-full px-8 py-4 flex items-center justify-between border-b border-slate-200 dark:border-slate-800/80 bg-white/80 dark:bg-slate-900/70 backdrop-blur-xs">
         <div className="flex items-center gap-3">
-          <img src="/icon.png" alt="PrismBI" className="w-9 h-9 rounded-lg shadow-sm" />
+          <img src="/icon.png" alt="VetroBI" className="w-9 h-9 rounded-lg shadow-sm" />
           <div>
             <div className="flex items-center gap-2">
               <span className="font-extrabold text-base tracking-tight text-slate-900 dark:text-white">
-                PrismBI
+                VetroBI
               </span>
               <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-[10px] font-mono font-bold">
                 v{APP_VERSION}
@@ -183,7 +183,7 @@ export const WelcomeScreen: React.FC = () => {
         <div className="max-w-4xl w-full space-y-8">
           <div className="text-center space-y-2">
             <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">
-              Bem-vindo ao PrismBI
+              Bem-vindo ao VetroBI
             </h1>
             <p className="text-xs md:text-sm text-slate-500 dark:text-slate-400 max-w-xl mx-auto">
               Escolha começar um modelo em branco ou abrir um projeto Power BI (<code className="font-mono">.pbip</code> /{' '}

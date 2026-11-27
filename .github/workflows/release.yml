@@ -72,7 +72,7 @@ jobs:
           for f in src-tauri/target/release/bundle/appimage/*.AppImage; do
             APPIMAGE_EXTRACT_AND_RUN=1 scripts/appimage-postprocess.sh "$f" "$RUNNER_TEMP/appimagetool"
             # Sanidade: o hook precisa estar dentro do AppImage final.
-            (cd "$RUNNER_TEMP" && rm -rf squashfs-root && APPIMAGE_EXTRACT_AND_RUN=1 "$GITHUB_WORKSPACE/$f" --appimage-extract AppRun >/dev/null && grep -q 00-prismbi-system-webkit.sh squashfs-root/AppRun)
+            (cd "$RUNNER_TEMP" && rm -rf squashfs-root && APPIMAGE_EXTRACT_AND_RUN=1 "$GITHUB_WORKSPACE/$f" --appimage-extract AppRun >/dev/null && grep -q 00-vetrobi-system-webkit.sh squashfs-root/AppRun)
           done
 
       - name: Collect Linux release artifacts
@@ -127,7 +127,7 @@ jobs:
       - name: Build Tauri bundle (MSI)
         # v0.10.0: bundle.windows.wix.language agora é só "pt-BR" (era
         # ["pt-BR", "en-US"]), então este passo gera UM único
-        # PrismBI_<versão>_x64_pt-BR.msi, não mais dois instaladores por
+        # VetroBI_<versão>_x64_pt-BR.msi, não mais dois instaladores por
         # release. O app tem i18n próprio, então o idioma do instalador
         # importa pouco; o updater (src-tauri/src/updater.rs) espera esse
         # nome exato.
@@ -144,10 +144,10 @@ jobs:
           $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
           $portableDir = "portable-staging"
           New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
-          Copy-Item src-tauri/target/release/prismbi.exe -Destination $portableDir/prismbi.exe
+          Copy-Item src-tauri/target/release/vetrobi.exe -Destination $portableDir/vetrobi.exe
 
-          $zipName = "PrismBI_${version}_x64-portable.zip"
-          Compress-Archive -Path "$portableDir/prismbi.exe" -DestinationPath "release-assets-windows/$zipName" -Force
+          $zipName = "VetroBI_${version}_x64-portable.zip"
+          Compress-Archive -Path "$portableDir/vetrobi.exe" -DestinationPath "release-assets-windows/$zipName" -Force
 
           Get-ChildItem release-assets-windows
 
@@ -182,16 +182,16 @@ jobs:
       # Sem o secret a release falha aqui, em vez de publicar sem assinatura.
       - name: Sign SHA256SUMS.txt (Ed25519)
         env:
-          PRISMBI_UPDATE_SIGNING_KEY: ${{ secrets.PRISMBI_UPDATE_SIGNING_KEY }}
+          VETROBI_UPDATE_SIGNING_KEY: ${{ secrets.VETROBI_UPDATE_SIGNING_KEY || secrets.PRISMBI_UPDATE_SIGNING_KEY }}
           EXPECTED_PUBKEY_HEX: efbc7fdbf5234578df4e71300a8e6d16fc6f518b075e6357c4c2b4ee17a2a3f6
         run: |
-          if [ -z "$PRISMBI_UPDATE_SIGNING_KEY" ]; then
-            echo "::error::Secret PRISMBI_UPDATE_SIGNING_KEY ausente: releases sem assinatura não são instaláveis pelo updater."
+          if [ -z "$VETROBI_UPDATE_SIGNING_KEY" ]; then
+            echo "::error::Secret VETROBI_UPDATE_SIGNING_KEY ausente: releases sem assinatura não são instaláveis pelo updater."
             exit 1
           fi
           umask 077
           key="$RUNNER_TEMP/update-signing.pem"
-          printf '%s\n' "$PRISMBI_UPDATE_SIGNING_KEY" > "$key"
+          printf '%s\n' "$VETROBI_UPDATE_SIGNING_KEY" > "$key"
           actual=$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n')
           if [ "$actual" != "$EXPECTED_PUBKEY_HEX" ]; then
             echo "::error::A chave do secret não corresponde à chave pública embutida no app."

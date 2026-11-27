@@ -275,7 +275,7 @@ impl ConnectionManager {
             return execute_select_query(&conn, &cfg.build_parquet_select(Some(limit))?).map(Into::into);
         }
         let (alias, _) = self.get_alias(connection_id)?;
-        let wrapped = format!("SELECT * FROM ({}) AS _prismbi_preview LIMIT {}", sql, limit);
+        let wrapped = format!("SELECT * FROM ({}) AS _vetrobi_preview LIMIT {}", sql, limit);
         with_default_catalog(&conn, &alias, |c| execute_select_query(c, &wrapped)).map(Into::into)
     }
 

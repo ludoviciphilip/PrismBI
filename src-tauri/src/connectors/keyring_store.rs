@@ -8,7 +8,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-pub const KEYRING_SERVICE: &str = "dev.prismbi.app";
+pub const KEYRING_SERVICE: &str = "dev.vetrobi.app";
+const LEGACY_KEYRING_SERVICE: &str = "dev.prismbi.app";
 
 /// Abstração sobre o armazenamento de segredos, indexado por uma chave
 /// lógica (`connection_id`, ou `"ai:gemini"` para a chave de IA).
@@ -35,6 +36,11 @@ impl NativeKeyringStore {
         keyring::Entry::new(KEYRING_SERVICE, key)
             .map_err(|e| format!("Falha ao acessar o chaveiro do sistema: {}", e))
     }
+
+    fn legacy_entry(&self, key: &str) -> Result<keyring::Entry, String> {
+        keyring::Entry::new(LEGACY_KEYRING_SERVICE, key)
+            .map_err(|e| format!("Falha ao acessar o chaveiro do sistema: {}", e))
+    }
 }
 
 impl Default for NativeKeyringStore {
@@ -53,13 +59,21 @@ impl CredentialStore for NativeKeyringStore {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
         match self.entry(key)?.get_password() {
             Ok(pw) => Ok(Some(pw)),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(keyring::Error::NoEntry) => match self.legacy_entry(key)?.get_password() {
+                Ok(pw) => Ok(Some(pw)),
+                Err(keyring::Error::NoEntry) => Ok(None),
+                Err(e) => Err(format!("Falha ao ler credencial do chaveiro: {}", e)),
+            },
             Err(e) => Err(format!("Falha ao ler credencial do chaveiro: {}", e)),
         }
     }
 
     fn delete(&self, key: &str) -> Result<(), String> {
         match self.entry(key)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => return Err(format!("Falha ao remover credencial do chaveiro: {}", e)),
+        }
+        match self.legacy_entry(key)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(format!("Falha ao remover credencial do chaveiro: {}", e)),
         }
@@ -153,7 +167,7 @@ mod tests {
     #[ignore = "requer chaveiro nativo do SO, indisponível em CI headless"]
     fn native_keyring_store_roundtrip_against_real_os_keyring() {
         let store = NativeKeyringStore::new();
-        let key = "prismbi-test-key-connectors-v080";
+        let key = "vetrobi-test-key-connectors-v080";
         store.set(key, "integration-secret").unwrap();
         assert_eq!(store.get(key).unwrap().as_deref(), Some("integration-secret"));
         store.delete(key).unwrap();

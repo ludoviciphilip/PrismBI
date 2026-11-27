@@ -5,8 +5,8 @@
 //! não podem voltar a falhar. Para registrar casos novos que passaram:
 //! `UPDATE_DAX_BASELINE=1 cargo test --test dax_corpus`.
 
-use prismbi_lib::dax::functions::{civil_to_days, days_to_civil};
-use prismbi_lib::dax::{
+use vetrobi_lib::dax::functions::{civil_to_days, days_to_civil};
+use vetrobi_lib::dax::{
     build_filter_context, DaxMeasureInput, DaxModel, DaxModelSyncPayload, DaxRelationshipInput,
     DaxTableInput, DaxValue, NativeFilterInput,
 };

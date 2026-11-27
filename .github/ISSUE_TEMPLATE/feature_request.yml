@@ -1,5 +1,5 @@
 name: ✨ Feature request / Sugestão
-description: Suggest a Power BI feature PrismBI should support / Sugira um recurso
+description: Suggest a Power BI feature VetroBI should support / Sugira um recurso
 labels: [enhancement]
 body:
   - type: textarea

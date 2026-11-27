@@ -300,7 +300,7 @@ export function computeFormatForValue(format: ConditionalFormat, value: unknown,
  * Converte a formatação condicional lida do PBIR (ver
  * `PbiConditionalFormatMeta` em src/bridge/tauriBridge.ts, espelhando
  * `PbiConditionalFormatMeta` em src-tauri/src/pbi/mod.rs) para
- * `ConditionalFormat[]` do modelo PrismBI. Usado pelo importador (ex.:
+ * `ConditionalFormat[]` do modelo VetroBI. Usado pelo importador (ex.:
  * PowerBiImportModal.tsx) ao montar `VisualFormatConfig.conditionalFormats`.
  */
 export function conditionalFormatsFromPbiMeta(
@@ -395,7 +395,7 @@ export function conditionalFormatsFromPbiMeta(
 
 /**
  * Inverso de `conditionalFormatsFromPbiMeta`: achata `ConditionalFormat[]`
- * do modelo PrismBI para o formato que `ExportCondFormatPayload`
+ * do modelo VetroBI para o formato que `ExportCondFormatPayload`
  * (src-tauri/src/pbi/pbip_writer.rs) grava no PBIR. Usado pelo exportador
  * `.pbip` (`handleExportPbip` em Ribbon.tsx). `basedOn` não é exportável
  * (o PBIR não representa "cor calculada a partir de outro campo" para um

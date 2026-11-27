@@ -12,8 +12,8 @@ body:
   - type: textarea
     id: values
     attributes:
-      label: Expected (Power BI) vs PrismBI
-      description: Filters/slicers active, the value in Power BI Desktop and the value in PrismBI.
+      label: Expected (Power BI) vs VetroBI
+      description: Filters/slicers active, the value in Power BI Desktop and the value in VetroBI.
     validations:
       required: true
   - type: textarea

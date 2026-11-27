@@ -418,7 +418,7 @@ pub fn execute_visual_query(
 
 /// Valor impossível usado quando o caminho de drill não casa com nada (um
 /// filtro com conjunto vazio seria ignorado por `build_filter_context`).
-const NO_MATCH_SENTINEL: &str = "\u{0}__prismbi_drill_no_match__";
+const NO_MATCH_SENTINEL: &str = "\u{0}__vetrobi_drill_no_match__";
 const MAX_MATRIX_NODES: usize = 50_000;
 const MAX_LEVEL_CATEGORIES: usize = 10_000;
 

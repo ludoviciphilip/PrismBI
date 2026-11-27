@@ -151,10 +151,10 @@ pub struct PbiVisualMeta {
     pub text_content: Option<String>,
     #[serde(default)]
     pub filters: Vec<PbiFilterMeta>,
-    /// Primary sort field from PBIR `query.sortDefinition` (PrismBI `dataConfig.sortField`).
+    /// Primary sort field from PBIR `query.sortDefinition` (VetroBI `dataConfig.sortField`).
     #[serde(default)]
     pub sort_field: Option<String>,
-    /// "asc" | "desc" (PrismBI `dataConfig.sortOrder`).
+    /// "asc" | "desc" (VetroBI `dataConfig.sortOrder`).
     #[serde(default)]
     pub sort_order: Option<String>,
     /// v0.10 Frente B: formatação condicional (gradiente/regras/barras) lida de `objects`.

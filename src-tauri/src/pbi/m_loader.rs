@@ -699,7 +699,7 @@ pub fn resolve_source_path(raw_path: &str, pbip_root: &Path) -> Option<PathBuf> 
     }
 
     // Handle Windows / RDP \\tsclient\Linux\... paths -> $HOME/... (only
-    // meaningful when PrismBI itself is running on Linux/RDP).
+    // meaningful when VetroBI itself is running on Linux/RDP).
     #[cfg(unix)]
     let lower_norm = normalized.to_lowercase();
     #[cfg(unix)]

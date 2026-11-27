@@ -1,16 +1,16 @@
 <div align="center">
 
-<img src="./src-tauri/icons/128x128.png" width="96" height="96" alt="PrismBI" />
+<img src="./src-tauri/icons/128x128.png" width="96" height="96" alt="VetroBI" />
 
-# PrismBI
+# VetroBI
 
 **Open-source Power BI alternative for Linux & Windows — a native, lightweight BI desktop app that opens Power BI (`.pbip` / `.pbix`) projects, with a Rust DAX engine, a visual Power Query editor, and DuckDB**
 
 🇺🇸 **English** • 🇧🇷 [Ler em Português](./README.pt-BR.md)
 
 [![Version](https://img.shields.io/badge/version-0.10.0-f59e0b?style=flat-square)](./package.json)
-[![CI](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/ci.yml)
-[![Release](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml/badge.svg)](https://github.com/ludoviciphilip/PrismBI/actions/workflows/release.yml)
+[![CI](https://github.com/ludoviciphilip/VetroBI/actions/workflows/ci.yml/badge.svg)](https://github.com/ludoviciphilip/VetroBI/actions/workflows/ci.yml)
+[![Release](https://github.com/ludoviciphilip/VetroBI/actions/workflows/release.yml/badge.svg)](https://github.com/ludoviciphilip/VetroBI/actions/workflows/release.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 [![Rust](https://img.shields.io/badge/Rust-DAX_Engine-000000?style=flat-square&logo=rust&logoColor=white)](./src-tauri)
 [![DuckDB](https://img.shields.io/badge/DuckDB-Embedded-FFF000?style=flat-square&logo=duckdb&logoColor=black)](https://duckdb.org/)
@@ -22,7 +22,7 @@
 
 ---
 
-**PrismBI** was built to solve one of the biggest daily bottlenecks for Power BI users on Linux (and, since `v0.9.1`, Windows x64 too): analyzing semantic models, reports, and dashboards with the same fluidity and familiarity as **Power BI Desktop**, without relying on heavy Windows virtual machines or an online tenant.
+**VetroBI** was built to solve one of the biggest daily bottlenecks for Power BI users on Linux (and, since `v0.9.1`, Windows x64 too): analyzing semantic models, reports, and dashboards with the same fluidity and familiarity as **Power BI Desktop**, without relying on heavy Windows virtual machines or an online tenant.
 
 Powered by **Tauri v2 + Rust + DuckDB** on the backend and **React + TypeScript + Apache ECharts** on the frontend, it delivers fast startup, low memory usage, and native GTK/WebKitGTK performance.
 
@@ -34,13 +34,13 @@ Powered by **Tauri v2 + Rust + DuckDB** on the backend and **React + TypeScript 
 
 | Dark Mode | Light Mode |
 | :---: | :---: |
-| ![PrismBI Report View Dark Mode](./docs/images/report-dark.png) | ![PrismBI Report View Light Mode](./docs/images/report-light.png) |
+| ![VetroBI Report View Dark Mode](./docs/images/report-dark.png) | ![VetroBI Report View Light Mode](./docs/images/report-light.png) |
 
 ### Semantic Model (Star Schema) & DAX Queries
 
 | Semantic Model & Relationships | DAX Query Studio |
 | :---: | :---: |
-| ![PrismBI Semantic Model View](./docs/images/model-view.png) | ![PrismBI DAX Query View](./docs/images/dax-query.png) |
+| ![VetroBI Semantic Model View](./docs/images/model-view.png) | ![VetroBI DAX Query View](./docs/images/dax-query.png) |
 
 ---
 
@@ -48,7 +48,7 @@ Powered by **Tauri v2 + Rust + DuckDB** on the backend and **React + TypeScript 
 
 ### 📂 Power BI Compatibility (`.pbip` / `.pbix`)
 - **Native Rust Import:** direct reading of `.pbip` folders (`*.SemanticModel` in **TMDL** format + `*.Report` in **PBIR** format) and `.pbix` files (`DataModelSchema`, UTF-16LE `Report/Layout`, and multi-query `DataMashup` extraction).
-- **`.pbip` Round-Trip (`v0.6.0`):** export preserving Power Query (`M`) scripts, `columnCount` in multi-row cards, `advancedSlicerVisual` (`tiles`), `textbox`, `actionButton`, titles, page/visual `filterConfig`, and themes (`PrismTheme.json`), alongside `.insight` snapshots and PDF export.
+- **`.pbip` Round-Trip (`v0.6.0`):** export preserving Power Query (`M`) scripts, `columnCount` in multi-row cards, `advancedSlicerVisual` (`tiles`), `textbox`, `actionButton`, titles, page/visual `filterConfig`, and themes (`VetroTheme.json`), alongside `.insight` snapshots and PDF export.
 - **PBIR Fidelity:** accurate resolution of renamed measures (`field.*.Property`), multi-row card grids, page/visual filters, date hierarchies, action buttons, and rich textboxes.
 
 ### 📊 Interactive Visuals Catalog
@@ -77,7 +77,7 @@ Powered by **Tauri v2 + Rust + DuckDB** on the backend and **React + TypeScript 
 
 ### 🛠️ Productivity, Welcome Screen & Distribution
 - **Welcome Screen & In-App Auto-Updater:** start a blank model or open `.pbip`, `.pbix`, `.insight`, and recent sessions at launch, with a built-in **GitHub Releases auto-updater** and SHA-256 + Ed25519 signature verification (in-place replacement for **AppImage**, direct download for `.deb`/`.rpm`, `msiexec /passive` for the Windows **`.msi`**, and a manual download for the Windows portable ZIP).
-- **GitHub Actions CI/CD:** automated Linux (**AppImage**, **`.deb`**, **`.rpm`**) and Windows x64 (**`.msi`** + portable **`.zip`**) release builds, published together under one signed `SHA256SUMS.txt`, plus packaging manifests in `packaging/` for **AUR (`prismbi-bin`)** and **Flatpak**.
+- **GitHub Actions CI/CD:** automated Linux (**AppImage**, **`.deb`**, **`.rpm`**) and Windows x64 (**`.msi`** + portable **`.zip`**) release builds, published together under one signed `SHA256SUMS.txt`, plus packaging manifests in `packaging/` for **AUR (`vetrobi-bin`)** and **Flatpak**.
 - **Pro Canvas Editing:** **Undo / Redo** (`Ctrl+Z`, `Ctrl+Y`, and Ribbon controls), **multi-select** (`Shift`/`Ctrl` + click, group drag, arrow-key nudge, `Delete`, and floating alignment/distribution toolbar), and **60fps Smart Snap Guides**.
 - **Data & Model Views:** tabular data inspector, relationship manager with auto-detection, and Calendar Table generator.
 - **Quick Measures & UDF Library:** quick measure wizard, visual sorting ("Sort by", table/matrix headers, slicers), and DAX editor with IntelliSense.
@@ -101,9 +101,9 @@ Powered by **Tauri v2 + Rust + DuckDB** on the backend and **React + TypeScript 
 ## 🚀 Installation & Running
 
 ### Pre-built Packages
-Download the latest package directly from [GitHub Releases](https://github.com/ludoviciphilip/PrismBI/releases):
+Download the latest package directly from [GitHub Releases](https://github.com/ludoviciphilip/VetroBI/releases):
 - **Linux:** **AppImage**, **`.deb`**, or **`.rpm`**.
-- **Windows x64:** the **`.msi`** installer (recommended — enables the in-app auto-updater) or a **portable `.zip`** (unzip and run `prismbi.exe`, no installation/admin rights required, updates must be downloaded manually). Since `v0.10.0` the installer is a single `pt-BR` MSI (`PrismBI_<version>_x64_pt-BR.msi`) — `tauri-bundler`/WiX builds one installer per configured language, and the app has its own in-app i18n (language switcher), so the installer's language hardly matters; one build keeps the release and the auto-updater deterministic (see [Known Gaps](#known-gaps)).
+- **Windows x64:** the **`.msi`** installer (recommended — enables the in-app auto-updater) or a **portable `.zip`** (unzip and run `vetrobi.exe`, no installation/admin rights required, updates must be downloaded manually). Since `v0.10.0` the installer is a single `pt-BR` MSI (`VetroBI_<version>_x64_pt-BR.msi`) — `tauri-bundler`/WiX builds one installer per configured language, and the app has its own in-app i18n (language switcher), so the installer's language hardly matters; one build keeps the release and the auto-updater deterministic (see [Known Gaps](#known-gaps)).
 
 > **Windows SmartScreen:** the binary isn't code-signed yet (see [Known Gaps](#known-gaps) below), so Windows may show *"Windows protected your PC"* on first run. Click **More info → Run anyway** to proceed. This is expected and does not mean the installer is unsafe — see the signed `SHA256SUMS.txt` published with every release.
 
@@ -141,7 +141,7 @@ pnpm tauri build --bundles msi
 
 ## 🐧 Linux NVIDIA + Wayland Tips
 
-By default, PrismBI uses WebKitGTK hardware acceleration (DMA-BUF) for smooth canvas rendering. If you run proprietary NVIDIA drivers on Wayland and see a blank window or explicit sync errors on launch, start PrismBI with:
+By default, VetroBI uses WebKitGTK hardware acceleration (DMA-BUF) for smooth canvas rendering. If you run proprietary NVIDIA drivers on Wayland and see a blank window or explicit sync errors on launch, start VetroBI with:
 
 ```bash
 __NV_DISABLE_EXPLICIT_SYNC=1 pnpm tauri dev
@@ -155,7 +155,7 @@ GDK_BACKEND=x11 pnpm tauri dev
 WEBKIT_DISABLE_DMABUF_RENDERER=1 pnpm tauri dev
 ```
 
-**AppImage and system WebKitGTK:** the AppImage automatically uses the system `webkit2gtk-4.1` when it is compatible (much smoother canvas than the older bundled one). Force the bundled engine with `PRISMBI_USE_BUNDLED_WEBKIT=1 ./PrismBI.AppImage`. On Arch, prefer the AUR package `prismbi-bin`, which always uses the system WebKitGTK.
+**AppImage and system WebKitGTK:** the AppImage automatically uses the system `webkit2gtk-4.1` when it is compatible (much smoother canvas than the older bundled one). Force the bundled engine with `VETROBI_USE_BUNDLED_WEBKIT=1 ./VetroBI.AppImage`. On Arch, prefer the AUR package `vetrobi-bin`, which always uses the system WebKitGTK.
 
 ---
 
@@ -167,5 +167,5 @@ WEBKIT_DISABLE_DMABUF_RENDERER=1 pnpm tauri dev
 ## 🗺️ Roadmap & License
 
 - Check upcoming milestones (`v0.8.0` to `v1.0.0`) in [ROADMAP.md](./ROADMAP.md).
-- PrismBI is an independent project, not affiliated with or endorsed by Microsoft. Power BI is a trademark of Microsoft Corporation.
+- VetroBI is an independent project, not affiliated with or endorsed by Microsoft. Power BI is a trademark of Microsoft Corporation.
 - Distributed under [The Mutualist License v1.3](./LICENSE.md) — originally inspired by the UI and DAX engine of [InsightHub](https://github.com/ludoviciphilip/Insight-Hub).

@@ -3646,30 +3646,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 
 [[package]]
-name = "prismbi"
-version = "0.10.0"
-dependencies = [
- "calamine",
- "chrono",
- "dirs",
- "duckdb",
- "ed25519-dalek",
- "encoding_rs",
- "keyring",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tempfile",
- "ureq",
- "uuid",
- "walkdir",
- "zip 2.6.1",
-]
-
-[[package]]
 name = "proc-macro-crate"
 version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5522,6 +5498,30 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vetrobi"
+version = "0.10.0"
+dependencies = [
+ "calamine",
+ "chrono",
+ "dirs",
+ "duckdb",
+ "ed25519-dalek",
+ "encoding_rs",
+ "keyring",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tempfile",
+ "ureq",
+ "uuid",
+ "walkdir",
+ "zip 2.6.1",
+]
 
 [[package]]
 name = "vswhom"

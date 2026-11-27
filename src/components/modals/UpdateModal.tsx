@@ -47,7 +47,7 @@ export const UpdateModal: React.FC = () => {
     setInstallResult(null);
     try {
       if (!isTauriRuntime()) {
-        setError('A verificação nativa de atualizações requer o app desktop PrismBI (Tauri). No navegador, acesse o GitHub Releases.');
+        setError('A verificação nativa de atualizações requer o app desktop VetroBI (Tauri). No navegador, acesse o GitHub Releases.');
         return;
       }
       const res = await checkForUpdatesNative(APP_VERSION);
@@ -97,7 +97,7 @@ export const UpdateModal: React.FC = () => {
             </div>
             <div>
               <h3 className="font-bold text-slate-900 dark:text-slate-100 text-sm">
-                Atualizações do PrismBI
+                Atualizações do VetroBI
               </h3>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
                 Versão instalada: <strong className="font-mono">v{APP_VERSION}</strong>
@@ -193,7 +193,7 @@ export const UpdateModal: React.FC = () => {
         {/* Footer */}
         <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
           <a
-            href={availableUpdate?.releaseUrl || 'https://github.com/ludoviciphilip/PrismBI/releases'}
+            href={availableUpdate?.releaseUrl || 'https://github.com/ludoviciphilip/VetroBI/releases'}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1 text-slate-500 hover:text-amber-600 dark:text-slate-400 dark:hover:text-amber-400 font-medium"

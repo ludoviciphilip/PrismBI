@@ -32,7 +32,7 @@ fn classify_install_appimage_and_flatpak_take_priority() {
         InstallKind::AppImage
     );
     assert_eq!(
-        classify_install(None, Some("org.prismbi.App"), None, &|_| false),
+        classify_install(None, Some("dev.vetrobi.app"), None, &|_| false),
         InstallKind::Managed
     );
     // Empty env values must not count as "set".
@@ -42,14 +42,14 @@ fn classify_install_appimage_and_flatpak_take_priority() {
 #[test]
 fn classify_install_outside_system_dirs_is_unknown() {
     use std::path::Path;
-    let exe = Path::new("/home/user/apps/prismbi");
+    let exe = Path::new("/home/user/apps/vetrobi");
     assert_eq!(classify_install(None, None, Some(exe), &|_| false), InstallKind::Unknown);
 }
 
 #[test]
 fn classify_install_pacman_takes_priority_over_deb_markers() {
     use std::path::Path;
-    let exe = Path::new("/usr/bin/prismbi");
+    let exe = Path::new("/usr/bin/vetrobi");
     let kind = classify_install(None, None, Some(exe), &|p| {
         p == "/var/lib/pacman/local" || p == "/etc/debian_version"
     });
@@ -59,7 +59,7 @@ fn classify_install_pacman_takes_priority_over_deb_markers() {
 #[test]
 fn classify_install_deb_and_rpm_markers() {
     use std::path::Path;
-    let exe = Path::new("/usr/bin/prismbi");
+    let exe = Path::new("/usr/bin/vetrobi");
     let deb = classify_install(None, None, Some(exe), &|p| p == "/etc/debian_version");
     assert_eq!(deb, InstallKind::Deb);
     let rpm = classify_install(None, None, Some(exe), &|p| p == "/etc/fedora-release");
@@ -71,13 +71,13 @@ fn classify_install_windows_msi_vs_portable() {
     use std::path::Path;
     let program_dirs = ["C:\\Program Files"];
     let msi = classify_install_windows(
-        Some(Path::new("C:\\Program Files\\PrismBI\\prismbi.exe")),
+        Some(Path::new("C:\\Program Files\\VetroBI\\vetrobi.exe")),
         &program_dirs,
         None,
     );
     assert_eq!(msi, InstallKind::MsiInstalled);
     let portable = classify_install_windows(
-        Some(Path::new("D:\\Downloads\\prismbi.exe")),
+        Some(Path::new("D:\\Downloads\\vetrobi.exe")),
         &program_dirs,
         None,
     );
@@ -90,7 +90,7 @@ fn classify_install_windows_msi_vs_portable() {
 fn classify_install_windows_local_appdata_programs() {
     use std::path::Path;
     let msi = classify_install_windows(
-        Some(Path::new("C:\\Users\\bob\\AppData\\Local\\Programs\\PrismBI\\prismbi.exe")),
+        Some(Path::new("C:\\Users\\bob\\AppData\\Local\\Programs\\VetroBI\\vetrobi.exe")),
         &[],
         Some("C:\\Users\\bob\\AppData\\Local\\Programs"),
     );
@@ -99,13 +99,13 @@ fn classify_install_windows_local_appdata_programs() {
 
 #[test]
 fn parse_sha256sums_matches_exact_and_wildcard_prefixed_names() {
-    let body = "deadbeef0000000000000000000000000000000000000000000000000000beef  PrismBI-0.9.0.AppImage\nabc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd *PrismBI.deb\n";
-    let h1 = parse_sha256sums(body, "PrismBI-0.9.0.AppImage");
+    let body = "deadbeef0000000000000000000000000000000000000000000000000000beef  VetroBI-0.9.0.AppImage\nabc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd *VetroBI.deb\n";
+    let h1 = parse_sha256sums(body, "VetroBI-0.9.0.AppImage");
     assert_eq!(
         h1.as_deref(),
         Some("deadbeef0000000000000000000000000000000000000000000000000000beef")
     );
-    let h2 = parse_sha256sums(body, "PrismBI.deb");
+    let h2 = parse_sha256sums(body, "VetroBI.deb");
     assert_eq!(
         h2.as_deref(),
         Some("abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd")
@@ -129,18 +129,18 @@ fn parse_sha256sums_rejects_short_or_non_hex_and_missing_name() {
 #[test]
 fn is_trusted_download_url_enforces_exact_prefix_and_no_traversal() {
     assert!(is_trusted_download_url(
-        "https://github.com/ludoviciphilip/PrismBI/releases/download/v0.9.0/PrismBI.AppImage"
+        "https://github.com/ludoviciphilip/VetroBI/releases/download/v0.9.0/VetroBI.AppImage"
     ));
-    assert!(!is_trusted_download_url("https://evil.example.com/PrismBI.AppImage"));
+    assert!(!is_trusted_download_url("https://evil.example.com/VetroBI.AppImage"));
     assert!(!is_trusted_download_url(
-        "https://github.com/ludoviciphilip/PrismBI/releases/download/../../etc/passwd"
+        "https://github.com/ludoviciphilip/VetroBI/releases/download/../../etc/passwd"
     ));
     assert!(!is_trusted_download_url(
-        "https://github.com/ludoviciphilip/PrismBI/releases/download/v0.9.0/http://evil.com"
+        "https://github.com/ludoviciphilip/VetroBI/releases/download/v0.9.0/http://evil.com"
     ));
     // Exactly the prefix with nothing after it is not trusted (no asset name).
     assert!(!is_trusted_download_url(
-        "https://github.com/ludoviciphilip/PrismBI/releases/download/"
+        "https://github.com/ludoviciphilip/VetroBI/releases/download/"
     ));
 }
 
@@ -175,7 +175,7 @@ fn evaluate_release_managed_install_is_blocked_before_touching_assets() {
     let v = evaluate_release(
         true,
         InstallKind::Managed,
-        Some(("PrismBI.AppImage", "https://example.com/x")),
+        Some(("VetroBI.AppImage", "https://example.com/x")),
         None,
         None,
         "deadbeef",
@@ -193,11 +193,11 @@ fn evaluate_release_missing_asset_for_install_kind_is_blocked() {
 
 #[test]
 fn evaluate_release_unsigned_sums_is_blocked_even_with_matching_sha() {
-    let body = "deadbeef0000000000000000000000000000000000000000000000000000beef  PrismBI.AppImage\n";
+    let body = "deadbeef0000000000000000000000000000000000000000000000000000beef  VetroBI.AppImage\n";
     let v = evaluate_release(
         true,
         InstallKind::AppImage,
-        Some(("PrismBI.AppImage", "https://github.com/ludoviciphilip/PrismBI/releases/download/v1/PrismBI.AppImage")),
+        Some(("VetroBI.AppImage", "https://github.com/ludoviciphilip/VetroBI/releases/download/v1/VetroBI.AppImage")),
         Some(body),
         None, // no signature at all
         "deadbeef",
@@ -214,10 +214,10 @@ fn evaluate_release_untrusted_url_blocks_even_with_matching_hash() {
     // and untrusted-url paths independently via the lower-level helpers
     // already covered above; evaluate_release's full happy path needs a
     // live Ed25519 keypair and is exercised by updater.rs's own tests.
-    let body = "deadbeef0000000000000000000000000000000000000000000000000000beef  PrismBI.AppImage\n";
+    let body = "deadbeef0000000000000000000000000000000000000000000000000000beef  VetroBI.AppImage\n";
     assert_eq!(
-        parse_sha256sums(body, "PrismBI.AppImage").as_deref(),
+        parse_sha256sums(body, "VetroBI.AppImage").as_deref(),
         Some("deadbeef0000000000000000000000000000000000000000000000000000beef")
     );
-    assert!(!is_trusted_download_url("https://evil.example.com/PrismBI.AppImage"));
+    assert!(!is_trusted_download_url("https://evil.example.com/VetroBI.AppImage"));
 }

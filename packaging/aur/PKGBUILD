@@ -4,20 +4,21 @@
 # de reempacotar o AppImage: o WebKitGTK embutido no AppImage (Ubuntu 22.04)
 # é antigo e deixa o canvas visivelmente mais lento em distros atuais.
 # Atualize pkgver/sha256sums com scripts/update-aur-pkgbuild.sh <versão>.
-pkgname=prismbi-bin
+pkgname=vetrobi-bin
 pkgver=0.10.0
 pkgrel=1
 pkgdesc="Open-source Power BI alternative: native BI desktop app that opens .pbip/.pbix, with a Rust DAX engine, Power Query editor and DuckDB"
 arch=('x86_64')
-url="https://github.com/ludoviciphilip/PrismBI"
+url="https://github.com/ludoviciphilip/VetroBI"
 license=("LicenseRef-Mutualist-1.3")
 depends=('webkit2gtk-4.1' 'gtk3' 'libsecret' 'hicolor-icon-theme')
-provides=('prismbi')
-conflicts=('prismbi')
+provides=('vetrobi')
+conflicts=('vetrobi' 'prismbi' 'prismbi-bin')
+replaces=('prismbi-bin')
 options=('!strip' '!debug')
-_deb="PrismBI_${pkgver}_amd64.deb"
+_deb="VetroBI_${pkgver}_amd64.deb"
 source=("${_deb}::${url}/releases/download/v${pkgver}/${_deb}"
-        "LICENSE.md::https://raw.githubusercontent.com/ludoviciphilip/PrismBI/v${pkgver}/LICENSE.md")
+        "LICENSE.md::https://raw.githubusercontent.com/ludoviciphilip/VetroBI/v${pkgver}/LICENSE.md")
 sha256sums=('b1916b3e643f414bb53260dcd2b78e3d148236fb02f871d862263ac3d44791b5'
             'a1938d74a10b43dce8fbf024ae18a2c074b8fa734f58be74e91a49a5a6047758')
 noextract=("${_deb}")
@@ -26,7 +27,7 @@ package() {
   cd "${srcdir}"
   bsdtar -xf "${_deb}" data.tar.gz
   bsdtar -xf data.tar.gz -C "${pkgdir}"
-  chmod 755 "${pkgdir}/usr/bin/prismbi"
+  chmod 755 "${pkgdir}/usr/bin/vetrobi"
   find "${pkgdir}/usr/share" -type d -exec chmod 755 {} +
   find "${pkgdir}/usr/share" -type f -exec chmod 644 {} +
   install -Dm644 "${srcdir}/LICENSE.md" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE.md"

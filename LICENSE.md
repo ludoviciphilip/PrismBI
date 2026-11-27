@@ -13,9 +13,9 @@ This license is not legal advice and does not create an attorney-client relation
 
 ## Credit
 
-**Name of this software:** PrismBI (derived from Insight Hub, https://github.com/ludoviciphilip/Insight-Hub)
+**Name of this software:** VetroBI (formerly PrismBI; derived from Insight Hub, https://github.com/ludoviciphilip/Insight-Hub)
 
-**Project home:** https://github.com/ludoviciphilip/PrismBI
+**Project home:** https://github.com/ludoviciphilip/VetroBI
 
 **Original copyright holder(s):** Luis Felipe de Almeida Vieira
 

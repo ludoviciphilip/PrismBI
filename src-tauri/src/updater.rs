@@ -2,8 +2,8 @@
 //!
 //! Modelo de confiança (v0.8):
 //! 1. O CI assina `SHA256SUMS.txt` com uma chave Ed25519 cuja parte privada
-//!    só existe no secret `PRISMBI_UPDATE_SIGNING_KEY`; a assinatura crua
-//!    (64 bytes) é publicada como `SHA256SUMS.txt.sig`.
+//!    só existe no secret `VETROBI_UPDATE_SIGNING_KEY` (ou legado `PRISMBI_UPDATE_SIGNING_KEY`);
+//!    a assinatura crua (64 bytes) é publicada como `SHA256SUMS.txt.sig`.
 //! 2. O app embute só a chave pública (`UPDATE_PUBLIC_KEY_HEX`) e verifica a
 //!    assinatura antes de confiar em qualquer hash.
 //! 3. O frontend nunca informa URL nem hash: `check_for_updates` guarda o
@@ -23,11 +23,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 const GITHUB_LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/ludoviciphilip/PrismBI/releases/latest";
+    "https://api.github.com/repos/ludoviciphilip/VetroBI/releases/latest";
 
 /// Prefixo obrigatório para qualquer binário baixado pelo updater.
 pub const TRUSTED_DOWNLOAD_PREFIX: &str =
-    "https://github.com/ludoviciphilip/PrismBI/releases/download/";
+    "https://github.com/ludoviciphilip/VetroBI/releases/download/";
 
 /// Chave pública Ed25519 (32 bytes, hex) que assina `SHA256SUMS.txt`.
 pub const UPDATE_PUBLIC_KEY_HEX: &str =
@@ -36,7 +36,7 @@ pub const UPDATE_PUBLIC_KEY_HEX: &str =
 const SUMS_ASSET: &str = "SHA256SUMS.txt";
 const SUMS_SIG_ASSET: &str = "SHA256SUMS.txt.sig";
 
-/// Como o PrismBI em execução foi instalado; decide qual pacote baixar e se
+/// Como o VetroBI em execução foi instalado; decide qual pacote baixar e se
 /// a substituição in-place é permitida.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -203,8 +203,11 @@ pub fn classify_install(
     if exists("/var/lib/pacman/local") {
         return InstallKind::Managed;
     }
-    // O pacote .deb gerado pelo Tauri se chama "prism-bi".
-    if exists("/var/lib/dpkg/info/prism-bi.list")
+    // O pacote .deb gerado pelo Tauri se chama "vetro-bi" / "vetrobi"
+    // (ou "prism-bi" / "prismbi" em versões anteriores à mudança de nome).
+    if exists("/var/lib/dpkg/info/vetro-bi.list")
+        || exists("/var/lib/dpkg/info/vetrobi.list")
+        || exists("/var/lib/dpkg/info/prism-bi.list")
         || exists("/var/lib/dpkg/info/prismbi.list")
         || exists("/etc/debian_version")
     {
@@ -256,7 +259,7 @@ fn extension_for(kind: InstallKind) -> Option<&'static str> {
 ///
 /// Before v0.10.0 `bundle.windows.wix.language` listed `["pt-BR", "en-US"]`,
 /// so `tauri-bundler` built TWO installers per release
-/// (`PrismBI_<ver>_x64_pt-BR.msi` and `PrismBI_<ver>_x64_en-US.msi`) and the
+/// (`VetroBI_<ver>_x64_pt-BR.msi` and `VetroBI_<ver>_x64_en-US.msi`) and the
 /// updater just grabbed "the first `.msi` it found" — not deterministic,
 /// and it could silently pick the wrong language's installer.
 ///
@@ -266,10 +269,10 @@ fn extension_for(kind: InstallKind) -> Option<&'static str> {
 pub const MSI_LANGUAGE: &str = "pt-BR";
 
 /// Exact filename tauri-bundler/WiX produces for the Windows MSI:
-/// `PrismBI_<version>_x64_<language>.msi`. `version` is the RELEASE's own
+/// `VetroBI_<version>_x64_<language>.msi`. `version` is the RELEASE's own
 /// version (the `latest_clean` tag), not the currently-running app version.
 pub fn expected_msi_name(version: &str, language: &str) -> String {
-    format!("PrismBI_{}_x64_{}.msi", version, language)
+    format!("VetroBI_{}_x64_{}.msi", version, language)
 }
 
 /// Picks the right asset for `kind`, deterministically — never "whatever
@@ -437,7 +440,7 @@ fn http_get_bytes(url: &str, user_agent: &str, limit: u64) -> Result<Vec<u8>, St
 pub fn check_for_updates(
     current_version: &str,
 ) -> Result<(UpdateCheckResult, Option<PendingUpdate>), String> {
-    let user_agent = format!("PrismBI/{}", current_version.trim());
+    let user_agent = format!("VetroBI/{}", current_version.trim());
     let body = ureq::get(GITHUB_LATEST_RELEASE_URL)
         .header("User-Agent", &user_agent)
         .header("Accept", "application/vnd.github+json")
@@ -511,7 +514,7 @@ pub fn check_for_updates(
 pub fn download_and_install_update(pending: &PendingUpdate) -> Result<UpdateInstallResult, String> {
     // Defesa em profundidade: o PendingUpdate já foi validado, mas revalida.
     if !is_trusted_download_url(&pending.download_url) {
-        return Err("URL de download fora das releases oficiais do PrismBI.".to_string());
+        return Err("URL de download fora das releases oficiais do VetroBI.".to_string());
     }
     let safe_name = Path::new(&pending.asset_name)
         .file_name()
@@ -522,7 +525,7 @@ pub fn download_and_install_update(pending: &PendingUpdate) -> Result<UpdateInst
 
     let bytes = http_get_bytes(
         &pending.download_url,
-        concat!("PrismBI-Updater/", env!("CARGO_PKG_VERSION")),
+        concat!("VetroBI-Updater/", env!("CARGO_PKG_VERSION")),
         512 * 1024 * 1024,
     )?;
 
@@ -549,7 +552,7 @@ pub fn download_and_install_update(pending: &PendingUpdate) -> Result<UpdateInst
                 installed: true,
                 needs_restart: true,
                 saved_path: Some(target_path.to_string_lossy().to_string()),
-                message: "Atualização aplicada ao AppImage com sucesso! Reinicie o PrismBI para carregar a nova versão.".to_string(),
+                message: "Atualização aplicada ao AppImage com sucesso! Reinicie o VetroBI para carregar a nova versão.".to_string(),
             });
         }
     }
@@ -570,7 +573,7 @@ pub fn download_and_install_update(pending: &PendingUpdate) -> Result<UpdateInst
             installed: true,
             needs_restart: true,
             saved_path: Some(msi_path.to_string_lossy().to_string()),
-            message: "Instalador iniciado (msiexec /passive). O PrismBI será fechado para concluir a atualização.".to_string(),
+            message: "Instalador iniciado (msiexec /passive). O VetroBI será fechado para concluir a atualização.".to_string(),
         });
     }
 
@@ -663,16 +666,16 @@ mod tests {
 
     #[test]
     fn trusted_url_allowlist() {
-        assert!(is_trusted_download_url(&trusted("PrismBI_0.8.0_amd64.AppImage")));
-        assert!(!is_trusted_download_url("https://evil.example/PrismBI.AppImage"));
+        assert!(is_trusted_download_url(&trusted("VetroBI_0.8.0_amd64.AppImage")));
+        assert!(!is_trusted_download_url("https://evil.example/VetroBI.AppImage"));
         assert!(!is_trusted_download_url(
-            "https://github.com/ludoviciphilip/PrismBI-fork/releases/download/x/a"
+            "https://github.com/ludoviciphilip/VetroBI-fork/releases/download/x/a"
         ));
         assert!(!is_trusted_download_url(
-            "https://github.com/ludoviciphilip/PrismBI/releases/download/../../evil/a"
+            "https://github.com/ludoviciphilip/VetroBI/releases/download/../../evil/a"
         ));
         assert!(!is_trusted_download_url(
-            "http://github.com/ludoviciphilip/PrismBI/releases/download/v1/a"
+            "http://github.com/ludoviciphilip/VetroBI/releases/download/v1/a"
         ));
         assert!(!is_trusted_download_url(TRUSTED_DOWNLOAD_PREFIX));
     }
@@ -680,11 +683,11 @@ mod tests {
     #[test]
     fn pick_asset_matches_install_kind() {
         let assets = vec![
-            asset("PrismBI_0.8.0_amd64.deb"),
-            asset("PrismBI_0.8.0_amd64.AppImage"),
-            asset("PrismBI-0.8.0-1.x86_64.rpm"),
-            asset("PrismBI_0.9.1_x64_pt-BR.msi"),
-            asset("PrismBI_0.9.1_x64-portable.zip"),
+            asset("VetroBI_0.8.0_amd64.deb"),
+            asset("VetroBI_0.8.0_amd64.AppImage"),
+            asset("VetroBI-0.8.0-1.x86_64.rpm"),
+            asset("VetroBI_0.9.1_x64_pt-BR.msi"),
+            asset("VetroBI_0.9.1_x64-portable.zip"),
         ];
         let pick = |k| pick_asset(&assets, k, "0.9.1").map(|a| a.name.clone());
         assert!(pick(InstallKind::AppImage).unwrap().ends_with(".AppImage"));
@@ -702,11 +705,11 @@ mod tests {
     #[test]
     fn pick_asset_msi_new_single_language_name() {
         let assets = vec![
-            asset("PrismBI_0.10.0_x64_pt-BR.msi"),
-            asset("PrismBI_0.10.0_x64-portable.zip"),
+            asset("VetroBI_0.10.0_x64_pt-BR.msi"),
+            asset("VetroBI_0.10.0_x64-portable.zip"),
         ];
         let picked = pick_asset(&assets, InstallKind::MsiInstalled, "0.10.0").unwrap();
-        assert_eq!(picked.name, "PrismBI_0.10.0_x64_pt-BR.msi");
+        assert_eq!(picked.name, "VetroBI_0.10.0_x64_pt-BR.msi");
     }
 
     /// Releases antigas (pré-v0.10.0): `wix.language = ["pt-BR", "en-US"]` gerava
@@ -717,18 +720,18 @@ mod tests {
     fn pick_asset_msi_old_two_language_release_is_deterministic() {
         // Ordem 1: en-US primeiro.
         let assets_a = vec![
-            asset("PrismBI_0.9.1_x64_en-US.msi"),
-            asset("PrismBI_0.9.1_x64_pt-BR.msi"),
+            asset("VetroBI_0.9.1_x64_en-US.msi"),
+            asset("VetroBI_0.9.1_x64_pt-BR.msi"),
         ];
         // Ordem 2: pt-BR primeiro (mesmos assets, ordem trocada).
         let assets_b = vec![
-            asset("PrismBI_0.9.1_x64_pt-BR.msi"),
-            asset("PrismBI_0.9.1_x64_en-US.msi"),
+            asset("VetroBI_0.9.1_x64_pt-BR.msi"),
+            asset("VetroBI_0.9.1_x64_en-US.msi"),
         ];
         let picked_a = pick_asset(&assets_a, InstallKind::MsiInstalled, "0.9.1").unwrap();
         let picked_b = pick_asset(&assets_b, InstallKind::MsiInstalled, "0.9.1").unwrap();
-        assert_eq!(picked_a.name, "PrismBI_0.9.1_x64_pt-BR.msi");
-        assert_eq!(picked_b.name, "PrismBI_0.9.1_x64_pt-BR.msi");
+        assert_eq!(picked_a.name, "VetroBI_0.9.1_x64_pt-BR.msi");
+        assert_eq!(picked_b.name, "VetroBI_0.9.1_x64_pt-BR.msi");
     }
 
     /// Se por algum motivo só existir o en-US (sem pt-BR), ainda assim escolhe
@@ -736,40 +739,40 @@ mod tests {
     #[test]
     fn pick_asset_msi_falls_back_to_alphabetically_first_when_preferred_language_absent() {
         let assets = vec![
-            asset("PrismBI_0.9.1_x64_fr-FR.msi"),
-            asset("PrismBI_0.9.1_x64_en-US.msi"),
+            asset("VetroBI_0.9.1_x64_fr-FR.msi"),
+            asset("VetroBI_0.9.1_x64_en-US.msi"),
         ];
         let picked = pick_asset(&assets, InstallKind::MsiInstalled, "0.9.1").unwrap();
-        assert_eq!(picked.name, "PrismBI_0.9.1_x64_en-US.msi");
+        assert_eq!(picked.name, "VetroBI_0.9.1_x64_en-US.msi");
     }
 
     /// Portable ZIP continua escolhido por sufixo "-portable.zip", sem MSI no caminho.
     #[test]
     fn pick_asset_portable_zip_ignores_msi_assets() {
         let assets = vec![
-            asset("PrismBI_0.10.0_x64_pt-BR.msi"),
-            asset("PrismBI_0.10.0_x64-portable.zip"),
+            asset("VetroBI_0.10.0_x64_pt-BR.msi"),
+            asset("VetroBI_0.10.0_x64-portable.zip"),
         ];
         let picked = pick_asset(&assets, InstallKind::Portable, "0.10.0").unwrap();
-        assert_eq!(picked.name, "PrismBI_0.10.0_x64-portable.zip");
+        assert_eq!(picked.name, "VetroBI_0.10.0_x64-portable.zip");
     }
 
     #[test]
     fn expected_msi_name_matches_tauri_bundler_wix_output_pattern() {
-        assert_eq!(expected_msi_name("0.10.0", "pt-BR"), "PrismBI_0.10.0_x64_pt-BR.msi");
+        assert_eq!(expected_msi_name("0.10.0", "pt-BR"), "VetroBI_0.10.0_x64_pt-BR.msi");
         assert_eq!(MSI_LANGUAGE, "pt-BR");
     }
 
     #[test]
     fn classify_install_kinds() {
         let none = |_: &str| false;
-        let usr = Path::new("/usr/bin/prismbi");
+        let usr = Path::new("/usr/bin/vetrobi");
         assert_eq!(
-            classify_install(Some("/home/u/P.AppImage"), None, Some(usr), &none),
+            classify_install(Some("/home/u/V.AppImage"), None, Some(usr), &none),
             InstallKind::AppImage
         );
         assert_eq!(
-            classify_install(None, Some("dev.prismbi.app"), Some(usr), &none),
+            classify_install(None, Some("dev.vetrobi.app"), Some(usr), &none),
             InstallKind::Managed
         );
         assert_eq!(
@@ -781,6 +784,10 @@ mod tests {
             InstallKind::Deb
         );
         assert_eq!(
+            classify_install(None, None, Some(usr), &|p| p == "/var/lib/dpkg/info/vetro-bi.list"),
+            InstallKind::Deb
+        );
+        assert_eq!(
             classify_install(None, None, Some(usr), &|p| p == "/var/lib/dpkg/info/prism-bi.list"),
             InstallKind::Deb
         );
@@ -789,7 +796,7 @@ mod tests {
             InstallKind::Rpm
         );
         assert_eq!(
-            classify_install(None, None, Some(Path::new("/home/u/dev/target/debug/prismbi")), &|_| true),
+            classify_install(None, None, Some(Path::new("/home/u/dev/target/debug/vetrobi")), &|_| true),
             InstallKind::Unknown
         );
     }
@@ -801,27 +808,27 @@ mod tests {
         let local_appdata_programs = r"C:\Users\ana\AppData\Local\Programs";
         let dirs = [program_files, program_files_x86];
 
-        let msi_exe = Path::new(r"C:\Program Files\PrismBI\prismbi.exe");
+        let msi_exe = Path::new(r"C:\Program Files\VetroBI\vetrobi.exe");
         assert_eq!(
             classify_install_windows(Some(msi_exe), &dirs, Some(local_appdata_programs)),
             InstallKind::MsiInstalled
         );
 
         let msi_exe_localappdata =
-            Path::new(r"C:\Users\ana\AppData\Local\Programs\PrismBI\prismbi.exe");
+            Path::new(r"C:\Users\ana\AppData\Local\Programs\VetroBI\vetrobi.exe");
         assert_eq!(
             classify_install_windows(Some(msi_exe_localappdata), &dirs, Some(local_appdata_programs)),
             InstallKind::MsiInstalled
         );
 
         // Case-insensitive, e com '/' em vez de '\\'.
-        let msi_exe_mixed_case = Path::new(r"c:/program files/PrismBI/prismbi.exe");
+        let msi_exe_mixed_case = Path::new(r"c:/program files/VetroBI/vetrobi.exe");
         assert_eq!(
             classify_install_windows(Some(msi_exe_mixed_case), &dirs, Some(local_appdata_programs)),
             InstallKind::MsiInstalled
         );
 
-        let portable_exe = Path::new(r"D:\Downloads\PrismBI\prismbi.exe");
+        let portable_exe = Path::new(r"D:\Downloads\VetroBI\vetrobi.exe");
         assert_eq!(
             classify_install_windows(Some(portable_exe), &dirs, Some(local_appdata_programs)),
             InstallKind::Portable
@@ -837,11 +844,11 @@ mod tests {
     fn test_parse_sha256sums() {
         let sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let body = format!(
-            "{}  PrismBI_0.7.0_amd64.deb\n\n{}  dist/PrismBI_0.7.0_amd64.AppImage\n",
+            "{}  VetroBI_0.7.0_amd64.deb\n\n{}  dist/VetroBI_0.7.0_amd64.AppImage\n",
             "0".repeat(64),
             sha
         );
-        assert_eq!(parse_sha256sums(&body, "PrismBI_0.7.0_amd64.AppImage"), Some(sha.to_string()));
+        assert_eq!(parse_sha256sums(&body, "VetroBI_0.7.0_amd64.AppImage"), Some(sha.to_string()));
         assert_eq!(parse_sha256sums(&body, "missing.rpm"), None);
     }
 

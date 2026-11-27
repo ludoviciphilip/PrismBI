@@ -77,12 +77,15 @@ export interface RecentProjectEntry {
   openedAt: string;
 }
 
-const RECENT_PROJECTS_KEY = 'prismbi_recent_projects';
+const RECENT_PROJECTS_KEY = 'vetrobi_recent_projects';
+const LEGACY_RECENT_PROJECTS_KEY = 'prismbi_recent_projects';
 
 function loadRecentProjects(): RecentProjectEntry[] {
   try {
     if (typeof localStorage === 'undefined') return [];
-    const raw = localStorage.getItem(RECENT_PROJECTS_KEY);
+    const raw =
+      localStorage.getItem(RECENT_PROJECTS_KEY) ??
+      localStorage.getItem(LEGACY_RECENT_PROJECTS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.slice(0, 8) : [];
@@ -3124,7 +3127,7 @@ export const useBiStore = create<BiState>((set, get) => {
       const sample = getSampleDatasets();
       const shouldRestoreVisuals = get().pages.every(p => p.visuals.length === 0);
       set(s => ({
-        projectName: shouldRestoreVisuals ? 'PrismBI Demo — Varejo Brasil' : s.projectName,
+        projectName: shouldRestoreVisuals ? 'VetroBI Demo — Varejo Brasil' : s.projectName,
         tables: sample.tables,
         relationships: sample.relationships,
         measures: sample.measures,

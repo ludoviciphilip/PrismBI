@@ -495,7 +495,7 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
 }
 
 /// Reads the first entry of PBIR `visual.query.sortDefinition.sort` into a
-/// PrismBI (sortField, sortOrder) pair. Column fields that match the visual's
+/// VetroBI (sortField, sortOrder) pair. Column fields that match the visual's
 /// category keep its (possibly table-qualified) name; measures stay bare.
 fn extract_pbir_sort_definition(
     visual_obj: &JsonValue,
@@ -829,7 +829,7 @@ fn parse_pbir_data_bars(node: &JsonValue, apply_to: &str) -> Option<PbiCondition
 
 /// Infere o conjunto de ícones (`'arrows' | 'traffic' | 'flags'`) a partir
 /// do nome literal do ícone PBIR (ex.: `'ArrowsIcon0'`, `'TrafficIcon2'`,
-/// `'FlagsIcon1'`). O PrismBI escreve esses nomes no exportador
+/// `'FlagsIcon1'`). O VetroBI escreve esses nomes no exportador
 /// (`pbip_writer::icon_literal_for_rule`); nomes reais do Power BI Desktop
 /// (ex.: `'SymbolMedium'`) não identificam o conjunto de forma confiável —
 /// nesse caso cai no padrão `'arrows'`.

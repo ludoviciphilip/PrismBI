@@ -68,20 +68,20 @@ jobs:
       - name: Connector integration tests (live PostgreSQL + MariaDB services)
         working-directory: src-tauri
         env:
-          PRISMBI_TEST_PG_HOST: 127.0.0.1
-          PRISMBI_TEST_PG_PORT: 5432
-          PRISMBI_TEST_PG_USER: postgres
-          PRISMBI_TEST_PG_PASSWORD: "p'w d"
-          PRISMBI_TEST_PG_DB: loja
-          PRISMBI_TEST_MYSQL_HOST: 127.0.0.1
-          PRISMBI_TEST_MYSQL_PORT: 3306
-          PRISMBI_TEST_MYSQL_USER: app
-          PRISMBI_TEST_MYSQL_PASSWORD: "s3c'ret"
-          PRISMBI_TEST_MYSQL_DB: loja
+          VETROBI_TEST_PG_HOST: 127.0.0.1
+          VETROBI_TEST_PG_PORT: 5432
+          VETROBI_TEST_PG_USER: postgres
+          VETROBI_TEST_PG_PASSWORD: "p'w d"
+          VETROBI_TEST_PG_DB: loja
+          VETROBI_TEST_MYSQL_HOST: 127.0.0.1
+          VETROBI_TEST_MYSQL_PORT: 3306
+          VETROBI_TEST_MYSQL_USER: app
+          VETROBI_TEST_MYSQL_PASSWORD: "s3c'ret"
+          VETROBI_TEST_MYSQL_DB: loja
         run: |
           sudo apt-get install -y postgresql-client mariadb-client
-          PGPASSWORD="$PRISMBI_TEST_PG_PASSWORD" psql -h 127.0.0.1 -U postgres -d loja -c "CREATE SCHEMA vendas; CREATE TABLE vendas.pedidos (id int, cliente text, valor numeric(10,2)); INSERT INTO vendas.pedidos VALUES (1,'Ana',10.50),(2,'Bruno',20),(3,'Ana',5.25);"
-          mariadb -h 127.0.0.1 -P 3306 -uapp "-p$PRISMBI_TEST_MYSQL_PASSWORD" loja -e "CREATE TABLE pedidos (id int, cliente varchar(20), valor decimal(10,2)); INSERT INTO pedidos VALUES (1,'Ana',10.50),(2,'Bruno',20),(3,'Ana',5.25);"
+          PGPASSWORD="$VETROBI_TEST_PG_PASSWORD" psql -h 127.0.0.1 -U postgres -d loja -c "CREATE SCHEMA vendas; CREATE TABLE vendas.pedidos (id int, cliente text, valor numeric(10,2)); INSERT INTO vendas.pedidos VALUES (1,'Ana',10.50),(2,'Bruno',20),(3,'Ana',5.25);"
+          mariadb -h 127.0.0.1 -P 3306 -uapp "-p$VETROBI_TEST_MYSQL_PASSWORD" loja -e "CREATE TABLE pedidos (id int, cliente varchar(20), valor decimal(10,2)); INSERT INTO pedidos VALUES (1,'Ana',10.50),(2,'Bruno',20),(3,'Ana',5.25);"
           cargo test --test connectors_duckdb_sqlite -- --include-ignored
 
       - name: Verify Tauri binary compilation

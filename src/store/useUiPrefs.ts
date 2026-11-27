@@ -89,8 +89,22 @@ export const useUiPrefs = create<UiPrefsState>()(
       },
     }),
     {
-      name: 'prismbi.ui',
-      storage: createJSONStorage(() => localStorage),
+      name: 'vetrobi.ui',
+      storage: createJSONStorage(() => ({
+        getItem: (key: string) =>
+          typeof localStorage === 'undefined'
+            ? null
+            : localStorage.getItem(key) ?? localStorage.getItem('prismbi.ui'),
+        setItem: (key: string, value: string) => {
+          if (typeof localStorage !== 'undefined') localStorage.setItem(key, value);
+        },
+        removeItem: (key: string) => {
+          if (typeof localStorage !== 'undefined') {
+            localStorage.removeItem(key);
+            localStorage.removeItem('prismbi.ui');
+          }
+        },
+      })),
       version: 2,
       // v0.10: panes persisted before "bookmarks"/"selection" existed won't
       // have those keys; backfill them (hidden by default) instead of

@@ -554,5 +554,5 @@ pub fn run() {
             etl::commands::etl_step_m,
         ])
         .run(tauri::generate_context!())
-        .expect("Erro ao executar PrismBI");
+        .expect("Erro ao executar VetroBI");
 }

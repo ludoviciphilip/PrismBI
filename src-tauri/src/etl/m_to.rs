@@ -496,12 +496,12 @@ pub fn m_step_expr(kind: &StepKind, prev: &str) -> Result<String, String> {
         StepKind::RemoveAlternateRows { offset, remove, keep } => {
             format!("Table.AlternateRows({},{},{},{})", prev, offset, remove, keep)
         }
-        // Forma canônica do PrismBI (não existe equivalente nativo no Power Query):
-        // uma pseudo-função no mesmo estilo de `PrismBI.DbTable`, reconhecida só
+        // Forma canônica do VetroBI (não existe equivalente nativo no Power Query):
+        // uma pseudo-função no mesmo estilo de `VetroBI.DbTable`, reconhecida só
         // pelo nosso `etl_from_m`. Ver docs/ETL_V09.md.
         StepKind::KeepDuplicates { columns } => match columns {
-            Some(cols) => format!("PrismBI.KeepDuplicates({}, {})", prev, m_text_list(cols)),
-            None => format!("PrismBI.KeepDuplicates({})", prev),
+            Some(cols) => format!("VetroBI.KeepDuplicates({}, {})", prev, m_text_list(cols)),
+            None => format!("VetroBI.KeepDuplicates({})", prev),
         },
         StepKind::ReplaceErrors { replacements } => format!(
             "Table.ReplaceErrorValues({},{{{}}})",
@@ -585,7 +585,7 @@ fn source_bindings(source: &EtlSource, avoid: &HashSet<String>) -> Result<Vec<(S
         )],
         SourceKind::Db => {
             let t = source.table.as_deref().ok_or("fonte 'db' sem 'table'")?;
-            vec![(src_name, format!("PrismBI.DbTable({})", quote_m_string(t)))]
+            vec![(src_name, format!("VetroBI.DbTable({})", quote_m_string(t)))]
         }
         SourceKind::Table => {
             let t = source.table.as_deref().ok_or("fonte 'table' sem 'table'")?;

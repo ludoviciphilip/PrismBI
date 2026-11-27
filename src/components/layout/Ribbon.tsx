@@ -245,7 +245,7 @@ export const Ribbon: React.FC<{
 
   const handleExportPbip = async () => {
     if (!isTauriRuntime()) {
-      alert('Exportação para pasta .pbip requer o app desktop PrismBI (Tauri).');
+      alert('Exportação para pasta .pbip requer o app desktop VetroBI (Tauri).');
       return;
     }
     const folder = await pickFolderDialog('Selecione a pasta para salvar o projeto .pbip');
@@ -283,7 +283,7 @@ export const Ribbon: React.FC<{
 
     try {
       const savedPath = await savePbipProject(folder, {
-        projectName: state.projectName || projectName || 'PrismBI',
+        projectName: state.projectName || projectName || 'VetroBI',
         tables: state.tables.map(t => ({
           name: t.name,
           isHidden: t.isHidden,
@@ -358,7 +358,7 @@ export const Ribbon: React.FC<{
             matrixRowFields: v.dataConfig.matrixRowFields ?? [],
           })),
         })),
-        themeName: state.activeThemeId || theme || 'PrismTheme',
+        themeName: state.activeThemeId || theme || 'VetroTheme',
         themePalette: activePalette,
         // v0.10 Frente H: indicadores (bookmarks) no formato PBIR, round-trip .pbip.
         bookmarks: (state.bookmarks || []).map((bm: any) => ({
@@ -426,8 +426,8 @@ export const Ribbon: React.FC<{
       <div className="flex items-center justify-between px-3 py-1 bg-slate-900 text-white text-xs">
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1.5 font-bold tracking-wide text-amber-400">
-            <img src="/icon.png" alt="PrismBI" className="w-4 h-4 rounded-xs" />
-            <span>PrismBI</span>
+            <img src="/icon.png" alt="VetroBI" className="w-4 h-4 rounded-xs" />
+            <span>VetroBI</span>
             {isTauriRuntime() && (
               <span className="ml-1 px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[9px] font-semibold">
                 DuckDB Nativo
