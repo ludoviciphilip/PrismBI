@@ -671,7 +671,10 @@ export const DaxQueryView: React.FC = () => {
                   <div className="flex-1 flex flex-col overflow-hidden bg-white dark:bg-transparent">
                     {/* Paginated Grid */}
                     <div className="flex-1 overflow-auto">
-                      <table className="w-full text-left text-xs border-collapse">
+                      {/* Largura pelo conteúdo (como a grade do DAX Query View do Power BI):
+                          com w-full e poucas colunas, a 1ª coluna esticava pela tela toda e
+                          empurrava as demais (o valor de "T" ficava fora da área visível). */}
+                      <table className="w-auto text-left text-xs border-collapse">
                         <thead className="bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-10">
                           <tr>
                             <th className="py-2 px-3 text-[11px] text-slate-500 font-mono w-12 border-r border-slate-200 dark:border-slate-800/60">
@@ -680,7 +683,7 @@ export const DaxQueryView: React.FC = () => {
                             {activeTableResult.columns.map((col: string) => (
                               <th
                                 key={col}
-                                className="py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold font-mono text-xs border-r border-slate-200 dark:border-slate-800/60 truncate"
+                                className="py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold font-mono text-xs border-r border-slate-200 dark:border-slate-800/60 whitespace-nowrap min-w-[8rem]"
                               >
                                 {col}
                               </th>
@@ -702,7 +705,7 @@ export const DaxQueryView: React.FC = () => {
                                   return (
                                     <td
                                       key={col}
-                                      className={`py-1.5 px-3 font-mono text-xs border-r border-slate-200 dark:border-slate-800/60 truncate ${
+                                      className={`py-1.5 px-3 font-mono text-xs border-r border-slate-200 dark:border-slate-800/60 whitespace-nowrap ${
                                         isNum ? 'text-right text-emerald-700 dark:text-emerald-300' : 'text-slate-800 dark:text-slate-300'
                                       }`}
                                     >
