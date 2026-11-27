@@ -830,7 +830,7 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     duckdb_table: None,
                     name: "d_Produto".into(),
                     columns: vec!["ProdutoID".into(), "Produto".into(), "Categoria".into()],
@@ -843,7 +843,7 @@ mod tests {
                     column_types: vec![],
                     sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     duckdb_table: None,
                     name: "d_Cliente".into(),
                     columns: vec!["ClienteID".into(), "Cliente".into()],
@@ -855,7 +855,7 @@ mod tests {
                     column_types: vec![],
                     sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     duckdb_table: None,
                     name: "f_Vendas".into(),
                     // (ProdutoID, ClienteID): (1,1)x2, (1,2), (2,1), (2,2)x2, (4,1) — a

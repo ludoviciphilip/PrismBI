@@ -171,6 +171,7 @@ fn build_model(m: &CorpusModel) -> DaxModel {
             };
             DaxTableInput {
                 duckdb_table: None,
+                column_format_strings: Default::default(),
                 name: t.name.clone(),
                 columns,
                 rows,

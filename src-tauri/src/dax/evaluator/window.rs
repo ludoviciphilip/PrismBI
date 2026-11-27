@@ -1104,7 +1104,7 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     name: "d_Produto".into(),
                     columns: vec!["ProdutoID".into(), "Produto".into(), "Categoria".into(), "Preco".into()],
                     rows: vec![
@@ -1118,7 +1118,7 @@ mod tests {
                     column_types: vec![],
                     sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     name: "d_Mes".into(),
                     columns: vec!["MesNum".into(), "Mes".into()],
                     rows: vec![
@@ -1130,7 +1130,7 @@ mod tests {
                     column_types: vec![],
                     sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     name: "f_Vendas".into(),
                     columns: vec!["VendaID".into(), "ProdutoID".into(), "MesNum".into(), "Valor".into()],
                     rows: vec![
@@ -1425,7 +1425,7 @@ mod tests {
         let mut model = DaxModel::new();
         let rows: Vec<_> = (1..=n).map(|i| bench_row(i, n)).collect();
         model.sync_from_payload(DaxModelSyncPayload {
-            tables: vec![DaxTableInput {
+            tables: vec![DaxTableInput { column_format_strings: Default::default(),
                 name: "big".into(),
                 columns: vec!["ID".into(), "Valor".into()],
                 rows,

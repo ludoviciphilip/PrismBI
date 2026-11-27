@@ -84,7 +84,7 @@ fn rhino_remove_steps_apply_then_refresh_all_returns() {
             .loaded_tables
             .iter()
             .filter(|t| t.table_name != "dCalendario")
-            .map(|t| DaxTableInput { duckdb_table: None,
+            .map(|t| DaxTableInput { column_format_strings: Default::default(), duckdb_table: None,
                 name: t.table_name.clone(),
                 columns: t.columns.iter().map(|c| c.name.clone()).collect(),
                 rows: t.rows.clone(),
@@ -92,7 +92,7 @@ fn rhino_remove_steps_apply_then_refresh_all_returns() {
                 sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
             })
             .collect();
-        tables.push(DaxTableInput { duckdb_table: None,
+        tables.push(DaxTableInput { column_format_strings: Default::default(), duckdb_table: None,
             name: "dCalendario".into(),
             columns: applied.columns.iter().map(|c| c.name.clone()).collect(),
             rows: applied.rows.clone(),

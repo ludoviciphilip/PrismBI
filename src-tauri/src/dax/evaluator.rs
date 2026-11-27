@@ -460,10 +460,10 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "fLançamentos".into(), columns: vec!["Data".into(), "Valor".into(), "Categoria".into(), "Tipo".into()], rows: f_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dCategorias".into(), columns: vec!["Categoria".into(), "Grupo DRE".into(), "DRE".into()], rows: cat_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dEstrutura".into(), columns: vec!["Linha".into(), "Ordem".into()], rows: est_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dCalendario".into(), columns: vec!["Data".into(), "Mês".into()], rows: cal_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "fLançamentos".into(), columns: vec!["Data".into(), "Valor".into(), "Categoria".into(), "Tipo".into()], rows: f_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dCategorias".into(), columns: vec!["Categoria".into(), "Grupo DRE".into(), "DRE".into()], rows: cat_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dEstrutura".into(), columns: vec!["Linha".into(), "Ordem".into()], rows: est_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dCalendario".into(), columns: vec!["Data".into(), "Mês".into()], rows: cal_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
             ],
             relationships: vec![
                 DaxRelationshipInput {
@@ -537,7 +537,7 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dCal".into(),
                     columns: vec!["Data".into()],
                     rows: vec![
@@ -548,7 +548,7 @@ mod tests {
                         make_cal_row("2026-03-05"),
                     ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fVendas".into(),
                     columns: vec!["Data".into(), "Valor".into()],
                     rows: vec![
@@ -646,7 +646,7 @@ mod tests {
         let tables_input: Vec<DaxTableInput> = summary
             .loaded_tables
             .iter()
-            .map(|t| DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+            .map(|t| DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                 name: t.table_name.clone(),
                 columns: t.columns.iter().map(|c| c.name.clone()).collect(),
                 rows: t.rows.clone(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
@@ -795,12 +795,12 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dCalendario".into(),
                     columns: vec!["Data".into(), "Mês/Ano".into()],
                     rows: cal_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fLanc".into(),
                     columns: vec!["Data".into(), "Valor".into()],
                     rows: fact_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
@@ -875,7 +875,7 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dCal".into(),
                     columns: vec!["Data".into(), "Ano".into(), "Mes".into()],
                     rows: vec![
@@ -884,7 +884,7 @@ mod tests {
                         cal_row("2026-03-20", 2026, 3),
                     ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fVendas".into(),
                     columns: vec!["Data".into(), "Valor".into()],
                     rows: vec![
@@ -893,7 +893,7 @@ mod tests {
                         sale_row("2026-03-20", 65606.32),
                     ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fAberturas".into(),
                     columns: vec!["Data".into(), "Saldo".into()],
                     // Only day 1 of month exists in fAberturas
@@ -938,7 +938,7 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dCal".into(),
                     columns: vec!["Data".into(), "Trimestre".into()],
                     rows: vec![
@@ -948,7 +948,7 @@ mod tests {
                         serde_json::from_value(json!({"Data": "2026-04-30", "Trimestre": "T2"})).unwrap(),
                     ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dClientes".into(),
                     columns: vec!["Id".into(), "Nome".into()],
                     rows: vec![
@@ -956,7 +956,7 @@ mod tests {
                         serde_json::from_value(json!({"Id": 2, "Nome": "Beta"})).unwrap(),
                     ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fPedidos".into(),
                     columns: vec!["DataPedido".into(), "DataEntrega".into(), "ClienteId".into(), "Valor".into()],
                     rows: vec![
@@ -1065,7 +1065,7 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "f".into(),
                     columns: vec!["ProdID".into(), "Valor".into()],
                     rows: rows(json!([
@@ -1073,7 +1073,7 @@ mod tests {
                         {"ProdID": 2, "Valor": 20}, {"ProdID": 3, "Valor": 40}
                     ])), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "p".into(),
                     columns: vec!["ProdID".into(), "Cat".into(), "GrupoID".into(), "Preco".into()],
                     rows: rows(json!([
@@ -1082,7 +1082,7 @@ mod tests {
                         {"ProdID": 3, "Cat": "B", "GrupoID": 2, "Preco": 2}
                     ])), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "g".into(),
                     columns: vec!["GrupoID".into(), "Grupo".into()],
                     rows: rows(json!([{"GrupoID": 1, "Grupo": "G1"}, {"GrupoID": 2, "Grupo": "G2"}])), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
@@ -1258,7 +1258,7 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fVendas".into(),
                     columns: vec!["Cat".into(), "Valor".into()],
                     rows: vec![
@@ -1267,7 +1267,7 @@ mod tests {
                         serde_json::json!({"Cat": "C", "Valor": 400}).as_object().unwrap().clone(),
                     ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dGrupo".into(),
                     columns: vec!["Nome".into()],
                     rows: vec![
@@ -1334,7 +1334,7 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     duckdb_table: None,
                     column_types: vec![Some("text".into()), Some("date".into()), Some("number".into())],
                     sort_by_columns: Default::default(),

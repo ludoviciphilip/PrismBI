@@ -751,6 +751,16 @@ pub struct DaxTableInput {
     /// `calculated::materialize_calculated_columns`.
     #[serde(default)]
     pub calculated_columns: HashMap<String, String>,
+    /// v0.11 Rodada 2 Frente F (DAX Query View bugfix): lowercased column
+    /// name -> the model's TMDL `formatString` for that column (e.g.
+    /// `dCalendario[Ano]` -> `"0"`). Lets a `SUMMARIZECOLUMNS` group-by
+    /// column keep the model's own number format instead of the UI
+    /// guessing generic grouping for every numeric cell (see
+    /// `query_view::qexec::DaxQueryColumn::format_string`). Absent/unknown
+    /// columns simply have no entry — callers must treat a miss as "no
+    /// explicit format, fall back to the type default".
+    #[serde(default)]
+    pub column_format_strings: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -899,6 +909,9 @@ pub struct DaxModel {
     /// entry here, which is exactly the signal `pushdown` needs to bail out
     /// to the DAX engine (no physical table to push SQL down to).
     duckdb_table_names: HashMap<String, String>,
+    /// v0.11 Rodada 2 Frente F: table_key (lowercase) -> col_key (lowercase)
+    /// -> TMDL `formatString`, carried over from `DaxTableInput::column_format_strings`.
+    column_format_strings: HashMap<String, HashMap<String, String>>,
 }
 
 impl Default for DaxModel {
@@ -918,6 +931,7 @@ impl DaxModel {
             calculated_columns: HashMap::new(),
             calculated_errors: HashMap::new(),
             duckdb_table_names: HashMap::new(),
+            column_format_strings: HashMap::new(),
         }
     }
 
@@ -966,10 +980,17 @@ impl DaxModel {
         // calculated) that has calculated columns.
         let mut calc_column_inputs: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut new_duckdb_names = HashMap::new();
+        let mut new_format_strings: HashMap<String, HashMap<String, String>> = HashMap::new();
         for t in payload.tables {
             let key = t.name.to_lowercase();
             if let Some(duckdb_name) = &t.duckdb_table {
                 new_duckdb_names.insert(key.clone(), duckdb_name.clone());
+            }
+            if !t.column_format_strings.is_empty() {
+                new_format_strings.insert(
+                    key.clone(),
+                    t.column_format_strings.iter().map(|(c, f)| (c.to_lowercase(), f.clone())).collect(),
+                );
             }
             if !t.calculated_columns.is_empty() {
                 calc_column_inputs.insert(
@@ -1029,6 +1050,7 @@ impl DaxModel {
         self.key_cache = new_key_cache;
         self.duckdb_table_versions = new_versions;
         self.duckdb_table_names = new_duckdb_names;
+        self.column_format_strings = new_format_strings;
         self.relationships = payload.relationships;
         self.measures.clear();
         for m in payload.measures {
@@ -1069,6 +1091,17 @@ impl DaxModel {
     pub fn duckdb_table_name(&self, dax_table: &str) -> Option<&str> {
         self.duckdb_table_names
             .get(&dax_table.trim().to_lowercase())
+            .map(String::as_str)
+    }
+
+    /// v0.11 Rodada 2 Frente F: the model's TMDL `formatString` for
+    /// `table[column]`, if the importer captured one. `None` means "no
+    /// explicit format" (caller falls back to the column's `ColumnType`
+    /// default), not "format with an empty string".
+    pub fn column_format_string(&self, table: &str, column: &str) -> Option<&str> {
+        self.column_format_strings
+            .get(&table.trim().to_lowercase())?
+            .get(&column.trim().to_lowercase())
             .map(String::as_str)
     }
 
@@ -1470,14 +1503,14 @@ mod propagation_tests {
         let mut m = DaxModel::new();
         m.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None,
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None,
                     name: "d_Categoria".into(),
                     columns: vec!["CatID".into(), "Nome".into()],
                     rows: rows(&["CatID", "Nome"], &[&[json!(1), json!("A")], &[json!(2), json!("B")]]),
                     column_types: vec![],
                     sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None,
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None,
                     name: "d_Produto".into(),
                     columns: vec!["ProdID".into(), "CatID".into(), "Cor".into()],
                     rows: rows(
@@ -1491,7 +1524,7 @@ mod propagation_tests {
                     column_types: vec![],
                     sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None,
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None,
                     name: "f_Vendas".into(),
                     columns: vec!["ProdID".into(), "Valor".into()],
                     rows: rows(
@@ -1586,10 +1619,10 @@ mod bench_tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, name: "Dim1".into(), columns: vec!["Id".into(), "Grupo1".into()], rows: dim_rows("Grupo1"), column_types: vec![], sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
-                DaxTableInput { duckdb_table: None, name: "Dim2".into(), columns: vec!["Id".into(), "Grupo2".into()], rows: dim_rows("Grupo2"), column_types: vec![], sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
-                DaxTableInput { duckdb_table: None, name: "Dim3".into(), columns: vec!["Id".into(), "Grupo3".into()], rows: dim_rows("Grupo3"), column_types: vec![], sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
-                DaxTableInput { duckdb_table: None,
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, name: "Dim1".into(), columns: vec!["Id".into(), "Grupo1".into()], rows: dim_rows("Grupo1"), column_types: vec![], sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, name: "Dim2".into(), columns: vec!["Id".into(), "Grupo2".into()], rows: dim_rows("Grupo2"), column_types: vec![], sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, name: "Dim3".into(), columns: vec!["Id".into(), "Grupo3".into()], rows: dim_rows("Grupo3"), column_types: vec![], sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None,
                     name: "Fato".into(),
                     columns: vec!["Dim1Id".into(), "Dim2Id".into(), "Dim3Id".into(), "Valor".into()],
                     rows: fact_rows,
