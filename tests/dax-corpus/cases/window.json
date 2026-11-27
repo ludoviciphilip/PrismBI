@@ -1,118 +1,157 @@
 {
   "model": "vendas",
   "category": "window",
-  "description": "Funções de tabela e janela no motor Rust (CALENDAR, CALENDARAUTO, SUMMARIZECOLUMNS, OFFSET, INDEX, WINDOW, RANK, ROWNUMBER). Valores conferidos manualmente sobre models/vendas.json.",
+  "description": "Funções de tabela e janela no motor Rust (CALENDAR, CALENDARAUTO, SUMMARIZECOLUMNS, OFFSET, INDEX, WINDOW, RANK, ROWNUMBER). Valores conferidos contra um oráculo Python independente em oracles/window.py (sem reusar nenhum dos motores); ver esse arquivo para a derivação completa e a premissa de contexto usada pelo harness Rust (tests/dax-corpus/README.md + src-tauri/tests/dax_corpus.rs).",
   "cases": [
     {
       "id": "window.calendar.leap_quarter_days",
       "expr": "COUNTROWS(CALENDAR(DATE(2024, 1, 1), DATE(2024, 3, 31)))",
-      "expected": 91
+      "expected": 91,
+      "source": "https://dax.guide/calendar/",
+      "notes": "2024 é bissexto: jan(31)+fev(29)+mar(31) = 91 dias; CALENDAR() é inclusivo nas duas pontas."
     },
     {
       "id": "window.calendar.feb_non_leap",
       "expr": "COUNTROWS(CALENDAR(DATE(2025, 2, 1), DATE(2025, 2, 28)))",
-      "expected": 28
+      "expected": 28,
+      "source": "https://dax.guide/calendar/",
+      "notes": "2025 não é bissexto: fevereiro tem 28 dias (1 a 28, inclusive)."
     },
     {
       "id": "window.calendarauto.default_dec",
       "expr": "COUNTROWS(CALENDARAUTO())",
-      "expected": 731
+      "expected": 731,
+      "source": "https://dax.guide/calendarauto/",
+      "notes": "CALENDARAUTO varre só colunas de data IMPORTADAS, ignorando tabelas/colunas calculadas (dax.guide). A única coluna de data importada do modelo é f_Vendas[Data] (2024-01-15..2025-03-31); fm=12 default estende para os anos civis completos 2024-01-01..2025-12-31 (2024 bissexto=366 + 2025=365 = 731 dias). Coincide numericamente com o range do próprio d_Calendario gerado só porque os dois cobrem exatamente 2024-2025; ver window.calendarauto.fiscal_july_days para o caso em que isso diverge e expõe um bug do motor."
     },
     {
       "id": "window.calendarauto.fiscal_july_days",
       "expr": "COUNTROWS(CALENDARAUTO(7))",
-      "expected": 1096
+      "expected": 731,
+      "source": "https://dax.guide/calendarauto/",
+      "notes": "BUG DO MOTOR RUST (registrado, não corrigido nesta rodada): eval_calendarauto (src-tauri/src/dax/evaluator/table.rs) varre model.tables.values() inteiro, sem excluir a tabela de calendário gerada d_Calendario (equivalente a uma tabela calculada), violando a regra documentada 'CALENDARAUTO ignores calculated tables and calculated columns'. Considerando só f_Vendas[Data] (única coluna de data importada), o ano fiscal completo com fm=7 é 2023-08-01..2025-07-31 = 731 dias. O valor antes desta auditoria era 1096, que só bate incluindo d_Calendario (2024-01-01..2025-12-31) na varredura — ou seja, foi copiado da saída do motor, não derivado de forma independente. Corrigido para o valor do oráculo (731); o motor Rust atual falha este caso até a exclusão de tabelas calculadas ser implementada (fora do escopo de window.rs: DaxTableData/DaxTableInput não carregam nenhuma flag is_calculated hoje)."
     },
     {
       "id": "window.calendarauto.fiscal_july_start_year",
       "expr": "YEAR(MINX(CALENDARAUTO(7), [Date]))",
-      "expected": 2023
+      "expected": 2023,
+      "source": "https://dax.guide/calendarauto/",
+      "notes": "Início do ano fiscal (fm=7) para min=2024-01-15 é 2023-08-01 -> YEAR=2023. Bate com o oráculo independentemente do bug acima, porque o mês mínimo (janeiro) é o mesmo em f_Vendas e em d_Calendario, então start_year não muda."
     },
     {
       "id": "window.summarizecolumns.categories_count",
       "expr": "COUNTROWS(SUMMARIZECOLUMNS(d_Produto[Categoria], \"Total\", [Total Vendas]))",
-      "expected": 2
+      "expected": 2,
+      "source": "https://dax.guide/summarizecolumns/",
+      "notes": "2 categorias distintas em d_Produto (Papelaria, Informática), ambas com Total Vendas != BLANK -> nenhuma linha omitida."
     },
     {
       "id": "window.summarizecolumns.sum_totals",
       "expr": "SUMX(SUMMARIZECOLUMNS(d_Produto[Categoria], \"Total\", [Total Vendas]), [Total])",
-      "expected": 1135
+      "expected": 1135,
+      "source": "https://dax.guide/summarizecolumns/",
+      "notes": "Soma das 2 categorias (Papelaria=215, Informática=920) = SUM(f_Vendas[Valor]) geral = 1135."
     },
     {
       "id": "window.summarizecolumns.omits_all_blank_combos",
       "expr": "COUNTROWS(SUMMARIZECOLUMNS(d_Cliente[Cliente], d_Produto[Categoria], \"Total\", [Total Vendas]))",
       "expected": 5,
-      "notes": "Carla não comprou Papelaria, então a linha (Carla, Papelaria) é omitida."
+      "source": "https://dax.guide/summarizecolumns/",
+      "notes": "Carla não comprou Papelaria, então a linha (Carla, Papelaria) é omitida. 3 clientes x 2 categorias = 6 combinações possíveis, menos 1 BLANK = 5."
     },
     {
       "id": "window.summarizecolumns.with_filter_table",
       "expr": "COUNTROWS(SUMMARIZECOLUMNS(d_Cliente[Cliente], FILTER(ALL(d_Produto), d_Produto[Categoria] = \"Papelaria\"), \"Total\", [Total Vendas]))",
-      "expected": 2
+      "expected": 2,
+      "source": "https://dax.guide/summarizecolumns/",
+      "notes": "FILTER(ALL(d_Produto), Categoria=\"Papelaria\") restringe o filtro de tabela; agrupando por Cliente, só Ana (81) e Bruno (134) têm total != BLANK; Carla fica BLANK e é omitida -> 2."
     },
     {
       "id": "window.offset.previous_product_by_price",
       "expr": "CALCULATE([Total Vendas], OFFSET(-1, ALL(d_Produto[Produto], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC)))",
       "filters": [{ "table": "d_Produto", "column": "Produto", "values": ["Mouse"] }],
-      "expected": 120
+      "expected": 120,
+      "source": "https://dax.guide/offset/",
+      "notes": "Produtos por Preço ASC: Caneta,Caderno,Mouse,Teclado. OFFSET(-1) na linha do Mouse -> Caderno (Total Vendas=120)."
     },
     {
       "id": "window.offset.first_row_previous_is_blank",
       "expr": "CALCULATE([Total Vendas], OFFSET(-1, ALL(d_Produto[Produto], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC)))",
       "filters": [{ "table": "d_Produto", "column": "Produto", "values": ["Caneta"] }],
-      "expected": null
+      "expected": null,
+      "source": "https://dax.guide/offset/",
+      "notes": "Caneta é a 1ª linha por Preço ASC; OFFSET(-1) fica fora da partition -> BLANK."
     },
     {
       "id": "window.offset.partitioned_next",
       "expr": "CALCULATE([Total Vendas], OFFSET(1, ALL(d_Produto[Produto], d_Produto[Categoria], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC), DEFAULT, PARTITIONBY(d_Produto[Categoria])))",
       "filters": [{ "table": "d_Produto", "column": "Produto", "values": ["Mouse"] }],
-      "expected": 600
+      "expected": 600,
+      "source": "https://dax.guide/offset/",
+      "notes": "PARTITIONBY(Categoria) isola Informática={Mouse(80),Teclado(150)}; OFFSET(1) a partir do Mouse -> Teclado (Total Vendas=600)."
     },
     {
       "id": "window.offset.partitioned_boundary_is_blank",
       "expr": "CALCULATE([Total Vendas], OFFSET(-1, ALL(d_Produto[Produto], d_Produto[Categoria], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC), DEFAULT, PARTITIONBY(d_Produto[Categoria])))",
       "filters": [{ "table": "d_Produto", "column": "Produto", "values": ["Mouse"] }],
-      "expected": null
+      "expected": null,
+      "source": "https://dax.guide/offset/",
+      "notes": "Mouse é o 1º da partition Informática por Preço ASC; OFFSET(-1) fica fora -> BLANK."
     },
     {
       "id": "window.index.top_price_desc",
       "expr": "CALCULATE([Total Vendas], INDEX(1, ALL(d_Produto[Produto], d_Produto[Preco]), ORDERBY(d_Produto[Preco], DESC)))",
-      "expected": 600
+      "expected": 600,
+      "source": "https://dax.guide/index-dax/",
+      "notes": "Sem filtro de visual (contexto de consulta vazio): INDEX(1) por Preço DESC -> Teclado (o mais caro), Total Vendas=600."
     },
     {
       "id": "window.index.last_in_partition",
       "expr": "CALCULATE([Total Vendas], INDEX(-1, ALL(d_Produto[Produto], d_Produto[Categoria], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC), DEFAULT, PARTITIONBY(d_Produto[Categoria])))",
       "filters": [{ "table": "d_Produto", "column": "Categoria", "values": ["Papelaria"] }],
-      "expected": 120
+      "expected": 120,
+      "source": "https://dax.guide/index-dax/",
+      "notes": "Filtro de visual Categoria=Papelaria pina a partition; INDEX(-1) por Preço ASC -> último da partition = Caderno (Total Vendas=120)."
     },
     {
       "id": "window.window.running_total",
       "expr": "CALCULATE([Total Vendas], WINDOW(1, ABS, 0, REL, ALL(d_Produto[Produto], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC)))",
       "filters": [{ "table": "d_Produto", "column": "Produto", "values": ["Mouse"] }],
-      "expected": 535
+      "expected": 535,
+      "source": "https://dax.guide/window/",
+      "notes": "WINDOW(1,ABS,0,REL) = do 1º produto por Preço ASC até a linha atual (Mouse) -> Caneta(95)+Caderno(120)+Mouse(320) = 535."
     },
     {
       "id": "window.window.moving_two_items",
       "expr": "CALCULATE([Total Vendas], WINDOW(-1, REL, 0, REL, ALL(d_Produto[Produto], d_Produto[Preco]), ORDERBY(d_Produto[Preco], ASC)))",
       "filters": [{ "table": "d_Produto", "column": "Produto", "values": ["Mouse"] }],
-      "expected": 440
+      "expected": 440,
+      "source": "https://dax.guide/window/",
+      "notes": "WINDOW(-1,REL,0,REL) = linha anterior até a atual (Mouse) -> Caderno(120)+Mouse(320) = 440."
     },
     {
       "id": "window.rank.skip_with_ties",
       "expr": "RANK(SKIP, ALL(d_Cliente[Cliente], d_Cliente[Cidade]), ORDERBY(d_Cliente[Cidade], ASC))",
       "filters": [{ "table": "d_Cliente", "column": "Cliente", "values": ["Bruno"] }],
-      "expected": 3
+      "expected": 3,
+      "source": "https://dax.guide/rank-dax/",
+      "notes": "Ordem por Cidade ASC com desempate determinístico pelas demais colunas da relation (Cliente): Ana(Curitiba), Carla(Curitiba), Bruno(Londrina). Ana e Carla empatam em Cidade -> RANK(SKIP) de Bruno pula os 2 primeiros postos = 3."
     },
     {
       "id": "window.rank.dense_with_ties",
       "expr": "RANK(DENSE, ALL(d_Cliente[Cliente], d_Cliente[Cidade]), ORDERBY(d_Cliente[Cidade], ASC))",
       "filters": [{ "table": "d_Cliente", "column": "Cliente", "values": ["Bruno"] }],
-      "expected": 2
+      "expected": 2,
+      "source": "https://dax.guide/rank-dax/",
+      "notes": "RANK(DENSE) não pula posições por empate: Ana/Carla=1, Bruno=2 (2 valores distintos de Cidade até e incluindo o de Bruno)."
     },
     {
       "id": "window.rownumber.tie_broken_by_client_name",
       "expr": "ROWNUMBER(ALL(d_Cliente[Cliente], d_Cliente[Cidade]), ORDERBY(d_Cliente[Cidade], ASC))",
       "filters": [{ "table": "d_Cliente", "column": "Cliente", "values": ["Carla"] }],
-      "expected": 2
+      "expected": 2,
+      "source": "https://dax.guide/rownumber/",
+      "notes": "ROWNUMBER exige ordem total; como Ana e Carla empatam em Cidade, o motor desempata pela outra coluna da relation (Cliente, ASC): Ana(1), Carla(2), Bruno(3)."
     }
   ]
 }
