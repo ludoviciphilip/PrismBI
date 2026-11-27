@@ -210,6 +210,7 @@ fn build_model(m: &CorpusModel) -> DaxModel {
             name: x.name.clone(),
             table_name: x.table.clone(),
             formula: x.formula.clone(),
+            format_string: None,
         })
         .collect();
     let mut model = DaxModel::new();
