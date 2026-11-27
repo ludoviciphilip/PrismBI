@@ -34,6 +34,7 @@ struct CalendarSpec {
 #[derive(Deserialize)]
 struct CorpusTable {
     name: String,
+    #[serde(default)]
     columns: Vec<CorpusColumn>,
     #[serde(default)]
     rows: Vec<Vec<Value>>,
@@ -43,6 +44,12 @@ struct CorpusTable {
     /// date columns (see `window.calendarauto.fiscal_july_days`).
     #[serde(default)]
     calculated: bool,
+    /// When present, this table is built by the real `dax::calculated`
+    /// pipeline from a DAX table expression (CALENDAR, ADDCOLUMNS,
+    /// SUMMARIZE, UNION, FILTER, ...) instead of from `rows` -- exercises
+    /// the production calculated-table engine, not a hand-copied fixture.
+    #[serde(default)]
+    expression: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -66,6 +73,10 @@ struct CorpusModel {
     tables: Vec<CorpusTable>,
     relationships: Vec<CorpusRelationship>,
     measures: Vec<CorpusMeasure>,
+    /// table name -> (column name -> DAX row expression). See
+    /// `models/calculated.json` for RELATED/EARLIER examples.
+    #[serde(default, rename = "calculatedColumns")]
+    calculated_columns: HashMap<String, HashMap<String, String>>,
 }
 
 #[derive(Deserialize)]
@@ -165,9 +176,13 @@ fn build_model(m: &CorpusModel) -> DaxModel {
                 rows,
                 column_types,
                 sort_by_columns: Default::default(),
-                is_calculated: false,
-                expression: None,
-                calculated_columns: Default::default(),
+                is_calculated: t.expression.is_some(),
+                expression: t.expression.clone(),
+                calculated_columns: m
+                    .calculated_columns
+                    .get(&t.name)
+                    .cloned()
+                    .unwrap_or_default(),
             }
         })
         .collect();
