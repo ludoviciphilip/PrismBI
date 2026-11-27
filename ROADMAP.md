@@ -110,6 +110,10 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 - [x] Migração para Rust das funções avançadas de tabela e janela (`CALENDAR`, `CALENDARAUTO`, `SUMMARIZECOLUMNS`, `WINDOW`, `OFFSET`, `INDEX`, `RANK`, `ROWNUMBER`, `CALCULATETABLE`).
 - [ ] **Aumento de cobertura de testes das funções (Rust):** ampliar a cobertura de funções do crate Rust (base de 75,06% em `docs/TEST_COVERAGE.md`), cobrindo funções ainda sem teste direto (`engine/duckdb_store.rs`, `etl/sql.rs`, `etl/m_from.rs`, `pbi/pbip.rs`, `dax/query_planner.rs`) e exigindo testes unitários + casos no corpus DAX para cada nova feature.
 - [ ] **Desligamento progressivo do motor TypeScript legado:** migrar consultas remanescentes (tabela comum, dispersão, Cálculos Visuais, DAX Query View e validação) para o motor Rust nativo e remover módulos legados em `src/engine/`.
+- [ ] **Pendências da `v0.10.0`:** níveis nas **colunas** da matriz, filtro cruzado a partir de níveis de data drillados (Ano/Trimestre/Mês), tradução (EN/ES) dos painéis de Indicadores e Dicas de página.
+- [ ] **`CALENDARAUTO` ignorando tabelas e colunas calculadas**, como manda a especificação (hoje o calendário gerado entra na varredura).
+- [ ] **Desempenho das funções de janela:** cache da partição ordenada, para que OFFSET, INDEX, WINDOW e RANK dentro de iteradores não reordenem a tabela a cada linha.
+- [ ] Windows: assinatura de código (depende de certificado) e teste de atualização via `msiexec`.
 
 ---
 
