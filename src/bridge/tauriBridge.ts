@@ -591,6 +591,78 @@ export async function evaluateDaxNative(
   });
 }
 
+// ---------------------------------------------------------------------
+// v0.11 Frente F: DAX Query View (DEFINE/EVALUATE/ORDER BY) e validação de
+// expressões DAX no Rust (`dax_query_execute`/`dax_validate` em
+// src-tauri/src/dax/query_view/**). Sem fallback TS aqui: fora do Tauri
+// (modo navegador) os chamadores usam `DaxEngine`/`DaxQueryExecutor`
+// diretamente — ver `src/engine/nativeDax.ts`.
+// ---------------------------------------------------------------------
+
+export interface NativeDaxQueryColumn {
+  name: string;
+  daxType: 'text' | 'integer' | 'decimal' | 'currency' | 'date' | 'boolean';
+}
+
+export interface NativeDaxQueryResultSet {
+  columns: NativeDaxQueryColumn[];
+  rows: any[][];
+  displayRows: string[][];
+  rowCount: number;
+  truncated: boolean;
+}
+
+export interface NativeDaxQueryError {
+  message: string;
+  line: number;
+  column: number;
+}
+
+export interface NativeDaxQueryExecuteResult {
+  resultSets: NativeDaxQueryResultSet[];
+  elapsedMs: number;
+  error: NativeDaxQueryError | null;
+}
+
+export async function daxQueryExecuteNative(
+  query: string,
+  rowLimit?: number
+): Promise<NativeDaxQueryExecuteResult> {
+  return await invoke<NativeDaxQueryExecuteResult>('dax_query_execute', {
+    query,
+    opts: rowLimit != null ? { rowLimit } : null,
+  });
+}
+
+export type NativeDaxValidateContext = 'measure' | 'calculatedColumn' | 'calculatedTable' | 'visualCalc';
+
+export interface NativeDaxDiagnostic {
+  severity: 'error' | 'warning';
+  message: string;
+  line: number;
+  column: number;
+  length: number;
+}
+
+export interface NativeDaxValidationResult {
+  ok: boolean;
+  diagnostics: NativeDaxDiagnostic[];
+  resultType: string | null;
+  sampleValue: any;
+}
+
+export async function daxValidateNative(
+  expression: string,
+  context: NativeDaxValidateContext,
+  table?: string
+): Promise<NativeDaxValidationResult> {
+  return await invoke<NativeDaxValidationResult>('dax_validate', {
+    expression,
+    context,
+    table: table ?? null,
+  });
+}
+
 export interface NativeVisualQueryRequest {
   visualId: string;
   visualType: string;

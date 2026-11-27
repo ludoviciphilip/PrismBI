@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Upload, CheckCircle2, AlertTriangle, FileCode, Check, Trash2, ArrowRight } from 'lucide-react';
 import { useBiStore } from '../../store/useBiStore';
-import { DaxEngine } from '../../engine/daxEngine';
+import { validateDaxFormula } from '../../engine/nativeDax';
 import { Measure } from '../../types/bi';
 
 export interface ParsedImportMeasure {
@@ -32,7 +32,7 @@ export const DaxImportModal: React.FC<DaxImportModalProps> = ({ isOpen, onClose 
 
   const defaultTableName = tables[0]?.name || 'f_Vendas';
 
-  const parseScript = () => {
+  const parseScript = async () => {
     if (!scriptText.trim()) return;
 
     let text = scriptText;
@@ -57,7 +57,7 @@ export const DaxImportModal: React.FC<DaxImportModalProps> = ({ isOpen, onClose 
       // Clean trailing EVALUATE or DEFINE keywords if captured
       formula = formula.replace(/\n\s*EVALUATE[\s\S]*$/i, '').trim();
 
-      const validation = DaxEngine.validate(formula, tables, measures);
+      const validation = await validateDaxFormula(formula, tables, measures, 'measure', tbl);
       const collision = measures.some(m => m.name.toLowerCase() === name.toLowerCase());
 
       items.push({
@@ -84,7 +84,7 @@ export const DaxImportModal: React.FC<DaxImportModalProps> = ({ isOpen, onClose 
           const name = (simpleMatch[1] || simpleMatch[2]).trim();
           const formula = simpleMatch[3].trim();
 
-          const validation = DaxEngine.validate(formula, tables, measures);
+          const validation = await validateDaxFormula(formula, tables, measures, 'measure', defaultTableName);
           const collision = measures.some(m => m.name.toLowerCase() === name.toLowerCase());
 
           items.push({
