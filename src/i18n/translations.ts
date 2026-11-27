@@ -307,6 +307,18 @@ export const translations: Record<SupportedLanguage, Translations> = {
       selectTableOrWriteSql: 'Selecione uma tabela ou escreva uma consulta SQL.',
       importSuccess: 'Tabela importada com sucesso.',
     },
+    shortcuts: {
+      toastSaved: 'Projeto salvo',
+      toastSaveFailed: 'Falha ao salvar o projeto',
+      toastExported: 'Projeto exportado (.insight)',
+      dialogTitle: 'Atalhos de teclado',
+      dialogSubtitle: 'Referência Power BI Desktop. No Mac, use Cmd no lugar de Ctrl.',
+      searchPlaceholder: 'Buscar atalho...',
+      noResults: 'Nenhum atalho encontrado.',
+      menuItem: 'Atalhos de teclado',
+      columnAction: 'Ação',
+      columnShortcut: 'Atalho',
+    },
   },
   'en-US': {
     common: {
@@ -602,6 +614,18 @@ export const translations: Record<SupportedLanguage, Translations> = {
       selectTableOrWriteSql: 'Select a table or write a SQL query.',
       importSuccess: 'Table imported successfully.',
     },
+    shortcuts: {
+      toastSaved: 'Project saved',
+      toastSaveFailed: 'Failed to save the project',
+      toastExported: 'Project exported (.insight)',
+      dialogTitle: 'Keyboard shortcuts',
+      dialogSubtitle: 'Power BI Desktop reference. On Mac, use Cmd instead of Ctrl.',
+      searchPlaceholder: 'Search shortcut...',
+      noResults: 'No shortcut found.',
+      menuItem: 'Keyboard shortcuts',
+      columnAction: 'Action',
+      columnShortcut: 'Shortcut',
+    },
   },
   'es-ES': {
     common: {
@@ -896,6 +920,18 @@ export const translations: Record<SupportedLanguage, Translations> = {
       parquetUrl: 'URL/glob de Parquet',
       selectTableOrWriteSql: 'Seleccione una tabla o escriba una consulta SQL.',
       importSuccess: 'Tabla importada con éxito.',
+    },
+    shortcuts: {
+      toastSaved: 'Proyecto guardado',
+      toastSaveFailed: 'Error al guardar el proyecto',
+      toastExported: 'Proyecto exportado (.insight)',
+      dialogTitle: 'Atajos de teclado',
+      dialogSubtitle: 'Referencia Power BI Desktop. En Mac, use Cmd en lugar de Ctrl.',
+      searchPlaceholder: 'Buscar atajo...',
+      noResults: 'No se encontró ningún atajo.',
+      menuItem: 'Atajos de teclado',
+      columnAction: 'Acción',
+      columnShortcut: 'Atajo',
     },
   },
 };
