@@ -3,6 +3,7 @@ import { ModelAccess } from './modelAccess';
 import { RelationshipGraph, RelationshipOverride } from './relationships';
 import { parseNumber, parseDate } from '../shared/valueParser';
 import { DAX_BLANK, isBlank } from '../expr/types';
+import { datePartValue } from '../drill';
 
 export interface ColumnFilter {
   tableId: string;
@@ -403,6 +404,20 @@ export function filterContextFromUIFilters(
 
     const table = model.getTable(f.tableId);
     const tableId = table ? table.id : f.tableId;
+
+    // v0.11 Frente D: filtro de drill por parte de data (ano/trimestre/mês/dia) — o
+    // valor é o número da parte, comparado via `datePartValue`, não o valor cru da coluna.
+    if (f.datePart) {
+      const part = f.datePart;
+      const want = Number(f.value);
+      ctx.setColumnFilter(
+        tableId,
+        f.column,
+        { tableId, column: f.column, predicate: v => datePartValue(v, part) === want, operator: 'equals', rawValues: f.value },
+        true
+      );
+      continue;
+    }
 
     const predicate = buildFilterPredicate(f.operator, f.value);
     let allowedValues: Set<unknown> | undefined = undefined;

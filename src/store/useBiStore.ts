@@ -280,6 +280,10 @@ interface BiState {
   removeFilter: (id: string) => void;
   clearFilters: () => void;
   setCrossFilter: (tableId: string, column: string, value: any) => void;
+  /** v0.11 Frente D: cross-filter a partir de um ponto drillado de data (ano/trimestre/mês/dia)
+   *  ou de um caminho concatenado (modo expandido) — um `Filter` por `DrillFilterSpec`, todos com
+   *  `level: 'visual'`. Clicar de novo no mesmo ponto (mesmos specs/valores) limpa o filtro. */
+  setDrillCrossFilter: (specs: { field: string; datePart?: 'year' | 'quarter' | 'month' | 'day'; value: unknown; label: string }[]) => void;
   /** Sets a slicer visual's selection (list/between/relative), computes its Filter,
    *  and — when the visual has a syncGroup — propagates the same selection to every
    *  other slicer visual sharing that group on the pages allowed by its syncPages. */
@@ -2329,6 +2333,50 @@ export const useBiStore = create<BiState>((set, get) => {
           ],
         });
       }
+    },
+
+    setDrillCrossFilter: (specs) => {
+      if (specs.length === 0) return;
+      const tables = get().tables;
+      const resolveField = (field: string): { tableId: string; column: string } => {
+        if (field.includes('.')) {
+          const [prefixT, col] = field.split('.', 2);
+          const matchT = tables.find(
+            t => t.id === prefixT || t.name === prefixT || t.id.toLowerCase() === prefixT.toLowerCase() || t.name.toLowerCase() === prefixT.toLowerCase()
+          );
+          if (matchT) return { tableId: matchT.id, column: col };
+        }
+        for (const t of tables) {
+          const col = t.columns.find(c => c.name.toLowerCase() === field.toLowerCase());
+          if (col) return { tableId: t.id, column: col.name };
+        }
+        return { tableId: field, column: field };
+      };
+      const resolved = specs.map(s => ({ ...resolveField(s.field), datePart: s.datePart, value: s.value, label: s.label }));
+      const ids = resolved.map(r => `drillcross_${r.tableId}_${r.column}_${r.datePart ?? 'v'}`);
+      const current = get().filters;
+      const sameActive =
+        ids.length > 0 &&
+        ids.every((id, i) => {
+          const existing = current.find(f => f.id === id);
+          return existing && existing.value === resolved[i].value;
+        });
+      const withoutThese = current.filter(f => !ids.includes(f.id));
+      if (sameActive) {
+        set({ filters: withoutThese });
+        return;
+      }
+      const newFilters: Filter[] = resolved.map((r, i) => ({
+        id: ids[i],
+        level: 'visual',
+        tableId: r.tableId,
+        column: r.column,
+        operator: 'equals',
+        value: r.value,
+        datePart: r.datePart,
+        label: r.label,
+      }));
+      set({ filters: [...withoutThese, ...newFilters] });
     },
 
     setSlicerSelection: (visualId, selection) => {

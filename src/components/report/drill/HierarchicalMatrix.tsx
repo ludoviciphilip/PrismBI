@@ -2,9 +2,10 @@ import React, { useMemo } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpDown, Filter as FilterIcon, SquareMinus, SquarePlus } from 'lucide-react';
 import { Visual } from '../../../types/bi';
 import { useBiStore } from '../../../store/useBiStore';
+import { useTranslation } from '../../../i18n';
 import { globalDataEngine, formatValue, formatCurrency, formatNumber, formatPercent } from '../../../engine/dataEngine';
 import { applyVisualSort, fieldMatches, VisualSortSpec } from '../../../engine/visualSort';
-import { DrillLevel, MatrixExpansion, toggleMatrixPath } from '../../../engine/drill';
+import { BLANK_LABEL, DrillLevel, MatrixExpansion, buildPathFilters, describeDrillFilterSpecs, toggleMatrixPath } from '../../../engine/drill';
 import { patchForHeaderClick } from '../visualSortOptions';
 import { getFieldFormat, activeFormats, styleForTotalCell } from '../conditionalFormat/apply';
 import { FormattedCell } from '../conditionalFormat/FormattedCell';
@@ -59,6 +60,11 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
   const measures = useBiStore(s => s.measures);
   const updateVisual = useBiStore(s => s.updateVisual);
   const setCrossFilter = useBiStore(s => s.setCrossFilter);
+  const setDrillCrossFilter = useBiStore(s => s.setDrillCrossFilter);
+  const { t } = useTranslation();
+  const mt = t.matrix;
+  /** Substitui o rótulo padrão "(Em branco)" do motor (`BLANK_LABEL`) pela tradução ativa. */
+  const localizeLabel = (label: string): string => (label === BLANK_LABEL ? mt.blank : label);
   const dc = visual.dataConfig;
   const seriesNames = data?.seriesNames ?? [];
   const primaryY = dc.yAxisFields?.[0] || '';
@@ -172,7 +178,7 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
               className="group/th sticky top-0 z-10 bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 font-bold text-slate-800 dark:text-slate-100 border-b border-r border-slate-200 dark:border-slate-700 cursor-pointer hover:text-amber-600 select-none"
             >
               <span className="inline-flex items-center gap-1" title={levels.map(l => l.caption).join(' › ')}>
-                {levels[0]?.datePart ? levels[0].caption : dc.xAxisField || levels[0]?.caption || 'Linhas'}
+                {levels[0]?.datePart ? levels[0].caption : dc.xAxisField || levels[0]?.caption || mt.rowsLabel}
                 {rowField && sortArrow(rowField)}
               </span>
             </th>
@@ -205,7 +211,7 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
             ))}
             {showTotalCol && (
               <th className="sticky top-0 z-10 px-2.5 py-1.5 font-bold text-right text-slate-900 dark:text-amber-300 border-b border-l border-slate-200 dark:border-slate-700 bg-slate-200 dark:bg-slate-800">
-                Total
+                {mt.total}
               </th>
             )}
           </tr>
@@ -213,7 +219,6 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
         <tbody className="divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-900">
           {rows.map(({ node, depth, path }) => {
             const isTop = depth === 0;
-            const level = levels[depth];
             const rowId = JSON.stringify(path);
             const visibleBySeries = visibleByDepth[depth] ?? [];
             return (
@@ -224,7 +229,18 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
               >
                 <td
                   onClick={() => {
-                    if (level && !level.datePart) setCrossFilter(dc.tableId, level.field, node.key);
+                    // v0.11 Frente D: cross-filter pelo caminho inteiro da linha (ancestrais +
+                    // nível atual) — funciona tanto para campos comuns quanto para níveis de
+                    // data (ano/trimestre/mês/dia), sempre calculado pelo motor (`drillFilters`).
+                    const specs = buildPathFilters(levels.slice(0, depth + 1), path);
+                    if (specs.length === 0) return;
+                    if (specs.length === 1 && !specs[0].datePart) {
+                      setCrossFilter(dc.tableId, specs[0].field, specs[0].value);
+                      return;
+                    }
+                    setDrillCrossFilter(
+                      specs.map(s => ({ field: s.field, datePart: s.datePart, value: s.value, label: describeDrillFilterSpecs(levels, [s]) }))
+                    );
                   }}
                   onMouseEnter={e => onRowHover?.(e, path)}
                   onMouseLeave={() => onRowLeave?.()}
@@ -251,7 +267,7 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
                         {node.expanded ? <SquareMinus className="w-3 h-3" /> : <SquarePlus className="w-3 h-3" />}
                       </button>
                     )}
-                    <span>{node.label}</span>
+                    <span>{localizeLabel(node.label)}</span>
                   </div>
                 </td>
                 {seriesNames.map((name, sIdx) => {
@@ -333,7 +349,7 @@ export const HierarchicalMatrix: React.FC<HierarchicalMatrixProps> = ({
         <tfoot className="bg-slate-100 dark:bg-slate-800 font-bold">
           <tr>
             <td className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-slate-900 dark:text-amber-300 border-t-2 border-r border-slate-300 dark:border-slate-700">
-              Total Geral
+              {mt.grandTotal}
             </td>
             {seriesNames.map((name, cIdx) => {
               const colTot = data?.columnTotals[cIdx] ?? null;

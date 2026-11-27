@@ -16,6 +16,7 @@ import {
   buildPathFilters,
   canDrillDown,
   canDrillUp,
+  describeDrillFilterSpecs,
   drillDownOnPointPatch,
   drillUpPatch,
   expandAllLevelsPatch,
@@ -113,6 +114,7 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
   const dataVersion = useBiStore(s => s.dataVersion);
   const updateVisual = useBiStore(s => s.updateVisual);
   const setCrossFilter = useBiStore(s => s.setCrossFilter);
+  const setDrillCrossFilter = useBiStore(s => s.setDrillCrossFilter);
   const { t } = useTranslation();
   const dc = visual.dataConfig;
   const typeOf = useMemo(() => makeColumnTypeLookup(tables, dc.tableId), [tables, dc.tableId]);
@@ -219,6 +221,16 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
           return true;
         }
       }
+      // v0.11 Frente D: cross-filter a partir de um ponto drillado de data (ano/trimestre/
+      // mês/dia) ou de um rótulo concatenado (modo expandido) — ancestrais + nível(is)
+      // atual(is), sempre pela parte de data quando aplicável (nunca pelo rótulo cru).
+      const specs = buildHoverFilters(state, chartLevels, keys);
+      if (specs.some(s => s.datePart) || specs.length > 1) {
+        setDrillCrossFilter(
+          specs.map(s => ({ field: s.field, datePart: s.datePart, value: s.value, label: describeDrillFilterSpecs(chartLevels, [s]) }))
+        );
+        return true;
+      }
       // Filtro cruzado pelo campo do nível atual (não pelo campo original do eixo).
       if (plainLevel) {
         setCrossFilter(dc.tableId, plainLevel.field, keys[0]);
@@ -226,7 +238,7 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
       }
       return true;
     },
-    [chartActive, sortedChart, drillOn, dc, chartLevels, applyPatch, plainLevel, setCrossFilter]
+    [chartActive, sortedChart, drillOn, dc, chartLevels, applyPatch, plainLevel, setCrossFilter, setDrillCrossFilter, state]
   );
 
   const handleContextMenu = useCallback(

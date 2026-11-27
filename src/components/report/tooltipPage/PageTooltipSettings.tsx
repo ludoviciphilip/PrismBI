@@ -1,6 +1,7 @@
 import React from 'react';
 import { CanvasSizeConfig, Page } from '../../../types/bi';
 import { CANVAS_PRESETS } from '../../../engine/shared/canvasPresets';
+import { useTranslation } from '../../../i18n';
 
 interface PageTooltipSettingsProps {
   page: Page;
@@ -23,6 +24,8 @@ export const PageTooltipSettings: React.FC<PageTooltipSettingsProps> = ({
   onChange,
   onSuggestCanvasSize,
 }) => {
+  const { t } = useTranslation();
+  const pt = t.pageTooltip;
   const tooltipPage = page.tooltipPage || { enabled: false, fields: [] as string[] };
   const isTooltipSize = page.canvasSize?.preset === 'tooltip';
 
@@ -34,10 +37,10 @@ export const PageTooltipSettings: React.FC<PageTooltipSettingsProps> = ({
 
   return (
     <div className="p-3 border-b border-slate-200 dark:border-slate-800 space-y-2" data-testid="page-tooltip-settings">
-      <label className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 block">Informações da página</label>
+      <label className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 block">{pt.pageInfo}</label>
 
       <div className="flex items-center justify-between">
-        <span className="text-[11px] text-slate-600 dark:text-slate-300">Permitir uso como dica de ferramenta</span>
+        <span className="text-[11px] text-slate-600 dark:text-slate-300">{pt.allowAsTooltip}</span>
         <input
           type="checkbox"
           data-testid="tooltip-page-enabled-checkbox"
@@ -56,14 +59,14 @@ export const PageTooltipSettings: React.FC<PageTooltipSettingsProps> = ({
       {tooltipPage.enabled && (
         <>
           <p className="text-[10px] text-slate-400">
-            Páginas de dica ficam ocultas na navegação do Modo Apresentação.
+            {pt.hiddenInPresentation}
           </p>
 
           <div className="space-y-1">
-            <span className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold">Campos da dica</span>
+            <span className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold">{pt.fieldsLabel}</span>
             <div className="max-h-28 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded p-1.5 space-y-1">
               {availableFields.length === 0 && (
-                <span className="text-[10px] text-slate-400">Sem campos disponíveis no modelo.</span>
+                <span className="text-[10px] text-slate-400">{pt.noFieldsAvailable}</span>
               )}
               {availableFields.map(f => (
                 <label key={f} className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300 cursor-pointer">

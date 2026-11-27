@@ -395,6 +395,55 @@ describe('Matriz com N níveis', () => {
   });
 });
 
+describe('v0.11 Frente D: cross-filter a partir de um ponto drillado de data / caminho concatenado', () => {
+  it('gráfico: clicar num ponto de nível de data (mês, drilado) aplica filtro cruzado pela parte da data', () => {
+    seed(chartVisual());
+    render(<LiveCard id="v1" />);
+    hover();
+    const toggle = screen.getByRole('button', { name: 'Modo drill down' });
+    fireEvent.click(toggle); // liga o modo drill
+    act(() => chart.onEvents.click({ name: '2024' })); // desce para Trimestre
+    act(() => chart.onEvents.click({ name: 'Trim 1' })); // desce para Mês
+    fireEvent.click(toggle); // desliga o modo drill (clique normal = cross-filter, não desce mais)
+    act(() => chart.onEvents.click({ name: 'janeiro' }));
+
+    const filters = useBiStore.getState().filters;
+    const byPart = (p: string) => filters.find(f => f.datePart === p);
+    expect(byPart('year')).toMatchObject({ tableId: 'fp', column: 'Data', value: 2024 });
+    expect(byPart('quarter')).toMatchObject({ tableId: 'fp', column: 'Data', value: 1 });
+    expect(byPart('month')).toMatchObject({ tableId: 'fp', column: 'Data', value: 1 });
+    expect(byPart('month')!.label).toMatch(/janeiro/);
+
+    // clicar de novo no mesmo ponto limpa o filtro cruzado (toggle)
+    act(() => chart.onEvents.click({ name: 'janeiro' }));
+    expect(useBiStore.getState().filters).toHaveLength(0);
+  });
+
+  it('matriz: clicar numa linha de hierarquia de data (ano) filtra os outros visuais pela parte da data', () => {
+    seed(matrixVisual({ tableId: 'fp', xAxisField: 'Data', matrixRowFields: undefined, yAxisFields: ['Total'], drillMode: 'drill' } as any));
+    render(<LiveCard id="v1" />);
+    expect(rowLabels()[0]).toMatch(/0:2023=R\$.?10,00/);
+    expect(rowLabels()[1]).toMatch(/0:2024=R\$.?16,00/);
+
+    fireEvent.click(screen.getByText('2024'));
+    const filters = useBiStore.getState().filters;
+    expect(filters).toHaveLength(1);
+    expect(filters[0]).toMatchObject({ tableId: 'fp', column: 'Data', datePart: 'year', value: 2024 });
+    expect(filters[0].label).toMatch(/2024/);
+  });
+
+  it('matriz: linha de texto comum (não data) continua filtrando pelo caminho (ancestrais + nível)', () => {
+    seed(matrixVisual());
+    render(<LiveCard id="v1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Expandir Sul' }));
+    fireEvent.click(screen.getByText('POA'));
+    const filters = useBiStore.getState().filters;
+    // Regiao=Sul (ancestral) + Cidade=POA (nível atual) — não só Cidade=POA isolado.
+    expect(filters.find(f => f.column === 'Regiao')).toMatchObject({ value: 'Sul' });
+    expect(filters.find(f => f.column === 'Cidade')).toMatchObject({ value: 'POA' });
+  });
+});
+
 describe('Frente H→G: formatação condicional nos totais/subtotais da matriz hierárquica', () => {
   const valueCell = (label: string) =>
     Array.from(document.querySelectorAll('[data-testid="hierarchical-matrix"] tbody tr')).find(

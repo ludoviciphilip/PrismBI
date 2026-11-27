@@ -273,6 +273,22 @@ export function buildHoverFilters(state: DrillState, levels: DrillLevel[], point
   return [...ancestors, ...current];
 }
 
+/**
+ * v0.11 Frente D: descreve um `DrillFilterSpec` para exibição legível no painel
+ * de Filtros (ex.: "Trimestre: Trim 2") — procura o `DrillLevel` correspondente
+ * (mesmo campo + mesma parte de data) para achar a legenda e formatar o valor.
+ */
+export function describeDrillFilterSpec(levels: DrillLevel[], spec: DrillFilterSpec): string {
+  const lv = levels.find(l => l.field === spec.field && (l.datePart ?? null) === (spec.datePart ?? null));
+  const caption = lv?.caption ?? spec.field;
+  return `${caption}: ${levelValueLabel(lv ?? { field: spec.field, caption }, spec.value)}`;
+}
+
+/** Descreve um caminho inteiro de `DrillFilterSpec[]` (ancestrais + nível atual), unidos por " · ". */
+export function describeDrillFilterSpecs(levels: DrillLevel[], specs: DrillFilterSpec[]): string {
+  return specs.map(s => describeDrillFilterSpec(levels, s)).join(' · ');
+}
+
 // --- Matriz: estado de expansão das linhas ---
 
 export interface MatrixExpansion {
