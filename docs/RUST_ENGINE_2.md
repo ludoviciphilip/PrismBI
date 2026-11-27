@@ -255,3 +255,151 @@ consulta RANK-dentro-de-SUMX reavaliada do zero duas vezes, resultado
 idêntico). Os testes de janela pré-existentes (`rank_skip_vs_dense_and_rownumber_with_ties`,
 `offset_*`, `index_*`, `window_running_total_and_moving_sum`) passam sem
 alteração, provando que o cache não mudou nenhum resultado dessas funções.
+
+## 5.7 Rodada 2: caminho vetorizado para o modelo estrela
+
+A Rodada 1 só acelerava o caso "sem relacionamentos, categoria e y-field na
+mesma tabela" — o caso real de Power BI (fato + dimensões, categoria vindo
+da dimensão) continuava O(categorias·N) via `get_visible_row_indices` por
+categoria. `try_vectorized_star_group_agg` (`query_planner.rs`) estende o
+mesmo padrão de passe único para esse formato:
+
+- Um passe sobre as linhas visíveis da dimensão constrói
+  `HashMap<ValueKey, índice da linha da dimensão>` pela coluna-chave do
+  relacionamento.
+- Um passe sobre as linhas visíveis do fato resolve a categoria de cada
+  linha via sua FK nesse mapa, acumulando SUM/COUNT/MIN/MAX/AVG/DISTINCTCOUNT
+  por grupo — O(N) total em vez de O(categorias·N).
+- Escopo deliberadamente estreito para a correção ficar provável sem
+  rederivar a propagação geral de N relacionamentos: o modelo tem
+  EXATAMENTE um relacionamento, ativo, de direção única (`"single"`, não
+  `"both"`), com a tabela da categoria no lado "1" (`to_table`) e a tabela
+  dos y-fields no lado "N" (`from_table`); sem `USERELATIONSHIP`/`CROSSFILTER`
+  no contexto; y-fields são colunas simples (não medidas). Fora disso, cai
+  no caminho genérico (laço por categoria), que continua sendo o fallback,
+  nunca removido.
+- Casamento de chave pela `ValueKey` normalizada (igual a todo outro
+  filtro/join do motor): uma FK BLANK bate com uma linha de dimensão cuja
+  própria chave é BLANK, sem caso especial — cai naturalmente do lookup no
+  HashMap. Filtros em QUALQUER das duas tabelas (coluna, range ou tupla)
+  são respeitados porque os dois conjuntos de linhas visíveis vêm do
+  `get_visible_row_indices` do próprio modelo, não reimplementados aqui.
+
+**Órfão: ajuste em relação ao enunciado da tarefa.** O brief desta rodada
+pedia "linha órfã indo para o membro em branco". A implementação inicial
+fez exatamente isso (FK sem nenhuma linha de dimensão correspondente ->
+grupo "Sem dados"), mas isso regredia um teste diferencial JÁ existente e
+testado da Frente H
+(`dax::pushdown::tests_differential::grouped_sum_matches_dax_with_blanks_blank_member_and_orphan_fk`,
+comentário explícito: "the orphan Valor=500 never appears") — o caminho
+genérico atual (e o SQL do pushdown, que precisa bater com ele bit a bit)
+já tem o comportamento documentado e testado de **descartar** a linha
+órfã por completo, nunca a surfaceando em categoria alguma, nem "Sem
+dados" (só uma linha de dimensão com a CATEGORIA genuinamente em branco
+cai em "Sem dados"). Por "corpus é catraca: nada sai da baseline", a
+versão final de `try_vectorized_star_group_agg` reproduz esse
+comportamento JÁ testado em vez do enunciado solto da tarefa: linha órfã é
+descartada, não bucketed. BLANK-casa-com-BLANK continua coberto (dimensão
+com chave BLANK + fato com FK BLANK é um match real, não um órfão).
+
+### Testes diferenciais
+
+`star_fast_path_matches_oracle_*` (query_planner.rs): um oráculo
+independente (laço aninhado simples, sem HashMap, sem reusar
+`try_vectorized_star_group_agg`), cobrindo as 7 agregações, FK BLANK
+casando com chave BLANK da dimensão, linha órfã descartada, linha de
+dimensão com categoria BLANK, filtro na dimensão, filtro no fato, e
+`star_fast_path_matches_oracle_across_many_fresh_models_hashmap_order`
+roda a mesma comparação 64 vezes com um modelo novo (e portanto um
+`HashMap` novo) a cada rodada, para pegar dependência de ordem de
+iteração do HashMap. `star_fast_path_bails_out_for_two_relationships_bidirectional_or_measures`
+cobre os bail-outs (2+ relacionamentos, bidirecional, inativo, y-field
+medida). Corpus inteiro (412 ids) e os 388 testes de lib continuam verdes.
+
+### Bench estrela de 10M linhas (release, 5 rodadas intercaladas)
+
+Fato (`fact_star`) com FK para uma dimensão (`dim_cat`) de 1.000
+categorias, `SUM` por categoria, carregado via DuckDB real
+(`duckdb_load::load_table_from_duckdb`) com um relacionamento 1:N
+single-direction ativo. Mesmo binário para antes/depois (uma flag de
+ambiente `VETROBI_BENCH_FORCE_GENERIC_STAR` força o caminho genérico só
+durante a medição; removida do código antes do commit), `uptime`
+conferido, `systemd-run` com `Nice=19`/`CPUQuota=300%`/`MemoryMax=4G`:
+
+| Rodada | DAX query, antes (genérico) | DAX query, depois (caminho estrela) |
+|---|---|---|
+| 1 | 167,3 s | 2,267 s |
+| 2 | 196,2 s | 2,078 s |
+| 3 | 192,8 s | 2,094 s |
+| 4 | 214,8 s | 1,675 s |
+| 5 | 201,6 s | 2,106 s |
+
+**Speedup médio: ≈95×** (de ~194,5s para ~2,04s, média das 5 rodadas).
+Muito acima da meta de 10× da Rodada 1 porque 1.000 categorias (vs. 100 no
+bench da Rodada 1) tornam o laço O(categorias·N) do caminho genérico ainda
+mais caro — o speedup cresce com o número de categorias, como esperado de
+uma mudança O(C·N) -> O(N). VmHWM ficou em ~2,01–2,03 GB em ambos
+("antes"/"depois"): nenhuma estrutura nova por categoria, só o algoritmo
+muda — meta "sem aumentar RAM" da Rodada 1 continua valendo aqui.
+
+Bench de 1M linhas (mesmo formato, 5 rodadas):
+
+| Rodada | DAX query, antes | DAX query, depois |
+|---|---|---|
+| 1 | 16,27 s | 182,2 ms |
+| 2 | 20,05 s | 190,4 ms |
+| 3 | 20,28 s | 187,1 ms |
+| 4 | 19,83 s | 214,7 ms |
+| 5 | 19,77 s | 187,0 ms |
+
+Speedup ≈95–100×. Load ficou em ~175–230 ms em ambos (não é o alvo desta
+otimização, ver §5.8).
+
+### 5.8 Item 4 (se der tempo): carregamento via Arrow em lote
+
+`duckdb_load::load_table_from_duckdb_arrow` lê a tabela usando
+`Statement::query_arrow` (DuckDB já reexporta `arrow` — nenhuma feature
+nova no `Cargo.toml`), convertendo `RecordBatch`es inteiros (arrays
+Int8..UInt64, Float32/64, Utf8/LargeUtf8, Boolean, Date32,
+Timestamp(microsegundo), Decimal128) para as mesmas células `DaxValue`,
+em vez de um `row.get_ref()` por célula. Qualquer coluna com um
+`arrow::DataType` fora dessa lista faz a função inteira devolver `Err`
+(nunca converte a tabela pela metade); `load_table_from_duckdb_fast`
+tenta o caminho Arrow primeiro e cai no carregador linha a linha nesse
+caso — é essa função que `load_changed_tables` (o passo de carga do
+`sync_model_to_rust`) chama agora.
+
+Testes diferenciais (`dax::duckdb_load::tests`): mesmo `DaxTableData` do
+carregador linha a linha para cada tipo de coluna suportado (declarado e
+inferido), NULLs em cada um, e 10 mil linhas atravessando múltiplos
+`RecordBatch`es com soma em forma fechada.
+
+**Bench isolado do load, 10M linhas, 2 colunas (release, 5 rodadas, mesmo
+binário, flags iguais ao bench estrela):**
+
+| Rodada | row-by-row | arrow |
+|---|---|---|
+| 1 | 1,089 s | 1,042 s |
+| 2 | 1,163 s | 1,025 s |
+| 3 | 1,080 s | 1,013 s |
+| 4 | 1,131 s | 1,031 s |
+| 5 | 1,100 s | 1,004 s |
+
+Melhora modesta: médias 1,113 s -> 1,023 s, **≈8% mais rápido**, bem abaixo
+de uma vitória grande. VmHWM do processo SUBIU no caminho Arrow (~1,23 GB
+no row-by-row vs. ~1,70 GB no Arrow) — os buffers Arrow (dicionários de
+string, buffers de validade/nulos) ficam alocados ao lado do
+`Vec<Vec<DaxValue>>` final durante a conversão, antes de serem liberados.
+Leitura honesta: a maior parte do custo do load (`CREATE TABLE ... AS
+SELECT` + materialização interna do DuckDB, que já tínhamos pago antes de
+qualquer conversão) não está no loop de conversão célula-a-célula que esta
+mudança otimiza — o `row.get_ref()` por célula já era relativamente barato
+frente ao custo de I/O e execução da query dentro do próprio DuckDB. Como
+a melhora é pequena E custa RAM extra durante o load, mantive
+`load_table_from_duckdb_fast` como o caminho de produção (ganho real,
+ainda que modesto, e sem regressão de corretude), mas não reivindico a
+meta "1,25s -> muito mais rápido" do item 4 — ela ficou sem alcançar de
+forma significativa nesta rodada; o carregamento de 10M continua ~1,0–1,1s
+depois desta mudança (era ~1,25s na Rodada 1, a variação é ruído de
+máquina compartilhada, não desta otimização).
+

@@ -728,6 +728,220 @@ fn try_vectorized_group_agg(
     Some((out_cats, grid))
 }
 
+/// v0.11 Frente G (Rodada 2): the star-schema sibling of
+/// `try_vectorized_group_agg` — category column on a DIMENSION, y-fields on
+/// a FACT table related to it by a single active 1:N relationship (the
+/// classic Power BI star: fact + dimensions, category coming from a
+/// dimension). Still O(N) total instead of O(categorias·N): one pass over
+/// the dimension's visible rows builds a `ValueKey -> dim row index` map,
+/// then one pass over the fact's visible rows resolves each row's category
+/// through its FK via that map (instead of calling
+/// `get_visible_row_indices` once per distinct category).
+///
+/// Scope, kept deliberately narrow so correctness stays provable without
+/// re-deriving `get_visible_row_indices`'s general N-relationship
+/// propagation:
+/// - The model has EXACTLY one relationship, period (no other dimension to
+///   reason about).
+/// - It is active, single-direction (`cross_filter_direction == "single"`;
+///   "both" would also let the fact's own filters propagate back onto the
+///   dimension, which this function doesn't attempt to reproduce), with the
+///   category's table as the "to" (one) side and the y-fields' table as the
+///   "from" (many) side.
+/// - `base_ctx` carries no `rel_overrides` (USERELATIONSHIP/CROSSFILTER):
+///   those would need the *effective* relationship state, not the static
+///   one read here.
+/// - y-fields are plain columns (not measures) on the fact table.
+///
+/// Semantics preserved (see `docs/RUST_ENGINE_2.md` §5 Rodada 2):
+/// - Key matching uses the normalized `ValueKey` (`value_key()`), same as
+///   every other filter/join comparison in this engine — not the raw
+///   `DaxValue` or any string form.
+/// - A BLANK FK matches a dimension row whose key column is itself BLANK
+///   (both normalize to `ValueKey::Blank`); no special-casing needed, it
+///   falls out of the hashmap lookup, and groups under THAT row's category
+///   (not necessarily blank — the relationship key and the category column
+///   can differ).
+/// - An orphan fact row (FK matches no VISIBLE dimension row at all — no
+///   key, blank or otherwise, equals it) is DROPPED, never surfacing as a
+///   category — not even "Sem dados". This matches the engine's existing,
+///   already-tested baseline for the generic per-category loop and the
+///   pushdown SQL translation it must agree with
+///   (`dax::pushdown::tests_differential::grouped_sum_matches_dax_with_blanks_blank_member_and_orphan_fk`:
+///   "the orphan Valor never appears"); a dimension row with a genuinely
+///   BLANK *category* value, by contrast, groups under "Sem dados" like any
+///   other blank category value. Filtering the dimension also drops any
+///   fact row whose matching dim row got filtered out, for the same reason
+///   (it no longer appears in `dim_key_to_row`) — this falls out for free
+///   because `get_visible_row_indices(fact, ctx)` already excludes a fact
+///   row whose key isn't among the FILTERED dimension's allowed keys
+///   whenever the dimension itself carries a direct/range/tuple filter —
+///   see that function's dimension->fact propagation step.
+/// - Filters on EITHER table (direct column, range, or tuple) are honored
+///   because both the dimension's and the fact's visible-row sets come
+///   from the model's own `get_visible_row_indices`, not reimplemented here.
+///
+/// Returns `None` (falls back to the generic per-category loop) for
+/// anything outside this shape; never silently approximates.
+fn try_vectorized_star_group_agg(
+    model: &DaxModel,
+    base_ctx: &FilterContext,
+    cat_tbl_name: &str,
+    cat_col: &str,
+    y_names: &[String],
+    req_table_id: &str,
+    agg: &str,
+) -> Option<(Vec<String>, Vec<Vec<Option<f64>>>)> {
+    let agg_u = agg.to_ascii_uppercase();
+    if !matches!(agg_u.as_str(), "SUM" | "COUNT" | "DISTINCTCOUNT" | "MIN" | "MAX" | "AVG" | "AVERAGE") {
+        return None;
+    }
+    if !base_ctx.rel_overrides.is_empty() {
+        return None;
+    }
+    if model.relationships.len() != 1 {
+        return None;
+    }
+    let rel = &model.relationships[0];
+    if !rel.is_active || !rel.cross_filter_direction.eq_ignore_ascii_case("single") {
+        return None;
+    }
+    if !rel.to_table.eq_ignore_ascii_case(cat_tbl_name) {
+        return None;
+    }
+
+    let dim_tbl = model.get_table(cat_tbl_name)?;
+    let cat_cidx = dim_tbl.get_col_idx(cat_col)?;
+    let dim_key_cidx = dim_tbl.get_col_idx(&rel.to_column)?;
+
+    let fact_tbl = model.get_table(&rel.from_table)?;
+    // Fact and category table must be distinct: that's the no-relationship
+    // fast path's job (`try_vectorized_group_agg`), not this one.
+    if fact_tbl.name.eq_ignore_ascii_case(&dim_tbl.name) {
+        return None;
+    }
+    let fact_fk_cidx = fact_tbl.get_col_idx(&rel.from_column)?;
+
+    let mut y_cidx: Vec<usize> = Vec::with_capacity(y_names.len());
+    for y in y_names {
+        if model.get_measure(y).is_some() {
+            return None;
+        }
+        let (y_tbl, y_col) = resolve_table_and_col(model, req_table_id, y);
+        if !y_tbl.eq_ignore_ascii_case(&fact_tbl.name) {
+            return None;
+        }
+        y_cidx.push(fact_tbl.get_col_idx(&y_col)?);
+    }
+    let n_y = y_cidx.len();
+
+    #[derive(Clone)]
+    struct Acc {
+        sum: f64,
+        count: u64,
+        min: f64,
+        max: f64,
+        distinct: HashSet<ValueKey>,
+    }
+    impl Default for Acc {
+        fn default() -> Self {
+            Acc { sum: 0.0, count: 0, min: f64::INFINITY, max: f64::NEG_INFINITY, distinct: HashSet::new() }
+        }
+    }
+
+    // Pass 1: visible dimension rows -> key(relationship column) -> row index.
+    let visible_dim = model.get_visible_row_indices(&dim_tbl.name, base_ctx);
+    let mut dim_key_to_row: HashMap<ValueKey, usize> = HashMap::with_capacity(visible_dim.len());
+    for r_idx in visible_dim {
+        dim_key_to_row.insert(dim_tbl.rows[r_idx][dim_key_cidx].value_key(), r_idx);
+    }
+
+    // Pass 2: visible fact rows (already reflects both tables' filters and
+    // the dimension->fact propagation step of `get_visible_row_indices`),
+    // resolved to a category via the FK -> dim-row map above.
+    let visible_fact = model.get_visible_row_indices(&fact_tbl.name, base_ctx);
+    let mut groups: HashMap<ValueKey, usize> = HashMap::new();
+    let mut labels: Vec<String> = Vec::new();
+    let mut sort_keys: Vec<ValueKey> = Vec::new();
+    let mut accs: Vec<Vec<Acc>> = Vec::new();
+
+    for r_idx in visible_fact {
+        let fk_key = fact_tbl.rows[r_idx][fact_fk_cidx].value_key();
+        // Orphan FK (matches no visible dimension row, by normalized key —
+        // a literal BLANK FK matching a dimension row whose key is ITSELF
+        // BLANK is a real match, not an orphan, and falls through to the
+        // `Some` arm below): dropped, never surfaces as a category, not even
+        // "Sem dados" — matches the engine's already-tested baseline
+        // (`dax::pushdown::tests_differential::grouped_sum_matches_dax_with_blanks_blank_member_and_orphan_fk`:
+        // "the orphan Valor never appears"). Only a dimension row with a
+        // genuinely BLANK *category* value groups under "Sem dados".
+        let Some(&dr) = dim_key_to_row.get(&fk_key) else { continue };
+        let v = &dim_tbl.rows[dr][cat_cidx];
+        let group_key = v.value_key();
+        let disp = v.as_display_string();
+        let sort_key = row_sort_key_opt(dim_tbl, cat_cidx, dr).unwrap_or_else(|| group_key.clone());
+
+        let gidx = *groups.entry(group_key).or_insert_with(|| {
+            let idx = labels.len();
+            labels.push(if disp.is_empty() { "Sem dados".to_string() } else { disp });
+            sort_keys.push(sort_key);
+            accs.push(vec![Acc::default(); n_y]);
+            idx
+        });
+        let row_accs = &mut accs[gidx];
+        for (yi, &cidx) in y_cidx.iter().enumerate() {
+            let v = &fact_tbl.rows[r_idx][cidx];
+            if agg_u == "DISTINCTCOUNT" {
+                row_accs[yi].distinct.insert(v.value_key());
+                continue;
+            }
+            if v.is_blank() {
+                continue;
+            }
+            match agg_u.as_str() {
+                "COUNT" => row_accs[yi].count += 1,
+                _ => {
+                    if let Some(n) = v.as_f64() {
+                        let a = &mut row_accs[yi];
+                        a.sum += n;
+                        a.count += 1;
+                        if n < a.min {
+                            a.min = n;
+                        }
+                        if n > a.max {
+                            a.max = n;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut order: Vec<usize> = (0..labels.len()).collect();
+    order.sort_by(|&a, &b| sort_keys[a].cmp(&sort_keys[b]).then_with(|| labels[a].cmp(&labels[b])));
+
+    let mut out_cats = Vec::with_capacity(order.len());
+    let mut grid: Vec<Vec<Option<f64>>> = Vec::with_capacity(order.len());
+    for gi in order {
+        let row: Vec<Option<f64>> = accs[gi]
+            .iter()
+            .map(|a| match agg_u.as_str() {
+                "COUNT" => (a.count > 0).then(|| a.count as f64),
+                "DISTINCTCOUNT" => (!a.distinct.is_empty()).then(|| a.distinct.len() as f64),
+                "AVG" | "AVERAGE" => (a.count > 0).then(|| a.sum / a.count as f64),
+                "MIN" => (a.count > 0).then_some(a.min),
+                "MAX" => (a.count > 0).then_some(a.max),
+                _ => (a.count > 0).then_some(a.sum),
+            })
+            .collect();
+        if row.iter().any(Option::is_some) {
+            out_cats.push(labels[gi].clone());
+            grid.push(row);
+        }
+    }
+    Some((out_cats, grid))
+}
+
 pub fn execute_visual_query(
     model: &DaxModel,
     req: &NativeVisualQueryRequest,
@@ -946,6 +1160,10 @@ fn execute_visual_query_dax(
         .collect();
     let (kept_cats, grid) = if let Some(fast) =
         try_vectorized_group_agg(model, &base_ctx, &cat_tbl_name, &cat_col, &y_names, &req.table_id, agg)
+    {
+        fast
+    } else if let Some(fast) =
+        try_vectorized_star_group_agg(model, &base_ctx, &cat_tbl_name, &cat_col, &y_names, &req.table_id, agg)
     {
         fast
     } else {
@@ -1480,6 +1698,10 @@ fn execute_matrix_query(
 #[path = "tests_drill.rs"]
 mod drill_tests;
 
+#[cfg(test)]
+#[path = "query_planner_star_bench.rs"]
+mod star_bench;
+
 
 #[cfg(test)]
 mod tests {
@@ -1733,6 +1955,354 @@ mod tests {
             try_vectorized_group_agg(&with_measure, &base_ctx, "fFast", "Categoria", &["TotalValor".to_string()], "fFast", "SUM")
                 .is_none()
         );
+    }
+
+    /// v0.11 Frente G (Rodada 2): star-schema model for
+    /// `try_vectorized_star_group_agg`'s differential tests. `dCategoria`
+    /// is the "one" side (CatID is its key, Categoria the displayed
+    /// category); `fFast` is the "many" side (CatID is the FK).
+    ///
+    /// Deliberately exercises every corner called out in the task brief:
+    /// - dim row 3 has a BLANK key (CatID=null) — fact row 5's BLANK FK
+    ///   must match it by normalized key, landing in category
+    ///   "BlankKeyDim" (BLANK matching BLANK; a real match, not the
+    ///   dropped-orphan case below).
+    /// - dim row 4 has a BLANK category value (Categoria=null) — groups
+    ///   under "Sem dados".
+    /// - fact row 4 (CatID=999) matches NO dim row at all — a true orphan,
+    ///   and must be DROPPED entirely (never surfaces as a category, not
+    ///   even "Sem dados" — matches the engine's existing, already-tested
+    ///   baseline in `dax::pushdown::tests_differential::grouped_sum_matches_dax_with_blanks_blank_member_and_orphan_fk`).
+    /// - fact row 6 has a BLANK `Valor` (must not count toward
+    ///   SUM/COUNT/MIN/MAX/AVG, must not break DISTINCTCOUNT) while its
+    ///   `Qtd` is present — exercises the per-cell BLANK handling the
+    ///   no-relationship fast path already covers, inside the "Sem dados"
+    ///   group (dim row 4's blank category; row 6 is its ONLY member once
+    ///   the orphan row 4 is correctly dropped).
+    fn star_model_for_fastpath_diff() -> DaxModel {
+        use serde_json::json;
+        let row_map = |pairs: &[(&str, serde_json::Value)]| -> serde_json::Map<String, serde_json::Value> {
+            pairs.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect()
+        };
+        let mut model = DaxModel::new();
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput {
+                    name: "dCategoria".into(),
+                    columns: vec!["CatID".into(), "Categoria".into()],
+                    rows: vec![
+                        row_map(&[("CatID", json!(1)), ("Categoria", json!("A"))]),
+                        row_map(&[("CatID", json!(2)), ("Categoria", json!("B"))]),
+                        // BLANK key: a fact row with a BLANK FK must match THIS
+                        // row (BLANK == BLANK), not the orphan/blank-member bucket.
+                        row_map(&[("CatID", json!(null)), ("Categoria", json!("BlankKeyDim"))]),
+                        // BLANK category value: groups under "Sem dados".
+                        row_map(&[("CatID", json!(4)), ("Categoria", json!(null))]),
+                    ],
+                    column_types: vec![Some("number".into()), Some("text".into())],
+                    ..Default::default()
+                },
+                DaxTableInput {
+                    name: "fFast".into(),
+                    columns: vec!["CatID".into(), "Valor".into(), "Qtd".into(), "Data".into()],
+                    rows: vec![
+                        row_map(&[("CatID", json!(1)), ("Valor", json!(100.0)), ("Qtd", json!(2)), ("Data", json!("2026-01-10"))]),
+                        row_map(&[("CatID", json!(1)), ("Valor", json!(50.0)), ("Qtd", json!(1)), ("Data", json!("2026-02-10"))]),
+                        row_map(&[("CatID", json!(2)), ("Valor", json!(200.0)), ("Qtd", json!(5)), ("Data", json!("2026-01-10"))]),
+                        // Orphan: no dim row has CatID=999.
+                        row_map(&[("CatID", json!(999)), ("Valor", json!(9.0)), ("Qtd", json!(1)), ("Data", json!("2026-01-10"))]),
+                        // BLANK FK: must match dim row 3 (BLANK key), not the orphan bucket.
+                        row_map(&[("CatID", json!(null)), ("Valor", json!(7.0)), ("Qtd", json!(1)), ("Data", json!("2026-01-10"))]),
+                        // Matches dim row 4 (blank category); Valor itself BLANK here.
+                        row_map(&[("CatID", json!(4)), ("Valor", json!(null)), ("Qtd", json!(3)), ("Data", json!("2026-03-01"))]),
+                    ],
+                    column_types: vec![Some("number".into()), Some("number".into()), Some("number".into()), Some("date".into())],
+                    ..Default::default()
+                },
+            ],
+            relationships: vec![DaxRelationshipInput {
+                from_table: "fFast".into(),
+                from_column: "CatID".into(),
+                to_table: "dCategoria".into(),
+                to_column: "CatID".into(),
+                cross_filter_direction: "single".into(),
+                is_active: true,
+            }],
+            measures: vec![],
+        });
+        model
+    }
+
+    /// Independent oracle for the star shape: a plain nested loop (no
+    /// hashmap short-cut, no reuse of `try_vectorized_star_group_agg`),
+    /// relying only on `get_visible_row_indices` for the filtering
+    /// primitive (the thing the task calls "a propagação atual" — the
+    /// current, already-tested propagation rules — not something this
+    /// test re-derives). Catches bugs the fast path's own hashmap could
+    /// hide (e.g. key collisions) because it resolves each fact row's
+    /// category by SCANNING every visible dim row, not via `dim_key_to_row`.
+    fn oracle_star_group_agg(
+        model: &DaxModel,
+        base_ctx: &FilterContext,
+        dim_name: &str,
+        dim_key_col: &str,
+        cat_col: &str,
+        fact_name: &str,
+        fk_col: &str,
+        y_names: &[String],
+        agg: &str,
+    ) -> (Vec<String>, Vec<Vec<Option<f64>>>) {
+        let agg_u = agg.to_ascii_uppercase();
+        let dim = model.get_table(dim_name).unwrap();
+        let dim_key_cidx = dim.get_col_idx(dim_key_col).unwrap();
+        let cat_cidx = dim.get_col_idx(cat_col).unwrap();
+        let fact = model.get_table(fact_name).unwrap();
+        let fk_cidx = fact.get_col_idx(fk_col).unwrap();
+        let y_cidx: Vec<usize> = y_names.iter().map(|y| fact.get_col_idx(y).unwrap()).collect();
+
+        let visible_dim = model.get_visible_row_indices(dim_name, base_ctx);
+        let visible_fact = model.get_visible_row_indices(fact_name, base_ctx);
+
+        let mut by_label: HashMap<String, Vec<Vec<f64>>> = HashMap::new();
+        let mut by_label_distinct: HashMap<String, Vec<HashSet<ValueKey>>> = HashMap::new();
+        for &fr in &visible_fact {
+            let fk_key = fact.rows[fr][fk_cidx].value_key();
+            // Linear scan (no hashmap) for the matching visible dim row.
+            // Orphan (no match at all) -> drop the row entirely, same
+            // correction as the fast path: matches the engine's existing
+            // tested baseline (orphan fact rows never surface, not even
+            // under "Sem dados"; only a genuinely blank dim CATEGORY does).
+            let Some(&dr) = visible_dim.iter().find(|&&dr| dim.rows[dr][dim_key_cidx].value_key() == fk_key) else {
+                continue;
+            };
+            let disp = dim.rows[dr][cat_cidx].as_display_string();
+            let label = if disp.is_empty() { "Sem dados".to_string() } else { disp };
+            let nums = by_label.entry(label.clone()).or_insert_with(|| vec![Vec::new(); y_cidx.len()]);
+            let distincts = by_label_distinct.entry(label).or_insert_with(|| vec![HashSet::new(); y_cidx.len()]);
+            for (yi, &cidx) in y_cidx.iter().enumerate() {
+                let v = &fact.rows[fr][cidx];
+                distincts[yi].insert(v.value_key());
+                if !v.is_blank() {
+                    if let Some(n) = v.as_f64() {
+                        nums[yi].push(n);
+                    }
+                }
+            }
+        }
+
+        let mut labels: Vec<String> = by_label.keys().cloned().collect();
+        labels.sort();
+        let mut out_cats = Vec::new();
+        let mut grid = Vec::new();
+        for label in labels {
+            let nums = &by_label[&label];
+            let distincts = &by_label_distinct[&label];
+            let row: Vec<Option<f64>> = (0..y_cidx.len())
+                .map(|yi| match agg_u.as_str() {
+                    "COUNT" => (!nums[yi].is_empty()).then(|| nums[yi].len() as f64),
+                    "DISTINCTCOUNT" => (!distincts[yi].is_empty()).then(|| distincts[yi].len() as f64),
+                    "AVG" | "AVERAGE" => (!nums[yi].is_empty()).then(|| nums[yi].iter().sum::<f64>() / nums[yi].len() as f64),
+                    "MIN" => nums[yi].iter().copied().fold(None, |acc: Option<f64>, n| Some(acc.map_or(n, |a| a.min(n)))),
+                    "MAX" => nums[yi].iter().copied().fold(None, |acc: Option<f64>, n| Some(acc.map_or(n, |a| a.max(n)))),
+                    _ => (!nums[yi].is_empty()).then(|| nums[yi].iter().sum()),
+                })
+                .collect();
+            if row.iter().any(Option::is_some) {
+                out_cats.push(label);
+                grid.push(row);
+            }
+        }
+        // Sort output the same way the fast path does (by category label,
+        // since none of these columns has a sortByColumn): keep insertion
+        // order aligned by re-sorting both oracle and fast-path results by
+        // label before comparing, done by the caller via `sort_by_label`.
+        (out_cats, grid)
+    }
+
+    /// Both the fast path and the oracle order categories independently
+    /// (fast path by `ValueKey`/label, oracle by label only); sort by label
+    /// before comparing so ordering differences (when no sortByColumn and
+    /// value types mix, e.g. "A"/"B"/"Sem dados"/"BlankKeyDim") don't cause
+    /// a spurious mismatch — the task only requires the SAME set of
+    /// (category, values), not a specific tie-break between differently
+    /// ordered equal-rank implementations.
+    fn sort_by_label(cats: Vec<String>, grid: Vec<Vec<Option<f64>>>) -> Vec<(String, Vec<Option<f64>>)> {
+        let mut paired: Vec<(String, Vec<Option<f64>>)> = cats.into_iter().zip(grid).collect();
+        paired.sort_by(|a, b| a.0.cmp(&b.0));
+        paired
+    }
+
+    #[test]
+    fn star_fast_path_matches_oracle_for_all_seven_aggregations() {
+        let model = star_model_for_fastpath_diff();
+        let base_ctx = FilterContext::default();
+        let y_names = vec!["Valor".to_string(), "Qtd".to_string()];
+        for agg in ["SUM", "COUNT", "MIN", "MAX", "AVG", "AVERAGE", "DISTINCTCOUNT"] {
+            let fast = try_vectorized_star_group_agg(&model, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", agg)
+                .unwrap_or_else(|| panic!("star fast path must fire for agg {agg}"));
+            let oracle = oracle_star_group_agg(&model, &base_ctx, "dCategoria", "CatID", "Categoria", "fFast", "CatID", &y_names, agg);
+            assert_eq!(
+                sort_by_label(fast.0, fast.1),
+                sort_by_label(oracle.0, oracle.1),
+                "mismatch for agg {agg}"
+            );
+        }
+    }
+
+    #[test]
+    fn star_fast_path_matches_oracle_with_a_dimension_filter() {
+        // Filter the dimension to A/B only: BlankKeyDim and the blank-category
+        // dim row drop out, and with them the blank member — the orphan fact
+        // row (CatID=999) and the blank-FK row must ALSO disappear (filtering
+        // the dimension excludes the blank member too, per VertiPaq).
+        let model = star_model_for_fastpath_diff();
+        let filters = vec![NativeFilterInput {
+            table_id: "dCategoria".into(),
+            column: "Categoria".into(),
+            values: vec![serde_json::json!("A"), serde_json::json!("B")],
+            operator: None,
+        }];
+        let base_ctx = build_filter_context(&filters, &model);
+        let y_names = vec!["Valor".to_string()];
+        for agg in ["SUM", "COUNT", "MIN", "MAX", "AVERAGE", "DISTINCTCOUNT"] {
+            let fast = try_vectorized_star_group_agg(&model, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", agg).unwrap();
+            let oracle = oracle_star_group_agg(&model, &base_ctx, "dCategoria", "CatID", "Categoria", "fFast", "CatID", &y_names, agg);
+            assert_eq!(sort_by_label(fast.0, fast.1), sort_by_label(oracle.0, oracle.1), "mismatch for agg {agg} with a dim filter");
+            // Explicit sanity check: no "Sem dados" / "BlankKeyDim" category survives.
+            let (cats, _) = try_vectorized_star_group_agg(&model, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", agg).unwrap();
+            assert!(!cats.contains(&"Sem dados".to_string()));
+            assert!(!cats.contains(&"BlankKeyDim".to_string()));
+        }
+    }
+
+    #[test]
+    fn star_fast_path_matches_oracle_with_a_fact_filter() {
+        // Filter the FACT table directly (Data = 2026-01-10): drops fact
+        // rows 2 and 6, keeps the orphan (row 4) and the blank-FK row (row 5)
+        // since the dimension itself carries no filter.
+        let model = star_model_for_fastpath_diff();
+        let filters = vec![NativeFilterInput {
+            table_id: "fFast".into(),
+            column: "Data".into(),
+            values: vec![serde_json::json!("2026-01-10")],
+            operator: None,
+        }];
+        let base_ctx = build_filter_context(&filters, &model);
+        let y_names = vec!["Valor".to_string(), "Qtd".to_string()];
+        for agg in ["SUM", "COUNT", "MIN", "MAX", "AVG", "AVERAGE", "DISTINCTCOUNT"] {
+            let fast = try_vectorized_star_group_agg(&model, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", agg).unwrap();
+            let oracle = oracle_star_group_agg(&model, &base_ctx, "dCategoria", "CatID", "Categoria", "fFast", "CatID", &y_names, agg);
+            assert_eq!(sort_by_label(fast.0, fast.1), sort_by_label(oracle.0, oracle.1), "mismatch for agg {agg} with a fact filter");
+        }
+    }
+
+    #[test]
+    fn star_fast_path_bails_out_for_two_relationships_bidirectional_or_measures() {
+        let base_ctx = FilterContext::default();
+        let y_names = vec!["Valor".to_string()];
+
+        // Two relationships in the model: bail out (narrow, provable scope only).
+        let mut two_rel = star_model_for_fastpath_diff();
+        two_rel.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput { name: "dOutro".into(), columns: vec!["Id".into()], rows: vec![], ..Default::default() },
+            ],
+            relationships: vec![
+                DaxRelationshipInput {
+                    from_table: "fFast".into(),
+                    from_column: "CatID".into(),
+                    to_table: "dCategoria".into(),
+                    to_column: "CatID".into(),
+                    cross_filter_direction: "single".into(),
+                    is_active: true,
+                },
+                DaxRelationshipInput {
+                    from_table: "fFast".into(),
+                    from_column: "CatID".into(),
+                    to_table: "dOutro".into(),
+                    to_column: "Id".into(),
+                    cross_filter_direction: "single".into(),
+                    is_active: true,
+                },
+            ],
+            measures: vec![],
+        });
+        assert!(try_vectorized_star_group_agg(&two_rel, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", "SUM").is_none());
+
+        // Bidirectional relationship: bail out (this function never
+        // reproduces fact -> dim back-propagation).
+        let mut both_dir = star_model_for_fastpath_diff();
+        both_dir.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![],
+            relationships: vec![DaxRelationshipInput {
+                from_table: "fFast".into(),
+                from_column: "CatID".into(),
+                to_table: "dCategoria".into(),
+                to_column: "CatID".into(),
+                cross_filter_direction: "both".into(),
+                is_active: true,
+            }],
+            measures: vec![],
+        });
+        assert!(try_vectorized_star_group_agg(&both_dir, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", "SUM").is_none());
+
+        // Inactive relationship: bail out.
+        let mut inactive = star_model_for_fastpath_diff();
+        inactive.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![],
+            relationships: vec![DaxRelationshipInput {
+                from_table: "fFast".into(),
+                from_column: "CatID".into(),
+                to_table: "dCategoria".into(),
+                to_column: "CatID".into(),
+                cross_filter_direction: "single".into(),
+                is_active: false,
+            }],
+            measures: vec![],
+        });
+        assert!(try_vectorized_star_group_agg(&inactive, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", "SUM").is_none());
+
+        // y-field is a measure: bail out.
+        let mut with_measure = star_model_for_fastpath_diff();
+        with_measure.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![],
+            relationships: vec![],
+            measures: vec![DaxMeasureInput {
+                name: "TotalValor".into(),
+                table_name: "fFast".into(),
+                formula: "SUM(fFast[Valor])".into(),
+            }],
+        });
+        assert!(
+            try_vectorized_star_group_agg(&with_measure, &base_ctx, "dCategoria", "Categoria", &["TotalValor".to_string()], "fFast", "SUM")
+                .is_none()
+        );
+    }
+
+    /// v0.11 Frente G (Rodada 2): run the star differential ~64 times with a
+    /// FRESH model (and therefore a fresh `HashMap` every time — Rust's
+    /// default hasher is randomly seeded per-process but the insertion
+    /// ORDER of `dim_key_to_row`/`groups` still depends on each run's
+    /// specific HashMap internal bucket layout for that run) to catch any
+    /// result that accidentally depends on HashMap iteration order rather
+    /// than being sorted deterministically before being returned.
+    #[test]
+    fn star_fast_path_matches_oracle_across_many_fresh_models_hashmap_order() {
+        for i in 0..64 {
+            let model = star_model_for_fastpath_diff();
+            let base_ctx = FilterContext::default();
+            let y_names = vec!["Valor".to_string(), "Qtd".to_string()];
+            for agg in ["SUM", "COUNT", "MIN", "MAX", "AVG", "AVERAGE", "DISTINCTCOUNT"] {
+                let fast = try_vectorized_star_group_agg(&model, &base_ctx, "dCategoria", "Categoria", &y_names, "fFast", agg)
+                    .unwrap_or_else(|| panic!("run {i}: star fast path must fire for agg {agg}"));
+                let oracle = oracle_star_group_agg(&model, &base_ctx, "dCategoria", "CatID", "Categoria", "fFast", "CatID", &y_names, agg);
+                assert_eq!(
+                    sort_by_label(fast.0, fast.1),
+                    sort_by_label(oracle.0, oracle.1),
+                    "run {i}: mismatch for agg {agg}"
+                );
+            }
+        }
     }
 
     #[test]
