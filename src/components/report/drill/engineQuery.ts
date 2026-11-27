@@ -422,12 +422,22 @@ export function toNativeDrillFilters(filters: DrillFilterSpec[]) {
   return filters.map(f => ({ field: f.field, datePart: f.datePart ?? null, value: f.value ?? null }));
 }
 
-/** Mesma conversão de filtros do relatório usada pelo VisualCard para o caminho nativo. */
+/** Mesma conversão de filtros do relatório usada pelo VisualCard para o caminho nativo.
+ *
+ * v0.11 Rodada 2, Frente H/E (bug fix): preserva `f.operator` em vez de
+ * espalhar `f.value` direto em `values` — um filtro `between` (segmentador
+ * "Entre" / janelas de data relativa) guarda seu intervalo como
+ * `value: [from, to]`, e sem o operador isso virava uma lista IN com só as
+ * duas pontas (match apenas em `from` e `to`, nunca no meio). O Rust
+ * (`NativeFilterInput.operator`, `FilterContext::range_filters`) usa o
+ * operador para aplicar um range real — ver o mesmo fix em `VisualCard.tsx`.
+ */
 export function toNativeFilters(filters: Filter[]): NativeVisualQueryRequest['filters'] {
   return filters
     .map(f => ({
       tableId: f.tableId,
       column: f.column,
+      operator: f.operator,
       values: Array.isArray(f.value) ? f.value : f.value !== undefined && f.value !== '' ? [f.value] : [],
     }))
     .filter(f => f.values.length > 0);
