@@ -35,6 +35,18 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
+    "linux": {
+      "deb": {
+        "conflicts": ["prismbi"],
+        "replaces": ["prismbi"],
+        "provides": ["prismbi"]
+      },
+      "rpm": {
+        "conflicts": ["prismbi"],
+        "obsoletes": ["prismbi"],
+        "provides": ["prismbi"]
+      }
+    },
     "windows": {
       "wix": {
         "language": "pt-BR",
