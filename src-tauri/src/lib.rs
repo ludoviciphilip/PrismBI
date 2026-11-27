@@ -309,6 +309,35 @@ fn query_visual_native(
     dax::query_planner::execute_visual_query_with_conn(&guard, &request, Some(&conn))
 }
 
+/// v0.11 Rodada 2, Frente E: native "table" visual query over ALL rows of
+/// the model (no 5.000-row preview cap), with server-side sort/Top N and
+/// offset/limit pagination so a 10M-row table never crosses IPC at once.
+#[tauri::command]
+fn query_table_native(
+    state: State<'_, AppState>,
+    request: dax::query_planner::NativeTableQueryRequest,
+) -> Result<dax::query_planner::NativeTableQueryResult, String> {
+    let guard = state
+        .dax_model
+        .lock()
+        .map_err(|_| "Lock DaxModel corrompido".to_string())?;
+    dax::query_planner::execute_table_query(&guard, &request)
+}
+
+/// v0.11 Rodada 2, Frente E: native "scatter" visual query, with
+/// deterministic Power-BI-style point sampling (default ~3.500 points).
+#[tauri::command]
+fn query_scatter_native(
+    state: State<'_, AppState>,
+    request: dax::query_planner::NativeScatterQueryRequest,
+) -> Result<dax::query_planner::NativeScatterQueryResult, String> {
+    let guard = state
+        .dax_model
+        .lock()
+        .map_err(|_| "Lock DaxModel corrompido".to_string())?;
+    dax::query_planner::execute_scatter_query(&guard, &request)
+}
+
 #[tauri::command]
 fn check_for_updates(
     state: State<'_, AppState>,
@@ -614,6 +643,8 @@ pub fn run() {
             evaluate_dax_native,
             evaluate_dax_batch_native,
             query_visual_native,
+            query_table_native,
+            query_scatter_native,
             check_for_updates,
             download_and_install_update,
             db_connect,
