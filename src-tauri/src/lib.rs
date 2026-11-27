@@ -302,7 +302,10 @@ fn query_visual_native(
         .dax_model
         .lock()
         .map_err(|_| "Lock DaxModel corrompido".to_string())?;
-    dax::query_planner::execute_visual_query(&guard, &request)
+    // v0.11 Frente A: tenta o pushdown para o DuckDB antes do motor DAX (ver
+    // dax::pushdown); cai no caminho de sempre em qualquer rejeição/erro.
+    let conn = state.db.connection().lock().map_err(|_| "Lock DuckDB corrompido".to_string())?;
+    dax::query_planner::execute_visual_query_with_conn(&guard, &request, Some(&conn))
 }
 
 #[tauri::command]

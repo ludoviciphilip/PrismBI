@@ -47,7 +47,7 @@ pub fn load_count_for_test() -> u64 {
     LOAD_COUNT.with(|c| c.get())
 }
 
-fn quote_ident(ident: &str) -> String {
+pub(crate) fn quote_ident(ident: &str) -> String {
     format!("\"{}\"", ident.replace('"', "\"\""))
 }
 
@@ -145,7 +145,7 @@ fn text_to_dax(s: &str, ct: ColumnType) -> DaxValue {
     }
 }
 
-fn value_ref_to_dax(vref: ValueRef<'_>, ct: ColumnType) -> DaxValue {
+pub(crate) fn value_ref_to_dax(vref: ValueRef<'_>, ct: ColumnType) -> DaxValue {
     match vref {
         ValueRef::Null => DaxValue::Blank,
         ValueRef::Boolean(b) => {

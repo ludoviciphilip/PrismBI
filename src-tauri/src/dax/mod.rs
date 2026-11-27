@@ -5,6 +5,7 @@ pub mod evaluator;
 pub mod functions;
 pub mod lexer;
 pub mod parser;
+pub mod pushdown;
 pub mod query_planner;
 #[cfg(test)]
 mod tests_duckdb_sync;
@@ -856,6 +857,12 @@ pub struct DaxModel {
     /// `"table.column"` (a calculated column's DAX failed to evaluate).
     /// Surfaced inline by the UI's formula editor (see `src/dax/calculated`).
     pub calculated_errors: HashMap<String, String>,
+    /// v0.11 Frente A (pushdown): DAX table key (lowercase) -> the DuckDB
+    /// table name that physically backs it (`DaxTableInput::duckdb_table`).
+    /// Tables without a DuckDB source (sample data, manual entry...) have no
+    /// entry here, which is exactly the signal `pushdown` needs to bail out
+    /// to the DAX engine (no physical table to push SQL down to).
+    duckdb_table_names: HashMap<String, String>,
 }
 
 impl Default for DaxModel {
@@ -874,6 +881,7 @@ impl DaxModel {
             duckdb_table_versions: HashMap::new(),
             calculated_columns: HashMap::new(),
             calculated_errors: HashMap::new(),
+            duckdb_table_names: HashMap::new(),
         }
     }
 
@@ -921,8 +929,12 @@ impl DaxModel {
         // table_key -> (col_key -> expression), for every table (base or
         // calculated) that has calculated columns.
         let mut calc_column_inputs: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut new_duckdb_names = HashMap::new();
         for t in payload.tables {
             let key = t.name.to_lowercase();
+            if let Some(duckdb_name) = &t.duckdb_table {
+                new_duckdb_names.insert(key.clone(), duckdb_name.clone());
+            }
             if !t.calculated_columns.is_empty() {
                 calc_column_inputs.insert(
                     key.clone(),
@@ -980,6 +992,7 @@ impl DaxModel {
         self.tables = new_tables;
         self.key_cache = new_key_cache;
         self.duckdb_table_versions = new_versions;
+        self.duckdb_table_names = new_duckdb_names;
         self.relationships = payload.relationships;
         self.measures.clear();
         for m in payload.measures {
@@ -1011,6 +1024,16 @@ impl DaxModel {
 
     pub fn get_measure(&self, name: &str) -> Option<&DaxMeasureInput> {
         self.measures.get(&name.trim().to_lowercase())
+    }
+
+    /// v0.11 Frente A (pushdown): the DuckDB table name backing `dax_table`
+    /// (by its DAX model name, any case), if any. `None` means this table
+    /// has no physical DuckDB table (sample/manual data) and pushdown must
+    /// fall back to the DAX engine.
+    pub fn duckdb_table_name(&self, dax_table: &str) -> Option<&str> {
+        self.duckdb_table_names
+            .get(&dax_table.trim().to_lowercase())
+            .map(String::as_str)
     }
 
     /// §3 item 3 / blank member: true when some active many-to-one relationship
