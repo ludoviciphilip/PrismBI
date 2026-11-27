@@ -3,19 +3,19 @@
 > Gerado por `scripts/dax-conformance-report.mjs` a partir de `tests/dax-corpus/`. Não edite à mão.
 > Cada caso tem resultado esperado conferido de forma independente dos motores.
 
-**Casos:** 412 · **Rust (principal):** 412/412 (100.0%) · **TypeScript (legado):** 361/412 (87.6%)
+**Casos:** 415 · **Rust (principal):** 415/415 (100.0%) · **TypeScript (legado):** 362/415 (87.2%)
 
 | Categoria | Casos | Rust | TS |
 | :--- | ---: | ---: | ---: |
 | calculated | 9 | 9 (100.0%) | 0 (0.0%) |
-| core | 49 | 49 (100.0%) | 48 (98.0%) |
-| filter | 82 | 82 (100.0%) | 60 (73.2%) |
+| core | 52 | 52 (100.0%) | 50 (96.2%) |
+| filter | 82 | 82 (100.0%) | 59 (72.0%) |
 | scalar | 110 | 110 (100.0%) | 106 (96.4%) |
 | stats | 73 | 73 (100.0%) | 71 (97.3%) |
 | time | 69 | 69 (100.0%) | 69 (100.0%) |
 | window | 20 | 20 (100.0%) | 7 (35.0%) |
 
-## Casos com falha (51)
+## Casos com falha (53)
 
 | Caso | Rust | TS |
 | :--- | :--- | :--- |
@@ -28,6 +28,7 @@
 | `calculated.table.summarize_category_avg_sum` | ✅ | ❌ null |
 | `calculated.table.summarize_category_count` | ✅ | ❌ 0 |
 | `calculated.table.union_keeps_duplicates` | ✅ | ❌ 0 |
+| `core.countrows.empty_table_is_blank` | ✅ | ❌ 0 |
 | `core.rankx.client` | ✅ | ❌ 1 |
 | `filter.allselected.column_not_in_shadow_clears` | ✅ | ❌ 45 |
 | `filter.allselected.divide_share_three_selected` | ✅ | ❌ 1 |
@@ -45,6 +46,7 @@
 | `filter.rel.blankrow.values_column_includes` | ✅ | ❌ 2 |
 | `filter.rel.blankrow.values_table_includes` | ✅ | ❌ 0 |
 | `filter.table.calculatetable_countrows` | ✅ | ❌ 4 |
+| `filter.table.intersect_countrows_no_overlap` | ✅ | ❌ 0 |
 | `filter.table.summarize_countrows_categories` | ✅ | ❌ 1 |
 | `filter.topn.ties_expand_rows` | ✅ | ❌ 3 |
 | `filter.treatas.virtual_relationship_category` | ✅ | ❌ null |

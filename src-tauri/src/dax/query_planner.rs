@@ -672,6 +672,12 @@ fn try_vectorized_group_agg(
         let row_accs = &mut accs[gidx];
         for (yi, &cidx) in y_cidx.iter().enumerate() {
             let v = &tbl.rows[r_idx][cidx];
+            // DISTINCTCOUNT counts BLANK as one distinct value, like Power BI
+            // and the generic path (`eval_field_opt`, v0.11 Frente H item e).
+            if agg_u == "DISTINCTCOUNT" {
+                row_accs[yi].distinct.insert(v.value_key());
+                continue;
+            }
             if v.is_blank() {
                 continue;
             }
@@ -1691,6 +1697,7 @@ mod tests {
             table_id: "fFast".into(),
             column: "Data".into(),
             values: vec![serde_json::json!("2026-01-10")],
+            operator: None,
         }];
         let base_ctx = build_filter_context(&filters, &model);
         let y_names = vec!["Valor".to_string()];

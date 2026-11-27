@@ -516,7 +516,6 @@
     "filter.table.except_countrows_removes_papelaria",
     "filter.table.generateseries_countrows",
     "filter.table.generateseries_countrows_step",
-    "filter.table.intersect_countrows_no_overlap",
     "filter.table.selectcolumns_countrows_no_dedup",
     "filter.table.union_countrows_no_dedup",
     "filter.topn.maxx_combo",
