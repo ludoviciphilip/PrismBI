@@ -7,6 +7,7 @@ pub mod lexer;
 pub mod parser;
 pub mod pushdown;
 pub mod query_planner;
+pub mod query_view;
 #[cfg(test)]
 mod tests_duckdb_sync;
 
