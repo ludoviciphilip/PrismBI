@@ -26,4 +26,19 @@ describe('drillConfigFromPbiMeta (importação PBIR)', () => {
   it('não liga a hierarquia de data automática (no PBIR uma data "crua" aparece crua)', () => {
     expect(drillConfigFromPbiMeta({ categoryField: 'dCal.Data', drillFields: [] }, 'line')).not.toHaveProperty('drillMode');
   });
+
+  it('v0.11 Rodada 2 (Frente I): matriz com várias projeções em Columns vira matrixColumnFields (N níveis)', () => {
+    expect(
+      drillConfigFromPbiMeta({ categoryField: 'dLoja.Regiao', drillFields: ['dLoja.Cidade'], legendField: 'dCal.Ano', legendDrillFields: ['dCal.Trimestre'] }, 'matrix')
+    ).toEqual({
+      matrixRowFields: ['dLoja.Regiao', 'dLoja.Cidade'],
+      matrixColumnFields: ['dCal.Ano', 'dCal.Trimestre'],
+    });
+  });
+
+  it('colunas: 1 projeção só (legenda simples) ou gráfico (não matriz) não ganham matrixColumnFields', () => {
+    expect(drillConfigFromPbiMeta({ categoryField: 'A', legendField: 'B', legendDrillFields: [] }, 'matrix')).toEqual({});
+    expect(drillConfigFromPbiMeta({ categoryField: 'A', legendField: 'B', legendDrillFields: ['C'] }, 'column')).toEqual({});
+    expect(drillConfigFromPbiMeta({ categoryField: 'A', legendField: null, legendDrillFields: ['C'] }, 'matrix')).toEqual({});
+  });
 });

@@ -356,6 +356,8 @@ export const Ribbon: React.FC<{
             // v0.10 Rodada 2 (seams H↔G): hierarquia completa no round-trip .pbip.
             drillFields: v.dataConfig.drillFields ?? [],
             matrixRowFields: v.dataConfig.matrixRowFields ?? [],
+            // v0.11 Rodada 2 (Frente I): N níveis nas COLUNAS no round-trip .pbip.
+            matrixColumnFields: v.dataConfig.matrixColumnFields ?? [],
           })),
         })),
         themeName: state.activeThemeId || theme || 'VetroTheme',
