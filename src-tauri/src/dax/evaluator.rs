@@ -14,7 +14,7 @@ mod row;
 mod scalar;
 mod table;
 mod time;
-mod window;
+pub(crate) mod window;
 
 use filter::*;
 use row::*;

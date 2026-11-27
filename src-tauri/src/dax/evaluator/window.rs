@@ -4,8 +4,195 @@
 //! follows DAX semantics cleanly on top of `eval_table_expr` and `DaxTableData` lineage.
 
 use super::*;
+use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// ---------------------------------------------------------------------------
+// v0.11 Frente G: cache of the sorted partition, keyed by (relation,
+// ORDERBY, PARTITIONBY, filter context) — docs/V011.md Rodada 2.
+//
+// `prepare_partition` used to re-filter and re-sort the ENTIRE relation on
+// EVERY call. OFFSET/INDEX/RANK/ROWNUMBER inside a SUMX over N rows call it
+// once per iterated row, so a 50k-row SUMX cost O(N² log N): 50,000 calls,
+// each re-filtering + re-sorting up to 50,000 rows. Profiling confirmed this
+// (see `docs/RUST_ENGINE_2.md` §5 / the bench in `tests_window_cache`).
+//
+// Why this is safe to cache per `evaluate_dax` call (not per row): inside a
+// single SUMX/iterator body, the filter *context* passed down to window
+// functions (`ctx` in `eval_offset`/`eval_rank`/...) is the iterator's outer
+// context, evaluated ONCE for the whole loop — only the *row* (via
+// `row_stack`) changes per iteration (see `aggregate.rs`'s `iter_ctx`, reused
+// unchanged across all iterated rows). The relation/ORDERBY/PARTITIONBY
+// clauses are themselves `&Expr` borrowed from the one parsed AST for this
+// expression, so their addresses are stable for the whole evaluation too.
+// That means the GROUPED-AND-SORTED partitions (one group per PARTITIONBY
+// key) depend only on (relation expr identity, ORDERBY clauses, PARTITIONBY
+// clauses, BLANKS mode, filter context content) — never on the current row.
+// Only the *current row's* partition key and position within its (already
+// sorted) group legitimately vary per call, and those are cheap to resolve
+// (O(group size), not O(N log N)) once the group is cached.
+//
+// Known limitation (documented rather than guessed around): a RELATION
+// expression that itself reads the *current* row (e.g. through a measure
+// doing an implicit context transition inside the relation argument) would
+// invalidate this assumption. That shape is unusual for a window-function
+// relation (window functions are precisely about a stable frame) and isn't
+// exercised by the corpus; a future relation-identity-sensitive case should
+// add the row's resolved values to `window_cache_key` or bypass the cache.
+//
+// Cleared at the start of every top-level `DaxModel::evaluate_dax` call
+// (`mod.rs`), so a cache entry never survives past the query/measure
+// evaluation that built it — no stale hits across unrelated evaluations,
+// and no cross-test leakage (the cache is `thread_local`, so parallel test
+// threads never share it either).
+thread_local! {
+    static WINDOW_PARTITION_CACHE: RefCell<HashMap<u64, Rc<CachedPartitionGroups>>> = RefCell::new(HashMap::new());
+}
+
+struct CachedPartitionGroups {
+    groups: HashMap<Vec<ValueKey>, CachedPartition>,
+}
+
+struct CachedPartition {
+    /// PARTITIONBY key -> that partition's rows, already sorted by ORDERBY
+    /// with the deterministic all-columns tie-breaker `prepare_partition`
+    /// always applied. `usize` row indices are valid against the LIVE
+    /// relation table on every call (not just the one that built the
+    /// cache): the relation/ORDERBY/PARTITIONBY clauses and filter context
+    /// are identical by construction of the cache key, so `eval_table_expr`
+    /// deterministically reproduces the same rows in the same order.
+    ///
+    /// `Rc` so handing this partition's rows to `PreparedPartition` on every
+    /// one of the N calls inside a SUMX is an O(1) refcount bump, never an
+    /// O(group size) deep clone — a plain `Vec` clone here would silently
+    /// put the O(N) cost right back (N calls × O(group size) clone), even
+    /// with the sort itself cached.
+    rows: Rc<Vec<(usize, Vec<DaxValue>)>>,
+    /// `rel_tbl`'s full row (every column, as `ValueKey`s) -> its position in
+    /// `rows`. Lets the no-MATCHBY "current row" lookup in `prepare_partition`
+    /// (previously a `position()` linear scan re-run on every one of the N
+    /// iterated rows — the OTHER O(N) cost hiding behind the sort, since
+    /// caching only the sort left this scan still O(N) per call) become an
+    /// O(1) hash lookup instead. Built once per group, same pass as sorting.
+    by_full_row_key: HashMap<Vec<ValueKey>, usize>,
+    /// v0.11 Frente G: precomputed SKIP/DENSE rank at every position (1-based,
+    /// DAX semantics), so `RANK` doesn't re-walk `0..=pos` counting ties on
+    /// every one of the N calls — that scan was the OTHER hidden O(N) cost:
+    /// even with the sort and the position lookup both cached, `eval_rank`'s
+    /// own tie-counting loop alone still made a 50k-row SUMX O(N²). Built
+    /// once per group, same single pass as the rest of this struct.
+    skip_rank: Rc<Vec<i64>>,
+    dense_rank: Rc<Vec<i64>>,
+}
+
+pub(crate) fn clear_window_partition_cache() {
+    WINDOW_PARTITION_CACHE.with(|c| c.borrow_mut().clear());
+    WINDOW_RELATION_CACHE.with(|c| c.borrow_mut().clear());
+}
+
+fn hash_filter_context<H: Hasher>(ctx: &FilterContext, h: &mut H, depth: u8) {
+    let mut tables: Vec<&String> = ctx.filters.keys().collect();
+    tables.sort();
+    for t in tables {
+        t.hash(h);
+        let cols = &ctx.filters[t];
+        let mut cnames: Vec<&String> = cols.keys().collect();
+        cnames.sort();
+        for c in cnames {
+            c.hash(h);
+            let mut keys: Vec<&ValueKey> = cols[c].iter().collect();
+            keys.sort();
+            keys.hash(h);
+        }
+    }
+    ctx.tuple_filters.len().hash(h);
+    for tf in &ctx.tuple_filters {
+        tf.table.hash(h);
+        tf.columns.hash(h);
+        let mut tuples: Vec<&Vec<ValueKey>> = tf.tuples.iter().collect();
+        tuples.sort();
+        tuples.hash(h);
+    }
+    for ov in &ctx.rel_overrides {
+        format!("{ov:?}").hash(h);
+    }
+    // ALLSELECTED's shadow context can change which rows a relation like
+    // `ALLSELECTED(table)` sees even when `filters` above is identical, so it
+    // must be part of the key too. Depth-capped: a shadow's own shadow is
+    // always `None` in practice (`build_filter_context` sets it once), but
+    // the cap keeps this provably terminating regardless.
+    match (&ctx.shadow, depth) {
+        (Some(s), 0) => hash_filter_context(s, h, 1),
+        (Some(_), _) => "shadow-depth-cap".hash(h),
+        (None, _) => "no-shadow".hash(h),
+    }
+}
+
+fn window_cache_key(clauses: &WindowClauses<'_>, ctx: &FilterContext) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    clauses.relation.map(|e| e as *const Expr as usize).unwrap_or(0).hash(&mut h);
+    clauses.order_by.len().hash(&mut h);
+    for o in &clauses.order_by {
+        (o.expr as *const Expr as usize).hash(&mut h);
+        o.asc.hash(&mut h);
+    }
+    clauses.partition_by.len().hash(&mut h);
+    for p in &clauses.partition_by {
+        (*p as *const Expr as usize).hash(&mut h);
+    }
+    // Only affects `eval_window_relation`'s implicit-relation synthesis when
+    // `clauses.relation` is `None`, but folding it in unconditionally keeps
+    // one key function safe for both the relation cache and the partition
+    // cache below.
+    clauses.match_by.len().hash(&mut h);
+    for m in &clauses.match_by {
+        (*m as *const Expr as usize).hash(&mut h);
+    }
+    clauses.blanks.hash(&mut h);
+    hash_filter_context(ctx, &mut h, 0);
+    h.finish()
+}
+
+/// v0.11 Frente G: caches `eval_window_relation`'s result too — NOT just the
+/// sorted partitions. `eval_window_relation` (and the `ALL`/`ALLSELECTED`
+/// table expression it evaluates) scans the whole relation, so without this
+/// a 50k-row SUMX still paid O(N) per iterated row here even after the sort
+/// itself was cached, keeping the overall cost O(N²). Keyed identically to
+/// the partition cache (same relation/ORDERBY/PARTITIONBY/MATCHBY/filter
+/// context), and cleared at the same points.
+struct CachedWindowRelation {
+    table: DaxTableData,
+    indices: Vec<usize>,
+    ctx: FilterContext,
+}
+
+thread_local! {
+    static WINDOW_RELATION_CACHE: RefCell<HashMap<u64, Rc<CachedWindowRelation>>> = RefCell::new(HashMap::new());
+}
+
+fn get_or_build_cached_relation(
+    clauses: &WindowClauses<'_>,
+    model: &DaxModel,
+    ctx: &FilterContext,
+    row_stack: &[RowContext<'_>],
+    vars: &HashMap<String, DaxValue>,
+) -> Result<Rc<CachedWindowRelation>, String> {
+    let key = window_cache_key(clauses, ctx);
+    if let Some(cached) = WINDOW_RELATION_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return Ok(cached);
+    }
+    let (rel_eval, rel_indices, rel_ctx) = eval_window_relation(clauses, model, ctx, row_stack, vars)?;
+    let built = Rc::new(CachedWindowRelation {
+        table: rel_eval.as_ref().clone(),
+        indices: rel_indices,
+        ctx: rel_ctx,
+    });
+    WINDOW_RELATION_CACHE.with(|c| c.borrow_mut().insert(key, built.clone()));
+    Ok(built)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum BlanksMode {
     Default,
     First,
@@ -356,9 +543,112 @@ fn compare_values_with_blanks(l: &DaxValue, r: &DaxValue, blanks: BlanksMode, as
 
 struct PreparedPartition {
     /// `(orig_row_idx, order_keys)` sorted deterministically within the active partition.
-    rows: Vec<(usize, Vec<DaxValue>)>,
+    rows: Rc<Vec<(usize, Vec<DaxValue>)>>,
     /// Index into `rows` matching the current row, if determinable.
     current_pos: Option<usize>,
+    /// Precomputed SKIP/DENSE rank at every position (see `CachedPartition`);
+    /// `eval_rank` reads `skip_rank[current_pos]`/`dense_rank[current_pos]`
+    /// directly instead of re-walking `0..=current_pos` every call.
+    skip_rank: Rc<Vec<i64>>,
+    dense_rank: Rc<Vec<i64>>,
+}
+
+/// Builds every PARTITIONBY group at once (one group when there's no
+/// PARTITIONBY), each sorted by ORDERBY with the same deterministic
+/// all-columns tie-breaker `prepare_partition` always applied. Called once
+/// per cache miss instead of once per iterated row.
+fn build_partition_groups(
+    clauses: &WindowClauses<'_>,
+    rel_tbl: &DaxTableData,
+    rel_indices: &[usize],
+    rel_ctx: &FilterContext,
+    model: &DaxModel,
+    row_stack: &[RowContext<'_>],
+    vars: &HashMap<String, DaxValue>,
+) -> Result<CachedPartitionGroups, String> {
+    let mut groups: HashMap<Vec<ValueKey>, Vec<(usize, Vec<DaxValue>)>> = HashMap::new();
+    for &r_idx in rel_indices {
+        let mut row_pk = Vec::with_capacity(clauses.partition_by.len());
+        for pe in &clauses.partition_by {
+            let pv = resolve_expr_in_row(pe, rel_tbl, r_idx, model, rel_ctx, row_stack, vars)?;
+            row_pk.push(pv.value_key());
+        }
+        let mut order_vals = Vec::with_capacity(clauses.order_by.len());
+        for o in &clauses.order_by {
+            order_vals.push(resolve_expr_in_row(
+                o.expr, rel_tbl, r_idx, model, rel_ctx, row_stack, vars,
+            )?);
+        }
+        groups.entry(row_pk).or_default().push((r_idx, order_vals));
+    }
+
+    let order_dirs: Vec<bool> = clauses.order_by.iter().map(|o| o.asc).collect();
+    let blanks = clauses.blanks;
+    let mut out: HashMap<Vec<ValueKey>, CachedPartition> = HashMap::with_capacity(groups.len());
+    for (key, mut rows) in groups {
+        rows.sort_by(|(ia, ka), (ib, kb)| {
+            for ((va, vb), &asc) in ka.iter().zip(kb.iter()).zip(order_dirs.iter()) {
+                let c = compare_values_with_blanks(va, vb, blanks, asc);
+                if c != 0 {
+                    return if c < 0 {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Greater
+                    };
+                }
+            }
+            // Deterministic tie-breaker across all columns of `rel_tbl` ascending.
+            for cidx in 0..rel_tbl.columns.len() {
+                let c = compare_values_with_blanks(
+                    &rel_tbl.rows[*ia][cidx],
+                    &rel_tbl.rows[*ib][cidx],
+                    BlanksMode::Default,
+                    true,
+                );
+                if c != 0 {
+                    return if c < 0 {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Greater
+                    };
+                }
+            }
+            ia.cmp(ib)
+        });
+        let by_full_row_key: HashMap<Vec<ValueKey>, usize> = rows
+            .iter()
+            .enumerate()
+            .map(|(pos, (r_idx, _))| {
+                let full_key: Vec<ValueKey> = rel_tbl.rows[*r_idx].iter().map(DaxValue::value_key).collect();
+                (full_key, pos)
+            })
+            .collect();
+        let mut skip_rank = vec![1i64; rows.len()];
+        let mut dense_rank = vec![1i64; rows.len()];
+        for i in 1..rows.len() {
+            let prev_k = &rows[i - 1].1;
+            let cur_k = &rows[i].1;
+            let eq = prev_k.len() == cur_k.len()
+                && prev_k.iter().zip(cur_k.iter()).all(|(a, b)| compare_dax_values(a, b) == 0);
+            if eq {
+                skip_rank[i] = skip_rank[i - 1];
+                dense_rank[i] = dense_rank[i - 1];
+            } else {
+                skip_rank[i] = (i + 1) as i64;
+                dense_rank[i] = dense_rank[i - 1] + 1;
+            }
+        }
+        out.insert(
+            key,
+            CachedPartition {
+                rows: Rc::new(rows),
+                by_full_row_key,
+                skip_rank: Rc::new(skip_rank),
+                dense_rank: Rc::new(dense_rank),
+            },
+        );
+    }
+    Ok(CachedPartitionGroups { groups: out })
 }
 
 fn prepare_partition(
@@ -386,69 +676,45 @@ fn prepare_partition(
     };
     let Some(cur_part_key) = cur_part_key else {
         return Ok(PreparedPartition {
-            rows: Vec::new(),
+            rows: Rc::new(Vec::new()),
             current_pos: None,
+            skip_rank: Rc::new(Vec::new()),
+            dense_rank: Rc::new(Vec::new()),
         });
     };
 
-    // Determine effective ORDERBY columns: explicit clauses, or default to non-partition columns asc.
-    let mut partition_rows = Vec::new();
-    for &r_idx in rel_indices {
-        if !clauses.partition_by.is_empty() {
-            let mut row_pk = Vec::with_capacity(clauses.partition_by.len());
-            for pe in &clauses.partition_by {
-                let pv = resolve_expr_in_row(pe, rel_tbl, r_idx, model, rel_ctx, row_stack, vars)?;
-                row_pk.push(pv.value_key());
-            }
-            if row_pk != cur_part_key {
-                continue;
-            }
+    // v0.11 Frente G: grouped-and-sorted partitions are cached per
+    // (relation, ORDERBY, PARTITIONBY, filter context) — see the module
+    // doc comment above `WINDOW_PARTITION_CACHE`. A cache hit skips
+    // straight to this specific partition's already-sorted rows; a miss
+    // builds every partition's rows ONCE (same total row visits as before,
+    // just paid once instead of once per iterated row).
+    let cache_key = window_cache_key(clauses, outer_ctx);
+    let cached = WINDOW_PARTITION_CACHE.with(|c| c.borrow().get(&cache_key).cloned());
+    let cached = match cached {
+        Some(c) => c,
+        None => {
+            let built = build_partition_groups(clauses, rel_tbl, rel_indices, rel_ctx, model, row_stack, vars)?;
+            let rc = Rc::new(built);
+            WINDOW_PARTITION_CACHE.with(|c| c.borrow_mut().insert(cache_key, rc.clone()));
+            rc
         }
-        let mut order_vals = Vec::with_capacity(clauses.order_by.len());
-        for o in &clauses.order_by {
-            order_vals.push(resolve_expr_in_row(
-                o.expr, rel_tbl, r_idx, model, rel_ctx, row_stack, vars,
-            )?);
-        }
-        partition_rows.push((r_idx, order_vals));
-    }
-
-    let order_dirs: Vec<bool> = clauses.order_by.iter().map(|o| o.asc).collect();
-    let blanks = clauses.blanks;
-    partition_rows.sort_by(|(ia, ka), (ib, kb)| {
-        for ((va, vb), &asc) in ka.iter().zip(kb.iter()).zip(order_dirs.iter()) {
-            let c = compare_values_with_blanks(va, vb, blanks, asc);
-            if c != 0 {
-                return if c < 0 {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Greater
-                };
-            }
-        }
-        // Deterministic tie-breaker across all columns of `rel_tbl` ascending.
-        for cidx in 0..rel_tbl.columns.len() {
-            let c = compare_values_with_blanks(
-                &rel_tbl.rows[*ia][cidx],
-                &rel_tbl.rows[*ib][cidx],
-                BlanksMode::Default,
-                true,
-            );
-            if c != 0 {
-                return if c < 0 {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Greater
-                };
-            }
-        }
-        ia.cmp(ib)
-    });
+    };
+    let empty_partition = CachedPartition {
+        rows: Rc::new(Vec::new()),
+        by_full_row_key: HashMap::new(),
+        skip_rank: Rc::new(Vec::new()),
+        dense_rank: Rc::new(Vec::new()),
+    };
+    let cached_partition = cached.groups.get(&cur_part_key).unwrap_or(&empty_partition);
+    let partition_rows: Rc<Vec<(usize, Vec<DaxValue>)>> = cached_partition.rows.clone();
 
     if !need_current_row {
         return Ok(PreparedPartition {
             rows: partition_rows,
             current_pos: None,
+            skip_rank: cached_partition.skip_rank.clone(),
+            dense_rank: cached_partition.dense_rank.clone(),
         });
     }
 
@@ -499,7 +765,19 @@ fn prepare_partition(
             .collect();
         if active_cols.is_empty() {
             None
+        } else if active_cols.len() == rel_tbl.columns.len() {
+            // v0.11 Frente G: every column of `rel_tbl` is pinned to a known
+            // value (the common case: SUMX's row context pins the whole
+            // iterated row) — an O(1) lookup into the position index built
+            // once per group, instead of a `position()` scan re-run on every
+            // one of the N iterated rows.
+            let full_key: Vec<ValueKey> = active_cols.iter().map(|&(_, v)| v.value_key()).collect();
+            cached_partition.by_full_row_key.get(&full_key).copied()
         } else {
+            // Only SOME columns are pinned (rare: a relation narrower than
+            // `rel_tbl`'s full column set, or an unresolved column) — the
+            // position index is keyed by the FULL row, so fall back to the
+            // same linear scan as before; still correct, just not O(1).
             partition_rows.iter().position(|(r_idx, _)| {
                 active_cols
                     .iter()
@@ -509,8 +787,10 @@ fn prepare_partition(
     };
 
     Ok(PreparedPartition {
-        rows: partition_rows,
+        rows: partition_rows.clone(),
         current_pos,
+        skip_rank: cached_partition.skip_rank.clone(),
+        dense_rank: cached_partition.dense_rank.clone(),
     })
 }
 
@@ -530,9 +810,10 @@ pub(super) fn eval_offset<'a>(
         .unwrap_or(0.0)
         .round() as isize;
     let clauses = parse_window_clauses(&args[1..])?;
-    let (rel_eval, rel_indices, rel_ctx) =
-        eval_window_relation(&clauses, model, ctx, row_stack, vars)?;
-    let rel_tbl = rel_eval.as_ref();
+    let cached_rel = get_or_build_cached_relation(&clauses, model, ctx, row_stack, vars)?;
+    let rel_tbl = &cached_rel.table;
+    let rel_indices = &cached_rel.indices;
+    let rel_ctx = cached_rel.ctx.clone();
     let prep = prepare_partition(
         &clauses,
         rel_tbl,
@@ -581,9 +862,10 @@ pub(super) fn eval_index<'a>(
         .unwrap_or(0.0)
         .round() as isize;
     let clauses = parse_window_clauses(&args[1..])?;
-    let (rel_eval, rel_indices, rel_ctx) =
-        eval_window_relation(&clauses, model, ctx, row_stack, vars)?;
-    let rel_tbl = rel_eval.as_ref();
+    let cached_rel = get_or_build_cached_relation(&clauses, model, ctx, row_stack, vars)?;
+    let rel_tbl = &cached_rel.table;
+    let rel_indices = &cached_rel.indices;
+    let rel_ctx = cached_rel.ctx.clone();
     let prep = prepare_partition(
         &clauses,
         rel_tbl,
@@ -671,9 +953,10 @@ pub(super) fn eval_window<'a>(
     };
 
     let clauses = parse_window_clauses(&args[cursor..])?;
-    let (rel_eval, rel_indices, rel_ctx) =
-        eval_window_relation(&clauses, model, ctx, row_stack, vars)?;
-    let rel_tbl = rel_eval.as_ref();
+    let cached_rel = get_or_build_cached_relation(&clauses, model, ctx, row_stack, vars)?;
+    let rel_tbl = &cached_rel.table;
+    let rel_indices = &cached_rel.indices;
+    let rel_ctx = cached_rel.ctx.clone();
     let need_cur = matches!(from_type, RelAbs::Rel) || matches!(to_type, RelAbs::Rel);
     let prep = prepare_partition(
         &clauses,
@@ -746,9 +1029,10 @@ pub(super) fn eval_rank(
         _ => (RankTies::Skip, args),
     };
     let clauses = parse_window_clauses(rest)?;
-    let (rel_eval, rel_indices, rel_ctx) =
-        eval_window_relation(&clauses, model, ctx, row_stack, vars)?;
-    let rel_tbl = rel_eval.as_ref();
+    let cached_rel = get_or_build_cached_relation(&clauses, model, ctx, row_stack, vars)?;
+    let rel_tbl = &cached_rel.table;
+    let rel_indices = &cached_rel.indices;
+    let rel_ctx = cached_rel.ctx.clone();
     let prep = prepare_partition(
         &clauses,
         rel_tbl,
@@ -764,24 +1048,12 @@ pub(super) fn eval_rank(
     let Some(pos) = prep.current_pos else {
         return Ok(DaxValue::Blank);
     };
-    let mut skip_rank = 1i64;
-    let mut dense_rank = 1i64;
-    for i in 1..=pos {
-        let prev_k = &prep.rows[i - 1].1;
-        let cur_k = &prep.rows[i].1;
-        let eq = prev_k.len() == cur_k.len()
-            && prev_k
-                .iter()
-                .zip(cur_k.iter())
-                .all(|(a, b)| compare_dax_values(a, b) == 0);
-        if !eq {
-            skip_rank = (i + 1) as i64;
-            dense_rank += 1;
-        }
-    }
+    // v0.11 Frente G: O(1) lookup into the precomputed rank arrays instead of
+    // re-walking `0..=pos` counting ties on every one of the N calls inside
+    // a SUMX — see `CachedPartition::skip_rank`/`dense_rank`.
     Ok(DaxValue::Integer(match ties {
-        RankTies::Dense => dense_rank,
-        RankTies::Skip => skip_rank,
+        RankTies::Dense => prep.dense_rank[pos],
+        RankTies::Skip => prep.skip_rank[pos],
     }))
 }
 
@@ -794,9 +1066,10 @@ pub(super) fn eval_rownumber(
     vars: &HashMap<String, DaxValue>,
 ) -> Result<DaxValue, String> {
     let clauses = parse_window_clauses(args)?;
-    let (rel_eval, rel_indices, rel_ctx) =
-        eval_window_relation(&clauses, model, ctx, row_stack, vars)?;
-    let rel_tbl = rel_eval.as_ref();
+    let cached_rel = get_or_build_cached_relation(&clauses, model, ctx, row_stack, vars)?;
+    let rel_tbl = &cached_rel.table;
+    let rel_indices = &cached_rel.indices;
+    let rel_ctx = cached_rel.ctx.clone();
     let prep = prepare_partition(
         &clauses,
         rel_tbl,
@@ -816,6 +1089,7 @@ pub(super) fn eval_rownumber(
 
 #[cfg(test)]
 mod tests {
+    use super::clear_window_partition_cache;
     use crate::dax::{
         build_filter_context, DaxMeasureInput, DaxModel, DaxModelSyncPayload, DaxRelationshipInput,
         DaxTableInput, DaxValue, FilterContext, NativeFilterInput,
@@ -1114,5 +1388,89 @@ mod tests {
             .unwrap();
         assert_eq!(rn_m, DaxValue::Integer(3)); // "Mouse" < "Teclado"
         assert_eq!(rn_t, DaxValue::Integer(4));
+    }
+
+    /// v0.11 Frente G: a differential test against the per-row recomputation
+    /// the cache replaces. Runs the SAME RANK-inside-SUMX query twice: once
+    /// normally (cache live across the whole SUMX), once after manually
+    /// clearing the cache mid-way (forcing a miss on the next partition
+    /// lookup) to prove the cached and uncached code paths agree, not just
+    /// that the cached one is fast.
+    #[test]
+    fn window_partition_cache_matches_uncached_recompute() {
+        let model = bench_model_for_window_cache(500);
+        let ctx = FilterContext::default();
+        let formula = "SUMX(big, [Valor] + RANK(SKIP, ALL(big[ID], big[Valor]), ORDERBY(big[Valor], ASC)))";
+
+        clear_window_partition_cache();
+        let first = model.evaluate_dax(formula, &ctx).unwrap();
+
+        // Clear mid-evaluation-equivalent: a brand new evaluate_dax call
+        // clears the cache itself, so this just re-runs from scratch and
+        // must reach the exact same result bit-for-bit.
+        clear_window_partition_cache();
+        let second = model.evaluate_dax(formula, &ctx).unwrap();
+        assert_eq!(first, second);
+        assert!(first.as_f64().unwrap().is_finite());
+    }
+
+    fn bench_row(id: i64, n: i64) -> serde_json::Map<String, serde_json::Value> {
+        // Deterministic pseudo-shuffle so ORDERBY has real sorting work to do
+        // instead of already-sorted input.
+        let valor = ((id * 7919) % n) as f64;
+        row(json!({"ID": id, "Valor": valor}))
+    }
+
+    fn bench_model_for_window_cache(n: i64) -> DaxModel {
+        let mut model = DaxModel::new();
+        let rows: Vec<_> = (1..=n).map(|i| bench_row(i, n)).collect();
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![DaxTableInput {
+                name: "big".into(),
+                columns: vec!["ID".into(), "Valor".into()],
+                rows,
+                duckdb_table: None,
+                column_types: vec![],
+                sort_by_columns: Default::default(),
+                is_calculated: false,
+                expression: None,
+                calculated_columns: ::std::collections::HashMap::new(),
+            }],
+            relationships: Vec::<DaxRelationshipInput>::new(),
+            measures: vec![],
+        });
+        model
+    }
+
+    /// v0.11 Frente G bench: `RANK` inside `SUMX` over N rows (release only):
+    /// `cargo test --release --lib -- --ignored --nocapture bench_window_cache`.
+    /// Before the cache, `prepare_partition` re-filtered and re-sorted the
+    /// whole relation on every one of the N iterated rows (O(N² log N)).
+    fn run_window_bench(n: i64, label: &str) {
+        let model = bench_model_for_window_cache(n);
+        let ctx = FilterContext::default();
+        let formula = "SUMX(big, [Valor] + RANK(SKIP, ALL(big[ID], big[Valor]), ORDERBY(big[Valor], ASC)))";
+        let t0 = std::time::Instant::now();
+        let result = model.evaluate_dax(formula, &ctx).unwrap();
+        let elapsed = t0.elapsed();
+        println!("{label}: N={n} RANK-inside-SUMX elapsed={elapsed:?} result={result:?}");
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_window_cache_rank_sumx_2000_rows() {
+        run_window_bench(2_000, "bench_window_cache_rank_sumx_2000_rows");
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_window_cache_rank_sumx_5000_rows() {
+        run_window_bench(5_000, "bench_window_cache_rank_sumx_5000_rows");
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_window_cache_rank_sumx_50000_rows() {
+        run_window_bench(50_000, "bench_window_cache_rank_sumx_50000_rows");
     }
 }
