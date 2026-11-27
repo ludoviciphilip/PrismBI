@@ -1268,6 +1268,12 @@ impl DaxModel {
     }
 
     pub fn evaluate_dax(&self, expression: &str, ctx: &FilterContext) -> Result<DaxValue, String> {
+        // v0.11 Frente G: a fresh top-level evaluation starts a fresh window
+        // partition cache (`evaluator::window`'s `WINDOW_PARTITION_CACHE`) —
+        // see its doc comment. This keeps the cache's lifetime scoped to
+        // exactly one query/measure evaluation, never leaking a cached
+        // partition into an unrelated later evaluation.
+        evaluator::window::clear_window_partition_cache();
         let ast = parser::parse_dax(expression)?;
         evaluator::evaluate_ast(&ast, self, ctx, &[], &HashMap::new())
     }
