@@ -616,8 +616,15 @@ function stepToM(step: EtlStep): string {
       return `Table.SelectColumns(Prev, {${step.columns.map(c => `"${c}"`).join(', ')}})`;
     case 'filterRows':
       return `Table.SelectRows(Prev, each ${condToM(step.condition)})`;
-    case 'addCustomColumn':
-      return `Table.AddColumn(Prev, "${step.newColumn}", ${step.expression})`;
+    case 'addCustomColumn': {
+      // `step.expression` é guardado SEM o `each` (convenção do app desde o
+      // ribbon de Adicionar Coluna); mas uma etapa antiga, editada direto, ou
+      // vinda de um M colado manualmente pode trazê-lo. Garante o `each`
+      // uma única vez, nunca duplicado.
+      const expr = step.expression.trim();
+      const withEach = expr.startsWith('each ') ? expr : `each ${expr}`;
+      return `Table.AddColumn(Prev, "${step.newColumn}", ${withEach}${step.type ? `, type ${step.type}` : ''})`;
+    }
     case 'addIndexColumn':
       return `Table.AddIndexColumn(Prev, "${step.newColumn}", ${step.start}, ${step.step})`;
     case 'sort':

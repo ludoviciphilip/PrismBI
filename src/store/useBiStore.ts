@@ -27,6 +27,7 @@ import {
 } from '../types/bi';
 import { EtlQuery, EtlStep, EtlSource } from '../types/etl';
 import { etlApply, etlFromM, etlLoadRaw, setBrowserRawProvider } from '../services/etl/etlClient';
+import { uniqueStepName, dedupeImportedSteps } from '../services/etl/stepNaming';
 import {
   buildSlicerFilterValue,
   findSyncSiblings,
@@ -479,15 +480,10 @@ interface BiState {
 
 const defaultPageId = 'page_executivo';
 
-/** "Linhas Filtradas" -> "Linhas Filtradas1" se já existir (como o Power BI). */
-export function uniqueStepName(name: string, existing: string[]): string {
-  const taken = new Set(existing.map(n => n.toLowerCase()));
-  if (!taken.has(name.toLowerCase()) && name.toLowerCase() !== 'source') return name;
-  for (let i = 1; ; i++) {
-    const candidate = `${name}${i}`;
-    if (!taken.has(candidate.toLowerCase())) return candidate;
-  }
-}
+// Nomes únicos de etapa (e de coluna) foram movidos para
+// `services/etl/stepNaming.ts`, reutilizados tanto na criação de etapas pela
+// UI quanto na importação de M (.pbip) — ver `ensureQuery` abaixo.
+export { uniqueStepName };
 
 /** Nenhuma chamada ao backend pode deixar "Atualizando..." preso para sempre. */
 const REFRESH_STEP_TIMEOUT_MS = 120_000;
@@ -2823,6 +2819,14 @@ export const useBiStore = create<BiState>((set, get) => {
             query = { ...parsed.query, name, source: { ...src, path: table.sourceConfig.filePath } };
           } else if (src.kind !== 'opaqueM' && !fileKinds.includes(src.kind)) {
             query = { ...parsed.query, name };
+          }
+          if (query) {
+            // M importado não passa pelo `addQueryStep` (que já dedupa nomes
+            // de etapa criados pela UI): duas etapas "Mesclado Adicionado" no
+            // M de origem ficariam com o MESMO nome e a segunda se
+            // autorreferenciaria no M gerado. Dedupa nome de etapa e de
+            // coluna de saída aqui, como o Power BI.
+            query = { ...query, steps: dedupeImportedSteps(query.steps, table.columns.map(c => c.name)) };
           }
           for (const w of parsed.warnings) console.warn(`[ETL] ${name}: ${w}`);
         } catch (e) {
