@@ -444,6 +444,11 @@ export const PowerQueryView: React.FC = () => {
   const profileColumn = activeColumn && columnNames.includes(activeColumn) ? activeColumn : columnNames[0];
   const profile = profileColumn ? computeColumnProfile(preview.rows, profileColumn, columnTypes[profileColumn]) : null;
 
+  // Etapa sendo editada pela engrenagem (ETAPAS APLICADAS): cada diálogo que
+  // suporta edição recebe os parâmetros dessa MESMA etapa (`initial*`), em
+  // vez de abrir vazio — bug relatado no print v0.11 Rodada 2.
+  const editingStep = editingStepId ? query.steps.find(s => s.id === editingStepId) : undefined;
+
   return (
     <div className="flex flex-col flex-1 w-full h-full min-w-0 bg-slate-50 dark:bg-slate-950 text-xs" data-testid="power-query-view">
       <Ribbon tabs={tabs} activeTabId={activeTabId} onTabChange={setActiveTabId} ctx={ribbonCtx} />
@@ -650,17 +655,19 @@ export const PowerQueryView: React.FC = () => {
 
       {dialog === 'changeType' && (
         <ChangeTypeDialog
-          column={activeColumn}
+          column={editingStep?.op === 'changeType' ? editingStep.columns[0]?.column ?? activeColumn : activeColumn}
+          currentType={editingStep?.op === 'changeType' ? editingStep.columns[0]?.type : undefined}
           onClose={() => {
             setDialog(null);
             setEditingStepId(null);
           }}
-          onApply={type => updateOrAddStep({ op: 'changeType', columns: [{ column: activeColumn, type }] })}
+          onApply={type => updateOrAddStep({ op: 'changeType', columns: [{ column: editingStep?.op === 'changeType' ? editingStep.columns[0]?.column ?? activeColumn : activeColumn, type }] })}
         />
       )}
       {dialog === 'filterRows' && (
         <FilterRowsDialog
           columns={columnNames}
+          initialCondition={editingStep?.op === 'filterRows' ? editingStep.condition : undefined}
           onClose={() => {
             setDialog(null);
             setEditingStepId(null);
@@ -691,17 +698,21 @@ export const PowerQueryView: React.FC = () => {
       )}
       {dialog === 'splitColumn' && (
         <SplitColumnDialog
-          column={activeColumn || selectedColumns[0] || ''}
+          column={editingStep?.op === 'splitColumn' ? editingStep.column : activeColumn || selectedColumns[0] || ''}
+          initial={editingStep?.op === 'splitColumn' ? { mode: editingStep.mode, delimiter: editingStep.delimiter, positions: editingStep.positions, length: editingStep.length, into: editingStep.into } : undefined}
           onClose={() => {
             setDialog(null);
             setEditingStepId(null);
           }}
-          onApply={args => updateOrAddStep({ op: 'splitColumn', column: activeColumn || selectedColumns[0], ...args })}
+          onApply={args => updateOrAddStep({ op: 'splitColumn', column: editingStep?.op === 'splitColumn' ? editingStep.column : activeColumn || selectedColumns[0], ...args })}
         />
       )}
       {dialog === 'mergeColumns' && (
         <MergeColumnsDialog
-          columns={selectedColumns.length >= 2 ? selectedColumns : columnNames}
+          columns={columnNames}
+          initialSelected={editingStep?.op === 'mergeColumns' ? editingStep.columns : selectedColumns.length >= 2 ? selectedColumns : undefined}
+          initialSeparator={editingStep?.op === 'mergeColumns' ? editingStep.separator : undefined}
+          initialNewColumn={editingStep?.op === 'mergeColumns' ? editingStep.newColumn : undefined}
           onClose={() => {
             setDialog(null);
             setEditingStepId(null);
@@ -711,17 +722,19 @@ export const PowerQueryView: React.FC = () => {
       )}
       {dialog === 'replaceValues' && (
         <ReplaceValuesDialog
-          column={activeColumn}
+          column={editingStep?.op === 'replaceValues' ? editingStep.columns[0] ?? activeColumn : activeColumn}
+          initial={editingStep?.op === 'replaceValues' ? { find: String(editingStep.find ?? ''), replace: String(editingStep.replace ?? ''), matchEntireCell: editingStep.matchEntireCell } : undefined}
           onClose={() => {
             setDialog(null);
             setEditingStepId(null);
           }}
-          onApply={args => updateOrAddStep({ op: 'replaceValues', columns: selectedColumns.length ? selectedColumns : [activeColumn], ...args })}
+          onApply={args => updateOrAddStep({ op: 'replaceValues', columns: editingStep?.op === 'replaceValues' ? editingStep.columns : selectedColumns.length ? selectedColumns : [activeColumn], ...args })}
         />
       )}
       {dialog === 'customColumn' && (
         <CustomColumnDialog
           columns={columnNames}
+          initial={editingStep?.op === 'addCustomColumn' ? { newColumn: editingStep.newColumn, expression: editingStep.expression, type: editingStep.type } : undefined}
           onClose={() => {
             setDialog(null);
             setEditingStepId(null);
@@ -732,6 +745,7 @@ export const PowerQueryView: React.FC = () => {
       {dialog === 'conditionalColumn' && (
         <ConditionalColumnDialog
           columns={columns}
+          initial={editingStep?.op === 'addConditionalColumn' ? { newColumn: editingStep.newColumn, rules: editingStep.rules, otherwise: editingStep.otherwise, type: editingStep.type } : undefined}
           onClose={() => {
             setDialog(null);
             setEditingStepId(null);

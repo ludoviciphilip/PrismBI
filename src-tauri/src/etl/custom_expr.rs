@@ -55,15 +55,31 @@ struct Tr<'a> {
     /// `_` binding when translating inside `Table.TransformColumns` (the
     /// cell's SQL expression and category). `None` in `addCustomColumn`.
     underscore: Option<(String, Cat)>,
+    /// Original (trimmed) formula text, kept to quote exact snippets and to
+    /// build "wrap this bit in Text.From" suggestions in error messages.
+    source: &'a str,
 }
 
 type R = Result<(String, Cat), String>;
 
 fn unsupported(what: &str) -> String {
     format!(
-        "'{}' não é suportado em colunas personalizadas (subconjunto: [Coluna], literais, + - * / &, comparações, and/or/not, if/then/else e funções Text./Number./Date. documentadas)",
+        "'{}' não é suportado em colunas personalizadas (subconjunto: [Coluna], literais, + - * / &, comparações, and/or/not, if/then/else e funções Text., Number., Date. e DateTime. documentadas, incluindo Text.From e Text.Combine)",
         what
     )
+}
+
+/// M type name (pt-BR) of a category, for error messages.
+fn cat_word_pt(c: Cat) -> &'static str {
+    match c {
+        Cat::Int | Cat::Float | Cat::Decimal => "número",
+        Cat::Date => "data",
+        Cat::Timestamp => "data/hora",
+        Cat::Bool => "lógico",
+        Cat::Text => "texto",
+        Cat::Null => "nulo",
+        Cat::Other => "um valor",
+    }
 }
 
 fn first_day_index(e: Option<&Expr>) -> Result<i64, String> {
@@ -183,7 +199,15 @@ impl<'a> Tr<'a> {
             ExprKind::Func { .. } => Err(unsupported("função")),
             ExprKind::Record(_) => Err(unsupported("registro")),
             ExprKind::List(_) | ExprKind::Range(..) => Err(unsupported("lista")),
-            ExprKind::Field { .. } | ExprKind::Item { .. } => Err(unsupported("acesso a campo/item")),
+            ExprKind::Field { target: Some(t), name, .. } => {
+                let inner = t.unparen().text(self.source);
+                Err(format!(
+                    "`{inner}[{name}]` é acesso a campo de registro (tentaria ler o campo \"{name}\" de dentro do valor de {inner}, que não é um registro); para juntar texto, use Text.From({inner}) & [{name}]",
+                    inner = inner,
+                    name = name
+                ))
+            }
+            ExprKind::Item { .. } => Err(unsupported("acesso a campo/item")),
             ExprKind::Type(_) => Err(unsupported("type")),
             ExprKind::Try { .. } => Err(unsupported("try")),
             ExprKind::Error(_) => Err(unsupported("error")),
@@ -216,6 +240,41 @@ impl<'a> Tr<'a> {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
                 let (l, lc) = self.tr(left)?;
                 let (r, rc) = self.tr(right)?;
+                if lc == Cat::Text || rc == Cat::Text {
+                    let sym = match op {
+                        BinOp::Add => "+",
+                        BinOp::Sub => "-",
+                        BinOp::Mul => "*",
+                        _ => "/",
+                    };
+                    let word = match op {
+                        BinOp::Add => "soma",
+                        BinOp::Sub => "subtração",
+                        BinOp::Mul => "multiplicação",
+                        _ => "divisão",
+                    };
+                    let text_snip =
+                        if lc == Cat::Text { left.unparen().text(self.source) } else { right.unparen().text(self.source) };
+                    let left_part = if lc == Cat::Text {
+                        left.unparen().text(self.source).to_string()
+                    } else {
+                        format!("Text.From({})", left.unparen().text(self.source))
+                    };
+                    let right_part = if rc == Cat::Text {
+                        right.unparen().text(self.source).to_string()
+                    } else {
+                        format!("Text.From({})", right.unparen().text(self.source))
+                    };
+                    let suggestion = format!("{} & \"{}\" & {}", left_part, sym, right_part);
+                    return Err(format!(
+                        "'{}' é {}, e {} é texto; para juntar com {}, use {}",
+                        sym,
+                        word,
+                        text_snip,
+                        if sym == "/" { "barra" } else { "esse símbolo" },
+                        suggestion
+                    ));
+                }
                 for c in [lc, rc] {
                     if matches!(c, Cat::Text | Cat::Date | Cat::Timestamp | Cat::Bool) {
                         return Err("operadores aritméticos exigem números (use Date.AddDays para datas)".into());
@@ -246,9 +305,17 @@ impl<'a> Tr<'a> {
             BinOp::Concat => {
                 let (l, lc) = self.tr(left)?;
                 let (r, rc) = self.tr(right)?;
-                for c in [lc, rc] {
-                    if !matches!(c, Cat::Text | Cat::Null | Cat::Other) {
-                        return Err("o operador & exige texto (use Text.From)".into());
+                for (side_expr, side_cat) in [(left, lc), (right, rc)] {
+                    if !matches!(side_cat, Cat::Text | Cat::Null | Cat::Other) {
+                        let snip = side_expr.unparen().text(self.source);
+                        let (before, after) = (side_expr.unparen().span.0, side_expr.unparen().span.1);
+                        let suggestion = format!("{}Text.From({}){}", &self.source[..before], snip, &self.source[after..]);
+                        return Err(format!(
+                            "o operador & exige texto, mas {} é {}. Use {}",
+                            snip,
+                            cat_word_pt(side_cat),
+                            suggestion
+                        ));
                     }
                 }
                 Ok((format!("({} || {})", l, r), Cat::Text))
@@ -329,6 +396,21 @@ impl<'a> Tr<'a> {
                 let (s, c) = self.tr(&args[0])?;
                 let cul = culture_info(self.culture_arg(args.get(1))?.as_deref())?;
                 Ok((to_text(&s, c, cul), Cat::Text))
+            }
+            "Text.Combine" => {
+                arity(2, 2)?;
+                let items = args[0]
+                    .unparen()
+                    .as_list()
+                    .ok_or("Text.Combine exige uma lista literal de textos, ex. {[A], [B]}")?;
+                if items.is_empty() {
+                    return Err("Text.Combine exige ao menos um item na lista".into());
+                }
+                let parts = items.iter().map(|it| self.text_arg(it)).collect::<Result<Vec<_>, _>>()?;
+                let sep = self.text_arg(&args[1])?;
+                // Como Text.Combine: valores null são ignorados (concat_ws pula
+                // argumentos NULL em vez de inserir string vazia).
+                Ok((format!("concat_ws({}, {})", sep, parts.join(", ")), Cat::Text))
             }
             "Number.Round" => {
                 arity(1, 3)?;
@@ -786,12 +868,13 @@ pub fn translate_cell(expression: &str, chain: &Chain, cell: (String, Cat)) -> R
 }
 
 fn translate_inner(expression: &str, chain: &Chain, underscore: Option<(String, Cat)>) -> Result<(String, Cat), String> {
-    let e = parse_expression(expression.trim()).map_err(|e| format!("fórmula inválida: {}", e))?;
+    let trimmed = expression.trim();
+    let e = parse_expression(trimmed).map_err(|e| format!("fórmula inválida: {}", e))?;
     let body = match &e.kind {
         ExprKind::Each(b) => b.as_ref(),
         _ => &e,
     };
-    Tr { chain, underscore }.tr(body)
+    Tr { chain, underscore, source: trimmed }.tr(body)
 }
 
 /// "Agora" no fuso do computador, como o Power Query, embutido na SQL como

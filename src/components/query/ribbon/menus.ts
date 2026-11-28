@@ -389,7 +389,10 @@ export function transformTab(): RibbonTabDef {
 function moveColumns(ctx: RibbonCtx, dir: 'left' | 'right' | 'start' | 'end') {
   const order = [...ctx.allColumns];
   const sel = new Set(ctx.selectedColumns);
-  const selectedInOrder = order.filter(c => sel.has(c));
+  // Como no Power BI: o bloco movido segue a ORDEM DE SELEÇÃO (clique), não a
+  // ordem física da tabela — mesma regra do Mesclar Colunas/Remover Outras
+  // Colunas. Filtra só para descartar nomes que não existem mais na tabela.
+  const selectedInOrder = ctx.selectedColumns.filter(c => sel.has(c) && order.includes(c));
   const rest = order.filter(c => !sel.has(c));
   let next: string[];
   if (dir === 'start') next = [...selectedInOrder, ...rest];
@@ -453,9 +456,19 @@ export function addColumnTab(): RibbonTabDef {
           action(
             'mergeColumnsNew',
             'Mesclar Colunas',
-            ctx => ctx.openParamDialog('Mesclar Colunas', [{ key: 'separator', label: 'Separador', type: 'text', defaultValue: '-' }], p =>
-              ctx.addStep({ op: 'addCustomColumn', newColumn: 'Mesclado', expression: ctx.selectedColumns.map(c => `[${c}]`).join(` & "${p.separator}" & `), name: 'Mesclado Adicionado' }),
-            ),
+            ctx => ctx.openParamDialog('Mesclar Colunas', [{ key: 'separator', label: 'Separador', type: 'text', defaultValue: '-' }], p => {
+              // Como no Power BI: qualquer tipo entra em Text.Combine (que
+              // converte com Text.From e ignora nulos), nunca o operador &
+              // puro, que exige texto nos dois lados.
+              const items = ctx.selectedColumns.map(c => (ctx.columnTypes[c] === 'text' ? `[${c}]` : `Text.From([${c}])`));
+              ctx.addStep({
+                op: 'addCustomColumn',
+                newColumn: 'Mesclado',
+                expression: `Text.Combine({${items.join(', ')}}, "${String(p.separator).replace(/"/g, '""')}")`,
+                type: 'text',
+                name: 'Mesclado Adicionado',
+              });
+            }),
             ctx => ctx.selectedColumns.length >= 2,
             'Selecione 2 ou mais colunas',
           ),

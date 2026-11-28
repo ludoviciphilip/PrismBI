@@ -1,4 +1,4 @@
-# Matriz de Compatibilidade DAX, Visuais e Fontes (VetroBI `v0.11.0`)
+# Matriz de Compatibilidade DAX, Visuais e Fontes (VetroBI `v0.11.1`)
 
 Este documento resume o nível atual de compatibilidade do **VetroBI** com projetos do Microsoft Power BI (`.pbip` / `.pbix`) e a especificação pública **DAX**.
 

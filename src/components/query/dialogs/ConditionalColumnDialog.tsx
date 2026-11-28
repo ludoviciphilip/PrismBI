@@ -83,6 +83,27 @@ function vocToOutput(v: ValueOrColumn, columnType?: string): Scalar | { column: 
   return scalarFrom(v.value, columnType);
 }
 
+/** Inverso de `vocToOutput`: valor/coluna salvo na etapa -> estado editável do campo. */
+function valueOrColumnFrom(v: Scalar | { column: string }): ValueOrColumn {
+  if (v !== null && typeof v === 'object' && 'column' in v) return { kind: 'column', column: v.column };
+  return { kind: 'value', value: v === null ? '' : String(v) };
+}
+
+/** Inverso do que `handleApply` monta: um `Cond` + saída salvos -> uma cláusula editável. */
+function condToClause(when: Cond, then: Scalar | { column: string }, fallbackColumn: string): Clause {
+  if ('column' in when) {
+    return {
+      column: when.column,
+      op: when.op,
+      value: 'value' in when ? valueOrColumnFrom(when.value) : { kind: 'value', value: '' },
+      then: valueOrColumnFrom(then),
+    };
+  }
+  // `and`/`or`/`not` não vêm desta UI (ela só produz cláusulas simples) — melhor
+  // esforço: mostra uma cláusula em branco em vez de quebrar o diálogo.
+  return { column: fallbackColumn, op: 'eq', value: { kind: 'value', value: '' }, then: valueOrColumnFrom(then) };
+}
+
 /** Campo reutilizável: alterna entre digitar um valor literal ou escolher uma coluna. */
 const ValueOrColumnField: React.FC<{
   value: ValueOrColumn;
@@ -131,6 +152,12 @@ const ValueOrColumnField: React.FC<{
 
 export const ConditionalColumnDialog: React.FC<{
   columns: (string | ConditionalColumnDialogColumn)[];
+  initial?: {
+    newColumn: string;
+    rules: { when: Cond; then: Scalar | { column: string } }[];
+    otherwise: Scalar | { column: string };
+    type?: EtlType;
+  };
   onClose: () => void;
   onApply: (args: {
     newColumn: string;
@@ -138,15 +165,15 @@ export const ConditionalColumnDialog: React.FC<{
     otherwise: Scalar | { column: string };
     type?: EtlType;
   }) => void;
-}> = ({ columns: rawColumns, onClose, onApply }) => {
+}> = ({ columns: rawColumns, initial, onClose, onApply }) => {
   const columns: ConditionalColumnDialogColumn[] = rawColumns.map(c => (typeof c === 'string' ? { name: c } : c));
   const firstCol = columns[0]?.name ?? '';
-  const [newColumn, setNewColumn] = useState('Coluna_Condicional');
-  const [outputType, setOutputType] = useState<EtlType | ''>('');
-  const [clauses, setClauses] = useState<Clause[]>([
-    { column: firstCol, op: 'eq', value: { kind: 'value', value: '' }, then: { kind: 'value', value: '' } },
-  ]);
-  const [otherwise, setOtherwise] = useState<ValueOrColumn>({ kind: 'value', value: '' });
+  const [newColumn, setNewColumn] = useState(initial?.newColumn ?? 'Coluna_Condicional');
+  const [outputType, setOutputType] = useState<EtlType | ''>(initial?.type ?? '');
+  const [clauses, setClauses] = useState<Clause[]>(
+    initial ? initial.rules.map(r => condToClause(r.when, r.then, firstCol)) : [{ column: firstCol, op: 'eq', value: { kind: 'value', value: '' }, then: { kind: 'value', value: '' } }],
+  );
+  const [otherwise, setOtherwise] = useState<ValueOrColumn>(initial ? valueOrColumnFrom(initial.otherwise) : { kind: 'value', value: '' });
 
   const addClause = () =>
     setClauses([...clauses, { column: firstCol, op: 'eq', value: { kind: 'value', value: '' }, then: { kind: 'value', value: '' } }]);

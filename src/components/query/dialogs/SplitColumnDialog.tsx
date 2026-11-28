@@ -1,24 +1,27 @@
 import React, { useState } from 'react';
 import { DialogShell, FieldLabel, inputCls, selectCls } from './DialogShell';
 
+type SplitMode = 'delimiterEach' | 'delimiterLeftmost' | 'delimiterRightmost' | 'positions' | 'fixedLength';
+
 export const SplitColumnDialog: React.FC<{
   column: string;
+  initial?: { mode: SplitMode; delimiter?: string; positions?: number[]; length?: number; into: string[] };
   onClose: () => void;
   onApply: (args: {
-    mode: 'delimiterEach' | 'delimiterLeftmost' | 'delimiterRightmost' | 'positions' | 'fixedLength';
+    mode: SplitMode;
     delimiter?: string;
     positions?: number[];
     length?: number;
     into: string[];
   }) => void;
-}> = ({ column, onClose, onApply }) => {
-  const [mode, setMode] = useState<'delimiterEach' | 'delimiterLeftmost' | 'delimiterRightmost' | 'positions' | 'fixedLength'>('delimiterEach');
-  const [delimiter, setDelimiter] = useState(',');
-  const [length, setLength] = useState(1);
-  const [positions, setPositions] = useState('0');
-  const [intoCount, setIntoCount] = useState(2);
+}> = ({ column, initial, onClose, onApply }) => {
+  const [mode, setMode] = useState<SplitMode>(initial?.mode ?? 'delimiterEach');
+  const [delimiter, setDelimiter] = useState(initial?.delimiter ?? ',');
+  const [length, setLength] = useState(initial?.length ?? 1);
+  const [positions, setPositions] = useState((initial?.positions ?? [0]).join(','));
+  const [intoCount, setIntoCount] = useState(initial?.into.length ?? 2);
 
-  const buildInto = () => Array.from({ length: intoCount }, (_, i) => `${column}.${i + 1}`);
+  const buildInto = () => initial?.into && initial.into.length === intoCount ? initial.into : Array.from({ length: intoCount }, (_, i) => `${column}.${i + 1}`);
 
   const handleApply = () => {
     if (mode === 'positions') {

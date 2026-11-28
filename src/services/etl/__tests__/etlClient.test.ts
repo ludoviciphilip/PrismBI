@@ -90,4 +90,17 @@ describe('etlClient browser fallback', () => {
     expect(m).toContain('#"Removidas Colunas"');
     expect(m).toContain('Table.RemoveColumns');
   });
+
+  it('etlToM wraps addCustomColumn expressions with "each" exactly once and keeps the type (Observação v0.11 R2)', async () => {
+    // Etapa criada pelo ribbon: expression SEM 'each' (convenção atual).
+    const bare = baseQuery([{ id: 's1', name: 'Mesclado Adicionado', op: 'addCustomColumn', newColumn: 'Mesclado', expression: 'Text.Combine({[Nome], [Regiao]}, "-")', type: 'text' }]);
+    const mBare = await etlToM({ query: bare });
+    expect(mBare).toContain('Table.AddColumn(Fonte, "Mesclado", each Text.Combine({[Nome], [Regiao]}, "-"), type text)');
+
+    // Etapa antiga/migrada: expression JÁ com 'each' — não pode virar "each each".
+    const withEach = baseQuery([{ id: 's1', name: 'Custom', op: 'addCustomColumn', newColumn: 'X', expression: 'each [Nome] & "!"' }]);
+    const mWithEach = await etlToM({ query: withEach });
+    expect(mWithEach).toContain('Table.AddColumn(Fonte, "X", each [Nome] & "!")');
+    expect(mWithEach).not.toContain('each each');
+  });
 });
