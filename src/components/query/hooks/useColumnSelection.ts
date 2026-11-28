@@ -21,8 +21,11 @@ export function computeNextSelection(
     const ai = columnOrder.indexOf(anchor);
     const ci = columnOrder.indexOf(column);
     if (ai >= 0 && ci >= 0) {
-      const [lo, hi] = ai < ci ? [ai, ci] : [ci, ai];
-      return { selected: columnOrder.slice(lo, hi + 1), anchor };
+      // A ordem segue o gesto (âncora → coluna clicada), como no Power Query:
+      // clicar em "Nome do Mês" e Shift+clicar em "Ano" (à esquerda) dá
+      // [Nome do Mês, Ano], e o Mesclar Colunas sai "Abr-2026".
+      const range = columnOrder.slice(Math.min(ai, ci), Math.max(ai, ci) + 1);
+      return { selected: ai <= ci ? range : range.reverse(), anchor };
     }
   }
   if (mods.ctrlKey || mods.metaKey) {
