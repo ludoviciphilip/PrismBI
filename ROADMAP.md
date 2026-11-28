@@ -1,6 +1,6 @@
-# Roadmap do PrismBI
+# Roadmap do VetroBI
 
-Este documento descreve a evolução planejada para o **PrismBI**, uma aplicação desktop nativa para Linux construída com **Tauri v2 + Rust + DuckDB + React/TypeScript + Apache ECharts**, focada em produtividade e compatibilidade com projetos do Power BI (`.pbip` / `.pbix`).
+Este documento descreve a evolução planejada para o **VetroBI**, uma aplicação desktop nativa para Linux construída com **Tauri v2 + Rust + DuckDB + React/TypeScript + Apache ECharts**, focada em produtividade e compatibilidade com projetos do Power BI (`.pbip` / `.pbix`).
 
 > **Política de Versionamento (Pré-1.0):** Enquanto o app evolui até a estabilidade plena de produção, seguimos versionamento incremental em `0.x.0` (`0.8.0`, `0.9.0`, `0.10.0`, `0.11.0`, `0.12.0`, `0.13.0`...), reservando a `v1.0.0` apenas para quando o conjunto completo de recursos estiver consolidado, testado em alta escala e estável.
 
@@ -48,12 +48,12 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 ## `v0.6.0` — Edição Profissional, Round-Trip `.pbip` & Biblioteca DAX Completa (Concluído)
 - [x] **Motor DAX Nativo Expandido (+110 funções alinhadas à especificação pública DAX):** funções matemáticas/trigonométricas, texto (`FORMAT`, `MID`, `TRIM`, `FIND`, `SEARCH`, `SUBSTITUTE`, `CONTAINSSTRING`), data/hora (`DATE`, `EDATE`, `EOMONTH`, `DATEDIFF`, `NETWORKDAYS`, `WEEKDAY`, `WEEKNUM`, `QUARTER`), estatísticas/iteradores (`MEDIAN`, `PERCENTILE.*`, `STDEV.*`, `VAR.*`, `PRODUCT`, `GEOMEAN`, `CONCATENATEX`, `COUNTBLANK`), tabela/relacionamento (`VALUES`, `DISTINCT`, `TOPN`, `ALLSELECTED`, `LOOKUPVALUE`, `USERELATIONSHIP`, `CROSSFILTER`), informação (`ISFILTERED`, `ISCROSSFILTERED`, `HASONEFILTER`, `ISINSCOPE`), financeiras (`PMT`, `PV`, `FV`, `NPER`) e Time Intelligence completo (`TOTALQTD`, `DATESQTD`, `PARALLELPERIOD`, `DATESBETWEEN`, `DATESINPERIOD`, `STARTOF*`/`ENDOF*`, `FIRSTDATE`/`LASTDATE`, `OPENINGBALANCE*`/`CLOSINGBALANCE*`).
 - [x] **Edição Profissional no Canvas:** histórico **Undo / Redo** (`Ctrl+Z` / `Ctrl+Y` / Ribbon), **seleção múltipla** (`Shift`/`Ctrl` + clique, arraste em grupo, nudge com setas, `Delete` e barra flutuante de alinhamento/distribuição) e **Smart Snap Guides** a 60fps.
-- [x] **Round-Trip `.pbip` & Extração `.pbix` Aprimorada:** exportação preservando scripts Power Query (M), colunas de cartões múltiplos, `advancedSlicerVisual` (`tiles`), `textbox`, `actionButton`, títulos, `filterConfig` em páginas/visuais e temas (`PrismTheme.json`), além de extração multi-query do `DataMashup` em `.pbix`.
+- [x] **Round-Trip `.pbip` & Extração `.pbix` Aprimorada:** exportação preservando scripts Power Query (M), colunas de cartões múltiplos, `advancedSlicerVisual` (`tiles`), `textbox`, `actionButton`, títulos, `filterConfig` em páginas/visuais e temas (`VetroTheme.json`), além de extração multi-query do `DataMashup` em `.pbix`.
 
 ---
 
 ## `v0.7.0` — Empacotamento Linux, Auto-Updater, Tela Inicial & 98% DAX (Concluído)
-- [x] **GitHub Actions CI/CD:** pipeline de validação automática (`ci.yml`) e geração de releases Linux **AppImage**, **`.deb`**, **`.rpm`** com checksums **SHA-256** (`release.yml`), além de manifestos para **AUR (`prismbi-bin`)** e **Flatpak**.
+- [x] **GitHub Actions CI/CD:** pipeline de validação automática (`ci.yml`) e geração de releases Linux **AppImage**, **`.deb`**, **`.rpm`** com checksums **SHA-256** (`release.yml`), além de manifestos para **AUR (`vetrobi-bin`)** e **Flatpak**.
 - [x] **Atualizador Automático Integrado no App (`updater.rs` + `UpdateModal`):** verificação automática via GitHub Releases, download seguro com validação SHA-256, atualização atômica in-place para **AppImage** e download direto para `.deb`/`.rpm`.
 - [x] **Tela Inicial (`WelcomeScreen`) & Navegação:** inicialização com hub de projetos recentes, retomada da última sessão salva e abertura direta de `.pbip`, `.pbix` ou `.insight` (sem forçar template), além de pan livre no canvas e modelo com botão do meio (scroll pressionado) e atalho `Esc` no Modo Apresentação.
 - [x] **Conformidade DAX 98% (474/484) & Motor Rust Expandido:** migração para Rust de `TREATAS`, `CONTAINSROW`, `GENERATESERIES`, `FIRSTNONBLANK`/`LASTNONBLANK`, `COALESCE`, `CONVERT`, família `IS*`, bit-shifts, combinatória/trigonometria, financeiro avançado (`NPV`, `IPMT`, `PPMT`, `SLN`, `SYD`, `DB`, `DDB`, `EFFECT`, `NOMINAL`, `RATE`) e `PATH*`, além de expansão das DMVs `INFO.*` no catálogo.
@@ -100,18 +100,29 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 
 ---
 
-## `v0.11.0` — Escalabilidade Real (1M–10M+ linhas): Persistência Colunar & SQL Pushdown
-- [ ] Formato de projeto colunar comprimido (cache local DuckDB/Parquet ao lado dos metadados) para abrir milhões de linhas em menos de 1 segundo com baixo consumo de RAM.
-- [ ] **Pushdown para DuckDB SQL** em agregações, joins e filtros pesados antes da camada DAX.
-- [ ] **Tabelas Calculadas e Colunas Calculadas** (`CALENDAR`, `SUMMARIZE`, `ADDCOLUMNS`, `UNION`) executadas nativamente em Rust.
-- [ ] Migração para Rust das funções avançadas de tabela e janela (`WINDOW`, `OFFSET`, `INDEX`, `RANK`, `ROWNUMBER`, `CALCULATETABLE`, `SUMMARIZECOLUMNS`).
+## `v0.11.0` — Escalabilidade Real (1M–10M+ linhas): Persistência Colunar & SQL Pushdown (Concluído)
+
+> **Diretriz técnica (`Rust-first`):** O motor em TypeScript (`src/engine/`) está congelado como legado e será removido progressivamente; todas as novas funcionalidades são implementadas nativamente em Rust com testes automatizados e casos no corpus DAX.
+
+- [x] Formato de projeto colunar comprimido (cache local DuckDB/Parquet ao lado dos metadados) para abrir milhões de linhas em menos de 1 segundo com baixo consumo de RAM.
+- [x] **Pushdown para DuckDB SQL** em agregações, joins e filtros pesados antes da camada DAX.
+- [x] **Tabelas Calculadas e Colunas Calculadas** (`CALENDAR`, `SUMMARIZE`, `ADDCOLUMNS`, `UNION`) executadas nativamente em Rust.
+- [x] Migração para Rust das funções avançadas de tabela e janela (`CALENDAR`, `CALENDARAUTO`, `SUMMARIZECOLUMNS`, `WINDOW`, `OFFSET`, `INDEX`, `RANK`, `ROWNUMBER`, `CALCULATETABLE`).
+- [ ] **Aumento de cobertura de testes das funções (Rust)** (parcial: 415 testes, nova medição na `v0.12.0`): ampliar a cobertura de funções do crate Rust (base de 75,06% em `docs/TEST_COVERAGE.md`), cobrindo funções ainda sem teste direto (`engine/duckdb_store.rs`, `etl/sql.rs`, `etl/m_from.rs`, `pbi/pbip.rs`, `dax/query_planner.rs`) e exigindo testes unitários + casos no corpus DAX para cada nova feature.
+- [x] **Desligamento progressivo do motor TypeScript legado** (app desktop 100% Rust para cálculo; o TS fica só como reserva do modo navegador e sai na `v0.12.0`): migrar consultas remanescentes (tabela comum, dispersão, Cálculos Visuais, DAX Query View e validação) para o motor Rust nativo e remover módulos legados em `src/engine/`.
+- [x] **Pendências da `v0.10.0`:** níveis nas **colunas** da matriz, filtro cruzado a partir de níveis de data drillados (Ano/Trimestre/Mês), tradução (EN/ES) dos painéis de Indicadores e Dicas de página.
+- [x] **`CALENDARAUTO` ignorando tabelas e colunas calculadas**, como manda a especificação (hoje o calendário gerado entra na varredura).
+- [x] **Desempenho das funções de janela:** cache da partição ordenada, para que OFFSET, INDEX, WINDOW e RANK dentro de iteradores não reordenem a tabela a cada linha.
+- [ ] Windows: assinatura de código (depende de certificado) e teste de atualização via `msiexec`.
+- [x] **Atalhos de teclado** (Ctrl+S, F5, copiar/colar/duplicar visual, Ctrl+/ e outros) e **DAX Query View no Rust**.
+- [ ] **Paridade de agrupamento com o Power BI:** linhas do fato sem correspondência na dimensão devem aparecer como "(Em branco)" nos visuais (hoje são descartadas), e o agrupamento de texto deve ignorar maiúsculas ("a" e "A" no mesmo grupo).
 
 ---
 
 ## `v0.12.0` — Integração Desktop Linux, Produtividade & CLI/Automação
 - [ ] **Associação nativa de arquivos no Linux:** abrir `.pbip`, `.pbix` e `.insight` com duplo clique no gerenciador de arquivos (via argumentos CLI no Tauri).
 - [ ] **Command Palette (`Ctrl+K`)** para busca rápida de páginas, medidas, tabelas, visuais e ações, além de suporte a **múltiplas janelas**.
-- [ ] **Exportação Profissional & CLI Headless:** PDF multi-página em alta resolução, PNG por visual, exportação CSV/Excel dos dados filtrados de qualquer visual e subcomandos CLI (`prismbi refresh` / `prismbi export`) para automação via cron/servidor.
+- [ ] **Exportação Profissional & CLI Headless:** PDF multi-página em alta resolução, PNG por visual, exportação CSV/Excel dos dados filtrados de qualquer visual e subcomandos CLI (`vetrobi refresh` / `vetrobi export`) para automação via cron/servidor.
 - [ ] **IA 100% Local (Ollama) + BYOK:** gerar/explicar medidas DAX e diagnosticar modelos usando LLMs locais sem enviar dados para a nuvem.
 
 ---
@@ -119,7 +130,7 @@ Foco em substituir a VM no fluxo diário de atualização e gerenciamento de dad
 ## `v0.13.0` — Hardening, Testes E2E, Benchmarks & Canais Oficiais (Pré-1.0)
 - [ ] Suite completa de **testes E2E automatizados** cobrindo importação `.pbip`/`.pbix`, atualização de dados, filtros, temas claro/escuro e exportação.
 - [ ] Benchmarks reproduzíveis para 10k, 100k e 1M+ linhas, zero warnings em `tsc --strict` e `cargo clippy`, e revisão 100% da localização (`EN`, `PT`, `ES`).
-- [ ] Publicação oficial no **Flathub** e atualização automatizada do **AUR (`prismbi-bin`)** no pipeline de release.
+- [ ] Publicação oficial no **Flathub** e atualização automatizada do **AUR (`vetrobi-bin`)** no pipeline de release.
 
 ---
 

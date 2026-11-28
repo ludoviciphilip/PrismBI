@@ -14,6 +14,7 @@ mod row;
 mod scalar;
 mod table;
 mod time;
+pub(crate) mod window;
 
 use filter::*;
 use row::*;
@@ -24,6 +25,72 @@ use time::*;
 pub struct RowContext<'a> {
     pub table: &'a DaxTableData,
     pub row_idx: usize,
+}
+
+// v0.11 Frente H (item i): a measure that (directly or transitively)
+// references itself would recurse forever through the `[Measure]` branch
+// below and blow the stack (a hard crash, not a DAX error). DAX itself
+// detects this and raises a clear "circular dependency" error instead; this
+// thread-local depth counter mirrors that without threading a depth
+// parameter through every `evaluate_ast` call site in the codebase. The
+// limit (64) is far above any legitimate measure-reference chain but well
+// below the point where the real call stack would overflow.
+thread_local! {
+    static MEASURE_DEPTH: std::cell::Cell<u32> = std::cell::Cell::new(0);
+}
+const MAX_MEASURE_DEPTH: u32 = 64;
+
+struct MeasureDepthGuard;
+impl Drop for MeasureDepthGuard {
+    fn drop(&mut self) {
+        MEASURE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// Increments the measure-recursion depth, returning a guard that
+/// decrements it again on drop (including on early `?` return), or an
+/// error once `MAX_MEASURE_DEPTH` is exceeded — the signal a circular
+/// measure reference tripped the guard instead of the real call stack.
+fn enter_measure(name: &str) -> Result<MeasureDepthGuard, String> {
+    let depth = MEASURE_DEPTH.with(|d| {
+        let next = d.get() + 1;
+        d.set(next);
+        next
+    });
+    if depth > MAX_MEASURE_DEPTH {
+        MEASURE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+        return Err(format!(
+            "Dependência circular detectada ao avaliar a medida '{}' (profundidade > {})",
+            name, MAX_MEASURE_DEPTH
+        ));
+    }
+    Ok(MeasureDepthGuard)
+}
+
+/// Evaluates a top-level DAX **table** expression (CALENDAR, CALENDARAUTO,
+/// SUMMARIZE, SUMMARIZECOLUMNS, ADDCOLUMNS, UNION, FILTER, DISTINCT,
+/// DATATABLE, ...) into a materialized, owned `DaxTableData` — used by
+/// `dax::calculated` to build a calculated table from its DAX expression.
+/// `name` overrides the resulting table's name (the expression itself may
+/// carry the name of a source table, e.g. `FILTER(Sales, ...)`).
+pub fn evaluate_table_ast(
+    name: &str,
+    expr: &Expr,
+    model: &DaxModel,
+    ctx: &FilterContext,
+) -> Result<DaxTableData, String> {
+    let (teval, indices, _) = table::eval_table_expr(expr, model, ctx, &[], &HashMap::new())?;
+    let base = teval.as_ref();
+    let rows: Vec<Vec<DaxValue>> = indices.iter().map(|&i| base.rows[i].clone()).collect();
+    Ok(DaxTableData {
+        name: name.to_string(),
+        columns: base.columns.clone(),
+        col_index: base.col_index.clone(),
+        col_types: base.col_types.clone(),
+        rows,
+        sort_by_columns: HashMap::new(),
+        is_calculated: true,
+    })
 }
 
 pub fn evaluate_ast(
@@ -56,6 +123,7 @@ pub fn evaluate_ast(
             }
             // 2. Check measure
             if let Some(measure) = model.get_measure(name) {
+                let _guard = enter_measure(name)?;
                 let effective_ctx = apply_context_transition(model, ctx, row_stack);
                 let parsed = parse_dax(&measure.formula)?;
                 return evaluate_ast(&parsed, model, &effective_ctx, &[], &HashMap::new());
@@ -276,6 +344,8 @@ fn eval_call(
             time::eval_date_boundary(&fname, args, model, ctx)
         }
         "RANKX" => aggregate::eval_rankx(args, model, ctx, row_stack, vars),
+        "RANK" => window::eval_rank(args, model, ctx, row_stack, vars),
+        "ROWNUMBER" => window::eval_rownumber(args, model, ctx, row_stack, vars),
         "SUM" | "AVERAGE" | "AVERAGEA" | "MIN" | "MINA" | "MAX" | "MAXA"
         | "COUNT" | "COUNTA" | "COUNTBLANK" | "DISTINCTCOUNT" | "DISTINCTCOUNTNOBLANK"
         | "MEDIAN" | "STDEV.S" | "STDEV.P" | "VAR.S" | "VAR.P" | "PRODUCT" | "GEOMEAN" => {
@@ -353,7 +423,7 @@ mod tests {
     /// tipo da coluna (ver `build_filter_context`).
     fn typed_keys(model: &DaxModel, table: &str, col: &str, raw: &str) -> std::collections::HashSet<crate::dax::ValueKey> {
         let ctx = crate::dax::build_filter_context(
-            &[crate::dax::NativeFilterInput { table_id: table.into(), column: col.into(), values: vec![serde_json::Value::String(raw.into())] }],
+            &[crate::dax::NativeFilterInput { table_id: table.into(), column: col.into(), values: vec![serde_json::Value::String(raw.into())], ..Default::default() }],
             model,
         );
         ctx.filters[&table.to_lowercase()][&col.to_lowercase()].clone()
@@ -390,10 +460,10 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![], name: "fLançamentos".into(), columns: vec!["Data".into(), "Valor".into(), "Categoria".into(), "Tipo".into()], rows: f_rows },
-                DaxTableInput { duckdb_table: None, column_types: vec![], name: "dCategorias".into(), columns: vec!["Categoria".into(), "Grupo DRE".into(), "DRE".into()], rows: cat_rows },
-                DaxTableInput { duckdb_table: None, column_types: vec![], name: "dEstrutura".into(), columns: vec!["Linha".into(), "Ordem".into()], rows: est_rows },
-                DaxTableInput { duckdb_table: None, column_types: vec![], name: "dCalendario".into(), columns: vec!["Data".into(), "Mês".into()], rows: cal_rows },
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "fLançamentos".into(), columns: vec!["Data".into(), "Valor".into(), "Categoria".into(), "Tipo".into()], rows: f_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dCategorias".into(), columns: vec!["Categoria".into(), "Grupo DRE".into(), "DRE".into()], rows: cat_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dEstrutura".into(), columns: vec!["Linha".into(), "Ordem".into()], rows: est_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(), name: "dCalendario".into(), columns: vec!["Data".into(), "Mês".into()], rows: cal_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new()  },
             ],
             relationships: vec![
                 DaxRelationshipInput {
@@ -414,26 +484,18 @@ mod tests {
                 },
             ],
             measures: vec![
-                DaxMeasureInput {
-                    name: "Valor Assinado".into(),
+                DaxMeasureInput { name: "Valor Assinado".into(),
                     table_name: "Medidas".into(),
-                    formula: "SUMX('fLançamentos', 'fLançamentos'[Valor] * IF('fLançamentos'[Tipo] == \"Entrada\", 1, -1))".into(),
-                },
-                DaxMeasureInput {
-                    name: "Resultado DRE".into(),
+                    formula: "SUMX('fLançamentos', 'fLançamentos'[Valor] * IF('fLançamentos'[Tipo] == \"Entrada\", 1, -1))".into(), format_string: None },
+                DaxMeasureInput { name: "Resultado DRE".into(),
                     table_name: "Medidas".into(),
-                    formula: "CALCULATE([Valor Assinado], dCategorias[DRE] == \"Sim\")".into(),
-                },
-                DaxMeasureInput {
-                    name: "Faturamento".into(),
+                    formula: "CALCULATE([Valor Assinado], dCategorias[DRE] == \"Sim\")".into(), format_string: None },
+                DaxMeasureInput { name: "Faturamento".into(),
                     table_name: "Medidas".into(),
-                    formula: "CALCULATE([Resultado DRE], dCategorias[Grupo DRE] = \"Receita Bruta\")".into(),
-                },
-                DaxMeasureInput {
-                    name: "DRE".into(),
+                    formula: "CALCULATE([Resultado DRE], dCategorias[Grupo DRE] = \"Receita Bruta\")".into(), format_string: None },
+                DaxMeasureInput { name: "DRE".into(),
                     table_name: "Medidas".into(),
-                    formula: "VAR _linha = SELECTEDVALUE(dEstrutura[Linha], \"Resultado Operacional\") VAR _rec = [Faturamento] RETURN SWITCH(_linha, \"Receita Bruta\", _rec, \"Resultado Operacional\", [Resultado DRE])".into(),
-                },
+                    formula: "VAR _linha = SELECTEDVALUE(dEstrutura[Linha], \"Resultado Operacional\") VAR _rec = [Faturamento] RETURN SWITCH(_linha, \"Receita Bruta\", _rec, \"Resultado Operacional\", [Resultado DRE])".into(), format_string: None },
             ],
         });
 
@@ -467,7 +529,7 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dCal".into(),
                     columns: vec!["Data".into()],
                     rows: vec![
@@ -476,9 +538,9 @@ mod tests {
                         make_cal_row("2026-01-10"),
                         make_cal_row("2026-02-15"),
                         make_cal_row("2026-03-05"),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fVendas".into(),
                     columns: vec!["Data".into(), "Valor".into()],
                     rows: vec![
@@ -487,7 +549,7 @@ mod tests {
                         make_sale_row("2026-01-10", 300.0),
                         make_sale_row("2026-02-15", 400.0),
                         make_sale_row("2026-03-05", 500.0),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![DaxRelationshipInput {
@@ -499,44 +561,30 @@ mod tests {
                 is_active: true,
             }],
             measures: vec![
-                DaxMeasureInput {
-                    name: "Receita".into(),
+                DaxMeasureInput { name: "Receita".into(),
                     table_name: "fVendas".into(),
-                    formula: "SUM(fVendas[Valor])".into(),
-                },
-                DaxMeasureInput {
-                    name: "Receita YTD".into(),
+                    formula: "SUM(fVendas[Valor])".into(), format_string: None },
+                DaxMeasureInput { name: "Receita YTD".into(),
                     table_name: "fVendas".into(),
-                    formula: "TOTALYTD([Receita], dCal[Data])".into(),
-                },
-                DaxMeasureInput {
-                    name: "Receita MTD".into(),
+                    formula: "TOTALYTD([Receita], dCal[Data])".into(), format_string: None },
+                DaxMeasureInput { name: "Receita MTD".into(),
                     table_name: "fVendas".into(),
-                    formula: "TOTALMTD([Receita], dCal[Data])".into(),
-                },
-                DaxMeasureInput {
-                    name: "Receita Ano Ant".into(),
+                    formula: "TOTALMTD([Receita], dCal[Data])".into(), format_string: None },
+                DaxMeasureInput { name: "Receita Ano Ant".into(),
                     table_name: "fVendas".into(),
-                    formula: "CALCULATE([Receita], PREVIOUSYEAR(dCal[Data]))".into(),
-                },
-                DaxMeasureInput {
-                    name: "Receita Mesmo Dia Ano Ant".into(),
+                    formula: "CALCULATE([Receita], PREVIOUSYEAR(dCal[Data]))".into(), format_string: None },
+                DaxMeasureInput { name: "Receita Mesmo Dia Ano Ant".into(),
                     table_name: "fVendas".into(),
-                    formula: "CALCULATE([Receita], SAMEPERIODLASTYEAR(dCal[Data]))".into(),
-                },
-                DaxMeasureInput {
-                    name: "Rank Data".into(),
+                    formula: "CALCULATE([Receita], SAMEPERIODLASTYEAR(dCal[Data]))".into(), format_string: None },
+                DaxMeasureInput { name: "Rank Data".into(),
                     table_name: "fVendas".into(),
-                    formula: "RANKX(ALL(dCal[Data]), [Receita])".into(),
-                },
-                DaxMeasureInput {
-                    // ALL(fVendas) só define as linhas iteradas; o filtro externo em
+                    formula: "RANKX(ALL(dCal[Data]), [Receita])".into(), format_string: None },
+                DaxMeasureInput { // ALL(fVendas) só define as linhas iteradas; o filtro externo em
                     // dCal continua ativo durante a transição, então as outras datas
                     // ficam BLANK e o valor do dia é o maior => 1 (como no DAX real).
                     name: "Rank Fato".into(),
                     table_name: "fVendas".into(),
-                    formula: "RANKX(ALL(fVendas), [Receita])".into(),
-                },
+                    formula: "RANKX(ALL(fVendas), [Receita])".into(), format_string: None },
             ],
         });
 
@@ -576,10 +624,10 @@ mod tests {
         let tables_input: Vec<DaxTableInput> = summary
             .loaded_tables
             .iter()
-            .map(|t| DaxTableInput { duckdb_table: None, column_types: vec![],
+            .map(|t| DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                 name: t.table_name.clone(),
                 columns: t.columns.iter().map(|c| c.name.clone()).collect(),
-                rows: t.rows.clone(),
+                rows: t.rows.clone(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
             })
             .collect();
         let rels_input: Vec<DaxRelationshipInput> = summary
@@ -598,11 +646,9 @@ mod tests {
             .tables
             .iter()
             .flat_map(|t| t.measures.iter())
-            .map(|m| DaxMeasureInput {
-                name: m.name.clone(),
+            .map(|m| DaxMeasureInput { name: m.name.clone(),
                 table_name: m.table_name.clone(),
-                formula: m.expression.clone(),
-            })
+                formula: m.expression.clone(), format_string: None })
             .collect();
 
         model.sync_from_payload(DaxModelSyncPayload {
@@ -725,15 +771,15 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dCalendario".into(),
                     columns: vec!["Data".into(), "Mês/Ano".into()],
-                    rows: cal_rows,
+                    rows: cal_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fLanc".into(),
                     columns: vec!["Data".into(), "Valor".into()],
-                    rows: fact_rows,
+                    rows: fact_rows, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![DaxRelationshipInput {
@@ -745,21 +791,15 @@ mod tests {
                 is_active: true,
             }],
             measures: vec![
-                DaxMeasureInput {
-                    name: "Fat".into(),
+                DaxMeasureInput { name: "Fat".into(),
                     table_name: "fLanc".into(),
-                    formula: "SUM(fLanc[Valor])".into(),
-                },
-                DaxMeasureInput {
-                    name: "Fat Mes Passado DateAdd".into(),
+                    formula: "SUM(fLanc[Valor])".into(), format_string: None },
+                DaxMeasureInput { name: "Fat Mes Passado DateAdd".into(),
                     table_name: "fLanc".into(),
-                    formula: "CALCULATE([Fat], DATEADD(dCalendario[Data], -1, MONTH))".into(),
-                },
-                DaxMeasureInput {
-                    name: "Fat Mes Passado Prev".into(),
+                    formula: "CALCULATE([Fat], DATEADD(dCalendario[Data], -1, MONTH))".into(), format_string: None },
+                DaxMeasureInput { name: "Fat Mes Passado Prev".into(),
                     table_name: "fLanc".into(),
-                    formula: "CALCULATE([Fat], PREVIOUSMONTH(dCalendario[Data]))".into(),
-                },
+                    formula: "CALCULATE([Fat], PREVIOUSMONTH(dCalendario[Data]))".into(), format_string: None },
             ],
         });
 
@@ -805,29 +845,29 @@ mod tests {
 
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dCal".into(),
                     columns: vec!["Data".into(), "Ano".into(), "Mes".into()],
                     rows: vec![
                         cal_row("2026-03-01", 2026, 3),
                         cal_row("2026-03-10", 2026, 3),
                         cal_row("2026-03-20", 2026, 3),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fVendas".into(),
                     columns: vec!["Data".into(), "Valor".into()],
                     rows: vec![
                         sale_row("2026-03-01", 3117.20),
                         sale_row("2026-03-10", 60000.00),
                         sale_row("2026-03-20", 65606.32),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fAberturas".into(),
                     columns: vec!["Data".into(), "Saldo".into()],
                     // Only day 1 of month exists in fAberturas
-                    rows: vec![open_row("2026-03-01", 10000.0)],
+                    rows: vec![open_row("2026-03-01", 10000.0)], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![
@@ -848,11 +888,9 @@ mod tests {
                     is_active: true,
                 },
             ],
-            measures: vec![DaxMeasureInput {
-                name: "Fat".into(),
+            measures: vec![DaxMeasureInput { name: "Fat".into(),
                 table_name: "fVendas".into(),
-                formula: "SUM(fVendas[Valor])".into(),
-            }],
+                formula: "SUM(fVendas[Valor])".into(), format_string: None }],
         });
 
         let mut ctx = FilterContext::default();
@@ -868,7 +906,7 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dCal".into(),
                     columns: vec!["Data".into(), "Trimestre".into()],
                     rows: vec![
@@ -876,17 +914,17 @@ mod tests {
                         serde_json::from_value(json!({"Data": "2026-02-15", "Trimestre": "T1"})).unwrap(),
                         serde_json::from_value(json!({"Data": "2026-04-05", "Trimestre": "T2"})).unwrap(),
                         serde_json::from_value(json!({"Data": "2026-04-30", "Trimestre": "T2"})).unwrap(),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dClientes".into(),
                     columns: vec!["Id".into(), "Nome".into()],
                     rows: vec![
                         serde_json::from_value(json!({"Id": 1, "Nome": "Alpha"})).unwrap(),
                         serde_json::from_value(json!({"Id": 2, "Nome": "Beta"})).unwrap(),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fPedidos".into(),
                     columns: vec!["DataPedido".into(), "DataEntrega".into(), "ClienteId".into(), "Valor".into()],
                     rows: vec![
@@ -894,7 +932,7 @@ mod tests {
                         serde_json::from_value(json!({"DataPedido": "2026-02-15", "DataEntrega": "2026-04-30", "ClienteId": 2, "Valor": 300.0})).unwrap(),
                         serde_json::from_value(json!({"DataPedido": "2026-04-05", "DataEntrega": "2026-04-30", "ClienteId": 1, "Valor": 500.0})).unwrap(),
                         serde_json::from_value(json!({"DataPedido": "2026-04-30", "DataEntrega": "2026-04-30", "ClienteId": 2, "Valor": 700.0})).unwrap(),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![
@@ -916,16 +954,12 @@ mod tests {
                 },
             ],
             measures: vec![
-                DaxMeasureInput {
-                    name: "Total".into(),
+                DaxMeasureInput { name: "Total".into(),
                     table_name: "fPedidos".into(),
-                    formula: "SUM(fPedidos[Valor])".into(),
-                },
-                DaxMeasureInput {
-                    name: "QTD T2".into(),
+                    formula: "SUM(fPedidos[Valor])".into(), format_string: None },
+                DaxMeasureInput { name: "QTD T2".into(),
                     table_name: "fPedidos".into(),
-                    formula: "TOTALQTD([Total], dCal[Data])".into(),
-                },
+                    formula: "TOTALQTD([Total], dCal[Data])".into(), format_string: None },
             ],
         });
 
@@ -995,35 +1029,33 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "f".into(),
                     columns: vec!["ProdID".into(), "Valor".into()],
                     rows: rows(json!([
                         {"ProdID": 1, "Valor": 10}, {"ProdID": 1, "Valor": 5},
                         {"ProdID": 2, "Valor": 20}, {"ProdID": 3, "Valor": 40}
-                    ])),
+                    ])), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "p".into(),
                     columns: vec!["ProdID".into(), "Cat".into(), "GrupoID".into(), "Preco".into()],
                     rows: rows(json!([
                         {"ProdID": 1, "Cat": "A", "GrupoID": 1, "Preco": 3},
                         {"ProdID": 2, "Cat": "A", "GrupoID": 1, "Preco": 1},
                         {"ProdID": 3, "Cat": "B", "GrupoID": 2, "Preco": 2}
-                    ])),
+                    ])), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "g".into(),
                     columns: vec!["GrupoID".into(), "Grupo".into()],
-                    rows: rows(json!([{"GrupoID": 1, "Grupo": "G1"}, {"GrupoID": 2, "Grupo": "G2"}])),
+                    rows: rows(json!([{"GrupoID": 1, "Grupo": "G1"}, {"GrupoID": 2, "Grupo": "G2"}])), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![rel("f", "ProdID", "p", "ProdID"), rel("p", "GrupoID", "g", "GrupoID")],
-            measures: vec![DaxMeasureInput {
-                name: "Total".into(),
+            measures: vec![DaxMeasureInput { name: "Total".into(),
                 table_name: "f".into(),
-                formula: "SUM(f[Valor])".into(),
-            }],
+                formula: "SUM(f[Valor])".into(), format_string: None }],
         });
         model
     }
@@ -1188,30 +1220,28 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "fVendas".into(),
                     columns: vec!["Cat".into(), "Valor".into()],
                     rows: vec![
                         serde_json::json!({"Cat": "A", "Valor": 100}).as_object().unwrap().clone(),
                         serde_json::json!({"Cat": "B", "Valor": 250}).as_object().unwrap().clone(),
                         serde_json::json!({"Cat": "C", "Valor": 400}).as_object().unwrap().clone(),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput { duckdb_table: None, column_types: vec![],
+                DaxTableInput { column_format_strings: Default::default(), duckdb_table: None, column_types: vec![], sort_by_columns: Default::default(),
                     name: "dGrupo".into(),
                     columns: vec!["Nome".into()],
                     rows: vec![
                         serde_json::json!({"Nome": "A"}).as_object().unwrap().clone(),
                         serde_json::json!({"Nome": "C"}).as_object().unwrap().clone(),
-                    ],
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![],
-            measures: vec![DaxMeasureInput {
-                name: "Total".into(),
+            measures: vec![DaxMeasureInput { name: "Total".into(),
                 table_name: "fVendas".into(),
-                formula: "SUM(fVendas[Valor])".into(),
-            }],
+                formula: "SUM(fVendas[Valor])".into(), format_string: None }],
         });
 
         let ctx = FilterContext::default();
@@ -1256,6 +1286,57 @@ mod tests {
         assert_eq!(
             model.evaluate_dax("SLN(5000, 500, 9)", &ctx).unwrap().as_f64(),
             Some(500.0)
+        );
+    }
+
+    #[test]
+    fn test_calendar_calendarauto_and_summarizecolumns() {
+        let mut model = DaxModel::new();
+        model.sync_from_payload(DaxModelSyncPayload {
+            tables: vec![
+                DaxTableInput { column_format_strings: Default::default(),
+                    duckdb_table: None,
+                    column_types: vec![Some("text".into()), Some("date".into()), Some("number".into())],
+                    sort_by_columns: Default::default(),
+                    name: "fVendas".into(),
+                    columns: vec!["Cat".into(), "Data".into(), "Valor".into()],
+                    rows: vec![
+                        serde_json::json!({"Cat": "A", "Data": "2024-02-15", "Valor": 100}).as_object().unwrap().clone(),
+                        serde_json::json!({"Cat": "B", "Data": "2024-08-10", "Valor": 250}).as_object().unwrap().clone(),
+                        serde_json::json!({"Cat": "C", "Data": "2024-11-05", "Valor": 400}).as_object().unwrap().clone(),
+                    ], is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
+                },
+            ],
+            relationships: vec![],
+            measures: vec![DaxMeasureInput { name: "Total".into(),
+                table_name: "fVendas".into(),
+                formula: "SUM(fVendas[Valor])".into(), format_string: None }],
+        });
+        let ctx = FilterContext::default();
+        assert_eq!(
+            model.evaluate_dax("COUNTROWS(CALENDAR(DATE(2024, 1, 1), DATE(2024, 1, 10)))", &ctx).unwrap().as_f64(),
+            Some(10.0)
+        );
+        assert!(model.evaluate_dax("CALENDAR(DATE(2024, 2, 1), DATE(2024, 1, 1))", &ctx).is_err());
+        // 2024 is leap year -> 366 days
+        assert_eq!(
+            model.evaluate_dax("COUNTROWS(CALENDARAUTO())", &ctx).unwrap().as_f64(),
+            Some(366.0)
+        );
+        // Fiscal year ending June: min date 2024-02-15 -> starts 2023-07-01; max 2024-11-05 -> ends 2025-06-30 => 731 days
+        assert_eq!(
+            model.evaluate_dax("COUNTROWS(CALENDARAUTO(6))", &ctx).unwrap().as_f64(),
+            Some(731.0)
+        );
+        assert!(model.evaluate_dax("CALENDARAUTO(13)", &ctx).is_err());
+
+        assert_eq!(
+            model.evaluate_dax("SUMX(SUMMARIZECOLUMNS(\"GrandTotal\", [Total]), [GrandTotal])", &ctx).unwrap().as_f64(),
+            Some(750.0)
+        );
+        assert_eq!(
+            model.evaluate_dax("COUNTROWS(SUMMARIZECOLUMNS(fVendas[Cat], \"Soma\", [Total]))", &ctx).unwrap().as_f64(),
+            Some(3.0)
         );
     }
 }

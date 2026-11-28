@@ -330,6 +330,7 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
     let mut legend_field: Option<String> = None;
     let mut value_fields = Vec::new();
     let mut drill_fields: Vec<String> = Vec::new();
+    let mut legend_drill_fields: Vec<String> = Vec::new();
 
     if let Some(qstate) = visual_obj
         .get("query")
@@ -380,12 +381,15 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
                         drill_fields.push(qualified);
                     }
                 } else if role_l == "series" || role_l == "columns" || role_l == "legend" {
+                    let qualified = match &tbl {
+                        Some(t) if !t.eq_ignore_ascii_case("medidas") => format!("{}.{}", t, fld),
+                        _ => fld,
+                    };
                     if legend_field.is_none() {
-                        let qualified = match &tbl {
-                            Some(t) if !t.eq_ignore_ascii_case("medidas") => format!("{}.{}", t, fld),
-                            _ => fld,
-                        };
                         legend_field = Some(qualified);
+                    } else if mapped_type == "matrix" && !legend_drill_fields.contains(&qualified) {
+                        // v0.11 Rodada 2 (Frente I): projeções seguintes = níveis extras das colunas da matriz.
+                        legend_drill_fields.push(qualified);
                     }
                 } else if role_l == "y"
                     || role_l == "y2"
@@ -473,6 +477,7 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
         legend_field,
         value_fields,
         drill_fields,
+        legend_drill_fields,
         column_count,
         slicer_mode,
         action_type,
@@ -495,7 +500,7 @@ fn parse_pbir_visual_json(vj: &JsonValue, page_id: &str, v_idx: usize) -> Option
 }
 
 /// Reads the first entry of PBIR `visual.query.sortDefinition.sort` into a
-/// PrismBI (sortField, sortOrder) pair. Column fields that match the visual's
+/// VetroBI (sortField, sortOrder) pair. Column fields that match the visual's
 /// category keep its (possibly table-qualified) name; measures stay bare.
 fn extract_pbir_sort_definition(
     visual_obj: &JsonValue,
@@ -829,7 +834,7 @@ fn parse_pbir_data_bars(node: &JsonValue, apply_to: &str) -> Option<PbiCondition
 
 /// Infere o conjunto de ícones (`'arrows' | 'traffic' | 'flags'`) a partir
 /// do nome literal do ícone PBIR (ex.: `'ArrowsIcon0'`, `'TrafficIcon2'`,
-/// `'FlagsIcon1'`). O PrismBI escreve esses nomes no exportador
+/// `'FlagsIcon1'`). O VetroBI escreve esses nomes no exportador
 /// (`pbip_writer::icon_literal_for_rule`); nomes reais do Power BI Desktop
 /// (ex.: `'SymbolMedium'`) não identificam o conjunto de forma confiável —
 /// nesse caso cai no padrão `'arrows'`.
@@ -1497,5 +1502,29 @@ mod tests {
         });
         let meta = parse_pbir_visual_json(&vj, "p1", 0).expect("tableEx com cor fixa");
         assert!(meta.conditional_formats.is_empty());
+    }
+
+    #[test]
+    fn extract_pbir_textbox_text_joins_runs_and_paragraphs() {
+        let visual_obj = serde_json::json!({
+            "objects": {
+                "general": [
+                    {
+                        "properties": {
+                            "paragraphs": [
+                                { "textRuns": [{ "value": "Olá, " }, { "value": "VetroBI!" }] },
+                                { "textRuns": [{ "value": "" }] },
+                                { "textRuns": [{ "value": "Segunda linha" }] }
+                            ]
+                        }
+                    }
+                ]
+            }
+        });
+        assert_eq!(
+            extract_pbir_textbox_text(&visual_obj).as_deref(),
+            Some("Olá, VetroBI!\nSegunda linha")
+        );
+        assert_eq!(extract_pbir_textbox_text(&serde_json::json!({})), None);
     }
 }

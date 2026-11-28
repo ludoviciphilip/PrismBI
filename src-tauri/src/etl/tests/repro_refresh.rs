@@ -84,18 +84,20 @@ fn rhino_remove_steps_apply_then_refresh_all_returns() {
             .loaded_tables
             .iter()
             .filter(|t| t.table_name != "dCalendario")
-            .map(|t| DaxTableInput { duckdb_table: None,
+            .map(|t| DaxTableInput { column_format_strings: Default::default(), duckdb_table: None,
                 name: t.table_name.clone(),
                 columns: t.columns.iter().map(|c| c.name.clone()).collect(),
                 rows: t.rows.clone(),
                 column_types: t.columns.iter().map(|c| Some(c.data_type.clone())).collect(),
+                sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
             })
             .collect();
-        tables.push(DaxTableInput { duckdb_table: None,
+        tables.push(DaxTableInput { column_format_strings: Default::default(), duckdb_table: None,
             name: "dCalendario".into(),
             columns: applied.columns.iter().map(|c| c.name.clone()).collect(),
             rows: applied.rows.clone(),
             column_types: applied.columns.iter().map(|c| Some(c.data_type.clone())).collect(),
+            sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
         });
         let payload = DaxModelSyncPayload {
             tables,
@@ -115,7 +117,7 @@ fn rhino_remove_steps_apply_then_refresh_all_returns() {
                 .tables
                 .iter()
                 .flat_map(|t| t.measures.iter())
-                .map(|m| DaxMeasureInput { name: m.name.clone(), table_name: m.table_name.clone(), formula: m.expression.clone() })
+                .map(|m| DaxMeasureInput { name: m.name.clone(), table_name: m.table_name.clone(), formula: m.expression.clone(), format_string: None })
                 .collect(),
         };
         let names: Vec<String> = payload.measures.iter().map(|m| m.name.clone()).collect();

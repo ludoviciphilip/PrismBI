@@ -132,6 +132,13 @@ pub(super) fn eval_countrows(
         return Err("COUNTROWS requer expressão de tabela".to_string());
     };
     let (_, indices, _) = eval_table_expr(first, model, ctx, row_stack, vars)?;
+    // v0.11 Frente H (item d; fix(dax)): COUNTROWS returns BLANK, not 0,
+    // when the table has no rows (dax.guide/COUNTROWS, Microsoft Learn:
+    // "When the table argument contains no rows, the function returns
+    // BLANK"). Corpus case: `core.countrows.empty_table`.
+    if indices.is_empty() {
+        return Ok(DaxValue::Blank);
+    }
     Ok(DaxValue::number_smart(indices.len() as f64))
 }
 
@@ -213,11 +220,15 @@ pub(super) fn eval_x_aggregate(
         return Ok(DaxValue::number_smart(cnt as f64));
     }
     let mut vals = Vec::new();
+    let mut all_datetime = true;
     for r_idx in row_indices {
         let mut next_stack = row_stack.to_vec();
         next_stack.push(RowContext { table: table_data, row_idx: r_idx });
         let v = evaluate_ast(&args[1], model, iter_ctx, &next_stack, vars)?;
         if !v.is_blank() {
+            if !matches!(v, DaxValue::DateTime(_)) {
+                all_datetime = false;
+            }
             if let Some(n) = v.as_f64() {
                 vals.push(n);
             }
@@ -241,7 +252,11 @@ pub(super) fn eval_x_aggregate(
         "GEOMEANX" => calc_geomean(&vals),
         _ => None,
     };
-    Ok(res.map(DaxValue::number_smart).unwrap_or(DaxValue::Blank))
+    if all_datetime && matches!(fname, "MINX" | "MAXX") {
+        Ok(res.map(DaxValue::DateTime).unwrap_or(DaxValue::Blank))
+    } else {
+        Ok(res.map(DaxValue::number_smart).unwrap_or(DaxValue::Blank))
+    }
 }
 
 /// DAX `PERCENTILEX.INC`, `PERCENTILEX.EXC`.
@@ -410,6 +425,13 @@ pub(super) fn eval_column_agg(
     let visible = model.get_visible_row_indices(table_name, ctx);
 
     if func == "COUNT" || func == "COUNTA" {
+        // v0.11 Frente H (item d; fix(dax)): BLANK, not 0, when there are no
+        // rows to count (dax.guide/DISTINCTCOUNT remark on COUNT family;
+        // Microsoft Learn COUNTROWS). Rows existing but all-blank is a real
+        // 0, only an empty row set is BLANK.
+        if visible.is_empty() {
+            return Ok(DaxValue::Blank);
+        }
         let cnt = visible.iter().filter(|&&i| !tbl.rows[i][cidx].is_blank()).count();
         return Ok(DaxValue::number_smart(cnt as f64));
     }
@@ -418,6 +440,14 @@ pub(super) fn eval_column_agg(
         return Ok(DaxValue::number_smart(cnt as f64));
     }
     if func == "DISTINCTCOUNT" {
+        // v0.11 Frente H (item d; fix(dax)): same BLANK-on-empty rule as
+        // COUNT above; DISTINCTCOUNT still counts a stored BLANK among the
+        // non-empty visible set as one of its distinct values (dax.guide:
+        // "DISTINCTCOUNT counts a blank value in the column as one of the
+        // values"), which `canonical_key()`'s `"__BLANK__"` already does.
+        if visible.is_empty() {
+            return Ok(DaxValue::Blank);
+        }
         let distinct: HashSet<String> = visible
             .iter()
             .map(|&i| tbl.rows[i][cidx].canonical_key())
@@ -430,6 +460,13 @@ pub(super) fn eval_column_agg(
             .filter(|&&i| !tbl.rows[i][cidx].is_blank())
             .map(|&i| tbl.rows[i][cidx].canonical_key())
             .collect();
+        // v0.11 Frente H (item d; fix(dax)): dax.guide/DISTINCTCOUNTNOBLANK:
+        // "If all the visible values of the column are blank,
+        // DISTINCTCOUNTNOBLANK returns BLANK, not 0" — covers both an empty
+        // visible set and a non-empty one where every value is blank.
+        if distinct.is_empty() {
+            return Ok(DaxValue::Blank);
+        }
         return Ok(DaxValue::number_smart(distinct.len() as f64));
     }
 

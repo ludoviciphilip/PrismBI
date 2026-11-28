@@ -139,6 +139,9 @@ export interface PbiVisualMeta {
   valueFields: string[];
   /** v0.10 Frente G: projeções extras de Category/Rows (hierarquia). */
   drillFields?: string[];
+  /** v0.11 Rodada 2 (Frente I): projeções extras de Columns/Series/Legend
+   * (níveis extras das COLUNAS da matriz, depois de `legendField`). */
+  legendDrillFields?: string[];
   columnCount?: number | null;
   slicerMode?: string | null;
   actionType?: string | null;
@@ -273,6 +276,9 @@ export interface ExportPbipPayload {
       /** v0.10 Rodada 2 (seams H↔G): campos das linhas da matriz hierárquica
        * (N níveis). O 1º espelha xAxisField e não é duplicado na exportação. */
       matrixRowFields?: string[];
+      /** v0.11 Rodada 2 (Frente I): campos das COLUNAS da matriz hierárquica
+       * (N níveis). O 1º espelha legendField e não é duplicado na exportação. */
+      matrixColumnFields?: string[];
     }[];
   }[];
   themeName?: string | null;
@@ -316,7 +322,32 @@ export interface ExportPbipBookmark {
 }
 
 export interface DaxModelSyncPayload {
-  tables: { name: string; columns: string[]; rows: Record<string, any>[]; columnTypes?: (string | null)[] }[];
+  tables: {
+    name: string;
+    columns: string[];
+    rows: Record<string, any>[];
+    columnTypes?: (string | null)[];
+    sortByColumns?: Record<string, string>;
+    /** True for a calculated table ("Nova tabela" / TMDL `calculated`
+     * partition). `columns`/`rows` are ignored by the Rust side when set;
+     * see `expression`. */
+    isCalculated?: boolean;
+    /** DAX table expression for a calculated table (CALENDAR, ADDCOLUMNS,
+     * SUMMARIZE, UNION, FILTER, DISTINCT, DATATABLE, ...). */
+    expression?: string;
+    /** Calculated columns on this table: column name -> DAX row expression
+     * (RELATED/RELATEDTABLE/EARLIER in scope). Works for both calculated
+     * and regular (imported) tables -- this is "Nova coluna". */
+    calculatedColumns?: Record<string, string>;
+    /** v0.11 Rodada 2 Frente F (bugfix): column name -> the model's TMDL
+     * `formatString` (e.g. `{ Ano: "0" }`), so the DAX Query View's grid
+     * keeps the model's own number format (no thousand separator on a
+     * year) instead of the UI's generic grouped `formatNumber`. Built by
+     * `pushModelToRustAsync` from `Column.format` -- see
+     * `dax::DaxTableInput::column_format_strings` / `qexec.rs` on the Rust
+     * side. */
+    columnFormatStrings?: Record<string, string>;
+  }[];
   relationships: {
     fromTable: string;
     fromColumn: string;
@@ -325,7 +356,17 @@ export interface DaxModelSyncPayload {
     crossFilterDirection: string;
     isActive: boolean;
   }[];
-  measures: { name: string; tableName: string; formula: string }[];
+  measures: {
+    name: string;
+    tableName: string;
+    formula: string;
+    /** v0.11 Rodada 2 Frente F (bugfix): the measure's TMDL `formatString`
+     * when imported from a `.pbip`, or a pattern derived from `Measure.format`
+     * (currency/number/percentage/integer) otherwise. Lets a `DEFINE
+     * MEASURE` built on top of this one in the DAX Query View inherit its
+     * format (see `dax::DaxMeasureInput::format_string`). */
+    formatString?: string;
+  }[];
 }
 
 export function isTauriRuntime(): boolean {
@@ -333,6 +374,95 @@ export function isTauriRuntime(): boolean {
     typeof window !== 'undefined' &&
     Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__)
   );
+}
+
+// ---------------------------------------------------------------------
+// Cache colunar de projeto (v0.11 Frente B) — ver src-tauri/src/project_store.
+// ---------------------------------------------------------------------
+
+export interface NativeTableCacheMeta {
+  name: string;
+  columnsSignature: string;
+  sourceSignature: string;
+  rowCount: number;
+}
+
+export interface NativeProjectCacheManifest {
+  formatVersion: number;
+  format: string;
+  appVersion: string;
+  createdAt: string;
+}
+
+export interface NativeProjectCacheSaveOutcome {
+  manifest: NativeProjectCacheManifest;
+  totalRows: number;
+  elapsedMs: number;
+  bytesOnDisk: number;
+}
+
+export interface NativeProjectCacheLoadOutcome {
+  loaded: boolean;
+  reason?: string | null;
+  tables: NativeImportedTable[];
+  totalRows: number;
+  elapsedMs: number;
+}
+
+export interface NativeProjectCacheInfo {
+  exists: boolean;
+  valid: boolean;
+  reason?: string | null;
+  formatVersion?: number | null;
+  totalRows: number;
+  tableCount: number;
+}
+
+/** Grava o cache colunar do projeto (tabelas já carregadas no DuckDB nativo). */
+export async function projectCacheSave(
+  projectKey: string,
+  tables: NativeTableCacheMeta[],
+  dir?: string | null
+): Promise<NativeProjectCacheSaveOutcome> {
+  return await invoke<NativeProjectCacheSaveOutcome>('project_cache_save', {
+    projectKey,
+    tables,
+    dir: dir ?? null,
+  });
+}
+
+/** Carrega as tabelas do cache no DuckDB nativo, se válido (ver `tables`). */
+export async function projectCacheLoad(
+  projectKey: string,
+  tables: NativeTableCacheMeta[],
+  dir?: string | null
+): Promise<NativeProjectCacheLoadOutcome> {
+  return await invoke<NativeProjectCacheLoadOutcome>('project_cache_load', {
+    projectKey,
+    tables,
+    dir: dir ?? null,
+  });
+}
+
+/** Só inspeciona o cache (existe? válido?) sem carregar nada no DuckDB. */
+export async function projectCacheInfo(
+  projectKey: string,
+  tables: NativeTableCacheMeta[],
+  dir?: string | null
+): Promise<NativeProjectCacheInfo> {
+  return await invoke<NativeProjectCacheInfo>('project_cache_info', {
+    projectKey,
+    tables,
+    dir: dir ?? null,
+  });
+}
+
+/** Remove o cache colunar do projeto (ex.: ao descartar ou forçar rebuild). */
+export async function projectCacheInvalidate(
+  projectKey: string,
+  dir?: string | null
+): Promise<void> {
+  await invoke<void>('project_cache_invalidate', { projectKey, dir: dir ?? null });
 }
 
 export async function getNativeEngineInfo(): Promise<NativeEngineInfo> {
@@ -433,6 +563,48 @@ export async function syncModelToRust(payload: DaxModelSyncPayload): Promise<num
   return await invoke<number>('sync_model_to_rust', { payload });
 }
 
+/** v0.11 Frente C: "Nova tabela" (guia Modelagem). Builds a calculated-table
+ * entry on top of `currentPayload` and re-syncs the whole model (there's no
+ * dedicated Tauri command -- `sync_model_to_rust` already materializes
+ * calculated tables from `isCalculated`/`expression`, in dependency order,
+ * with cycle detection; see `dax::calculated` on the Rust side). Any
+ * materialization error for `name` lands in the model's `calculatedErrors`
+ * and should be surfaced inline by the formula editor (not thrown here).
+ */
+export async function createCalculatedTable(
+  currentPayload: DaxModelSyncPayload,
+  name: string,
+  expression: string
+): Promise<number> {
+  const tables = currentPayload.tables.filter((t) => t.name.toLowerCase() !== name.toLowerCase());
+  tables.push({ name, columns: [], rows: [], isCalculated: true, expression });
+  return await syncModelToRust({ ...currentPayload, tables });
+}
+
+/** v0.11 Frente C: "Nova coluna" (guia Modelagem / painel Dados). Adds or
+ * replaces a calculated column's DAX expression on `tableName` and re-syncs.
+ * Works on both calculated and regular (imported) tables; RELATED,
+ * RELATEDTABLE and EARLIER are evaluated through the normal row-context
+ * stack on the Rust side.
+ */
+export async function addCalculatedColumn(
+  currentPayload: DaxModelSyncPayload,
+  tableName: string,
+  columnName: string,
+  expression: string
+): Promise<number> {
+  const tables = currentPayload.tables.map((t) => {
+    if (t.name.toLowerCase() !== tableName.toLowerCase()) return t;
+    const columns = t.columns.includes(columnName) ? t.columns : [...t.columns, columnName];
+    return {
+      ...t,
+      columns,
+      calculatedColumns: { ...(t.calculatedColumns ?? {}), [columnName]: expression },
+    };
+  });
+  return await syncModelToRust({ ...currentPayload, tables });
+}
+
 export async function evaluateDaxNative(
   expression: string,
   filters?: { tableId: string; column: string; values: any[] }[]
@@ -440,6 +612,82 @@ export async function evaluateDaxNative(
   return await invoke<{ value: any; display: string }>('evaluate_dax_native', {
     expression,
     filters: filters ?? null,
+  });
+}
+
+// ---------------------------------------------------------------------
+// v0.11 Frente F: DAX Query View (DEFINE/EVALUATE/ORDER BY) e validação de
+// expressões DAX no Rust (`dax_query_execute`/`dax_validate` em
+// src-tauri/src/dax/query_view/**). Sem fallback TS aqui: fora do Tauri
+// (modo navegador) os chamadores usam `DaxEngine`/`DaxQueryExecutor`
+// diretamente — ver `src/engine/nativeDax.ts`.
+// ---------------------------------------------------------------------
+
+export interface NativeDaxQueryColumn {
+  name: string;
+  daxType: 'text' | 'integer' | 'decimal' | 'currency' | 'date' | 'boolean';
+  /** v0.11 Rodada 2 Frente F: model TMDL `formatString` for this column,
+   * when it traces back to a plain `Table[Column]` group-by (not a measure
+   * or extension column). See `dax::query_view::qexec::DaxQueryColumn`. */
+  formatString?: string;
+}
+
+export interface NativeDaxQueryResultSet {
+  columns: NativeDaxQueryColumn[];
+  rows: any[][];
+  displayRows: string[][];
+  rowCount: number;
+  truncated: boolean;
+}
+
+export interface NativeDaxQueryError {
+  message: string;
+  line: number;
+  column: number;
+}
+
+export interface NativeDaxQueryExecuteResult {
+  resultSets: NativeDaxQueryResultSet[];
+  elapsedMs: number;
+  error: NativeDaxQueryError | null;
+}
+
+export async function daxQueryExecuteNative(
+  query: string,
+  rowLimit?: number
+): Promise<NativeDaxQueryExecuteResult> {
+  return await invoke<NativeDaxQueryExecuteResult>('dax_query_execute', {
+    query,
+    opts: rowLimit != null ? { rowLimit } : null,
+  });
+}
+
+export type NativeDaxValidateContext = 'measure' | 'calculatedColumn' | 'calculatedTable' | 'visualCalc';
+
+export interface NativeDaxDiagnostic {
+  severity: 'error' | 'warning';
+  message: string;
+  line: number;
+  column: number;
+  length: number;
+}
+
+export interface NativeDaxValidationResult {
+  ok: boolean;
+  diagnostics: NativeDaxDiagnostic[];
+  resultType: string | null;
+  sampleValue: any;
+}
+
+export async function daxValidateNative(
+  expression: string,
+  context: NativeDaxValidateContext,
+  table?: string
+): Promise<NativeDaxValidationResult> {
+  return await invoke<NativeDaxValidationResult>('dax_validate', {
+    expression,
+    context,
+    table: table ?? null,
   });
 }
 
@@ -451,7 +699,7 @@ export interface NativeVisualQueryRequest {
   legendField?: string;
   yAxisFields: string[];
   aggregation?: string;
-  filters: { tableId: string; column: string; values: any[] }[];
+  filters: { tableId: string; column: string; values: any[]; operator?: string }[];
   /** v0.10 Frente G: agrupamento do eixo por níveis (drill/expandir/hierarquia de data). */
   categoryLevels?: { field: string; datePart?: string | null }[];
   /** v0.10 Frente G: caminho de drill (entra no build_filter_context do Rust). */
@@ -461,21 +709,41 @@ export interface NativeVisualQueryRequest {
   matrixExpandDepth?: number;
   matrixExpanded?: unknown[][];
   matrixCollapsed?: unknown[][];
+  /** v0.11 Frente I: colunas da matriz (N níveis) e estado de expansão. */
+  matrixColumns?: { field: string; datePart?: string | null }[];
+  matrixColumnExpandDepth?: number;
+  matrixColumnExpanded?: unknown[][];
+  matrixColumnCollapsed?: unknown[][];
+  /** v0.11 Rodada 2, Frente E: Cálculos Visuais avaliados no Rust sobre a
+   * grade (categories/series) deste request — ver
+   * `src-tauri/src/dax/visual_calcs/formula.rs`. Com isso, visuais com
+   * Cálculos Visuais também usam o caminho nativo (não ficam mais de fora
+   * de `supportsNativeRustQuery` em `VisualCard.tsx`). */
+  visualCalculations?: { name: string; formula: string }[];
 }
 
 export interface NativeMatrixNodeDto {
   key: unknown;
   label: string;
-  values: number[];
+  values: (number | null)[];
   rowTotal?: number | null;
   hasChildren: boolean;
   expanded: boolean;
   children: NativeMatrixNodeDto[];
 }
 
+export interface NativeMatrixColumnNodeDto {
+  key: unknown;
+  label: string;
+  hasChildren: boolean;
+  expanded: boolean;
+  value: number | null;
+  children: NativeMatrixColumnNodeDto[];
+}
+
 export interface NativeVisualSeries {
   name: string;
-  data: number[];
+  data: (number | null)[];
 }
 
 export interface NativeVisualQueryResult {
@@ -483,16 +751,114 @@ export interface NativeVisualQueryResult {
   series: NativeVisualSeries[];
   summaryValue?: number | null;
   queryTimeMs: number;
-  engine: string;
+  /**
+   * v0.11 Frente A: qual motor respondeu esta consulta. `'duckdb'` = SQL
+   * pushdown (agregação/join/filtro traduzidos e executados no DuckDB,
+   * sem carregar as linhas no modelo DAX); `'rust-native'` = motor DAX em
+   * Rust (caminho de sempre; usado sempre que o pushdown não cobre a
+   * consulta ou falha). Mostrado pelo Performance Analyzer.
+   */
+  engine: 'duckdb' | 'rust-native' | string;
   /** v0.10 Frente G: chave de cada nível por categoria (alinhado com `categories`). */
   categoryKeys?: unknown[][];
-  matrix?: { rows: NativeMatrixNodeDto[]; columnTotals: number[]; grandTotal?: number | null } | null;
+  matrix?: {
+    rows: NativeMatrixNodeDto[];
+    columnTotals: (number | null)[];
+    grandTotal?: number | null;
+    /** v0.11 Frente I: árvore de colunas (presente só com `matrixColumns`). */
+    columnHeader?: NativeMatrixColumnNodeDto[] | null;
+  } | null;
 }
 
 export async function queryVisualNative(
   request: NativeVisualQueryRequest
 ): Promise<NativeVisualQueryResult> {
   return await invoke<NativeVisualQueryResult>('query_visual_native', { request });
+}
+
+// ===========================================================================
+// v0.11 Rodada 2, Frente E: table / scatter native queries (Tauri only). Used
+// by VisualCard.tsx instead of aggregating `table.rows` (a 5.000-row preview)
+// in JS — see docs/V011.md Rodada 2, Frente E. There is NO TS equivalent of
+// pagination/Top N/engine-computed total here: the browser-only fallback
+// (no Tauri runtime, e.g. the demo web app) keeps using
+// `globalDataEngine.queryVisualData` off the preview rows exactly as before.
+// ===========================================================================
+
+export interface NativeTableQueryRequest {
+  tableId: string;
+  groupFields?: string[];
+  rawFields?: string[];
+  valueFields?: string[];
+  aggregation?: string;
+  filters?: { tableId: string; column: string; values: unknown[]; operator?: string }[];
+  sortField?: string;
+  /** v0.11 Rodada 2, Frente E: sort by a DIFFERENT column's values (Power BI's
+   * "Classificar por coluna"); must also be present among groupFields/rawFields. */
+  sortByColumn?: string;
+  sortOrder?: 'asc' | 'desc';
+  topN?: number;
+  offset?: number;
+  limit?: number;
+}
+
+export interface NativeTableQueryResult {
+  columns: string[];
+  rows: { values: unknown[] }[];
+  totalRowCount: number;
+  totalRow?: { values: unknown[] } | null;
+  /** v0.11 Rodada 2, Frente E: min/max over the FULL result (not just the
+   * returned page) per numeric column — feeds conditional-formatting
+   * gradients without the client ever seeing every row. */
+  columnMinMax?: Record<string, [number, number]>;
+  queryTimeMs: number;
+  engine: string;
+}
+
+/** v0.11 Rodada 2, Frente E: native "table" query over ALL rows (no 5.000-row
+ * preview cap), with the total row computed by the engine and server-side
+ * sort/Top N/pagination. Only call when `isTauriRuntime()`. */
+export async function queryTableNative(
+  request: NativeTableQueryRequest
+): Promise<NativeTableQueryResult> {
+  return await invoke<NativeTableQueryResult>('query_table_native', { request });
+}
+
+export interface NativeScatterQueryRequest {
+  tableId: string;
+  detailField: string;
+  xField: string;
+  yField: string;
+  sizeField?: string;
+  legendField?: string;
+  aggregation?: string;
+  filters?: { tableId: string; column: string; values: unknown[]; operator?: string }[];
+  maxPoints?: number;
+}
+
+export interface NativeScatterPointDto {
+  label: string;
+  x: number | null;
+  y: number | null;
+  size: number | null;
+  legend: string | null;
+}
+
+export interface NativeScatterQueryResult {
+  points: NativeScatterPointDto[];
+  totalPoints: number;
+  sampled: boolean;
+  queryTimeMs: number;
+  engine: string;
+}
+
+/** v0.11 Rodada 2, Frente E: native "scatter" query with deterministic
+ * Power-BI-style point sampling (default ~3.500 points). Only call when
+ * `isTauriRuntime()`. */
+export async function queryScatterNative(
+  request: NativeScatterQueryRequest
+): Promise<NativeScatterQueryResult> {
+  return await invoke<NativeScatterQueryResult>('query_scatter_native', { request });
 }
 
 export async function pickFolderDialog(title = 'Selecionar pasta de destino'): Promise<string | null> {

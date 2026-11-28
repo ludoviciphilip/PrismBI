@@ -250,6 +250,29 @@ export interface VisualDataConfig {
    * normalmente não grava aqui). */
   matrixExpansion?: { depth: number; expanded: string[]; collapsed: string[] };
   // --- fim Bloco G ---
+  // --- Bloco I (v0.11 Rodada 2, "Níveis nas colunas da matriz") ---
+  /** Matriz: campos das COLUNAS (N níveis), como `matrixRowFields` para as linhas.
+   * Migração (src/engine/migrations/matrixColumns.ts): a legenda antiga
+   * (`legendField`) vira o 1º nível quando este campo ainda não existe. */
+  matrixColumnFields?: string[];
+  /** Indicadores (Bookmarks) restauram a expansão das colunas (mesmo formato
+   * de `matrixExpansion`, eixo independente). Não persistido fora de um indicador. */
+  matrixColumnExpansion?: { depth: number; expanded: string[]; collapsed: string[] };
+  /** Qual eixo da matriz os controles de drill (cabeçalho ao passar o mouse) afetam
+   * — paridade com o botão "Linhas"/"Colunas" do cabeçalho do visual no Power BI
+   * Desktop. Padrão 'rows'. */
+  matrixDrillAxis?: 'rows' | 'columns';
+  /** Opções de formato da matriz (aba Formatar → Totais/Subtotais), paridade com
+   * o Power BI Desktop. Cada array é indexado pelo nível (0 = topo). */
+  matrixFormat?: {
+    /** Subtotal de linha ligado/desligado por nível (`matrixRowFields`). */
+    rowSubtotals?: boolean[];
+    /** Subtotal de coluna ligado/desligado por nível (`matrixColumnFields`). */
+    columnSubtotals?: boolean[];
+    /** Posição dos totais: antes (topo/esquerda) ou depois (padrão) dos filhos. */
+    totalPosition?: 'first' | 'last';
+  };
+  // --- fim Bloco I ---
   kpiTarget?: number;
   kpiComparisonField?: string;
   visualCalculations?: VisualCalculation[];
@@ -350,6 +373,11 @@ export interface Filter {
   column: string;
   operator: 'in' | 'notIn' | 'equals' | 'notEquals' | 'greaterThan' | 'greaterThanOrEqual' | 'lessThan' | 'lessThanOrEqual' | 'between' | 'contains';
   value: any;
+  /** v0.11 Frente D: cross-filter a partir de um ponto drillado de data (ano/trimestre/mês/dia);
+   *  `value` é o número da parte (ex.: trimestre 1-4), comparado via `datePartValue`. */
+  datePart?: 'year' | 'quarter' | 'month' | 'day';
+  /** Rótulo legível para o painel de Filtros (ex.: "Trimestre: Trim 2"); só usado por filtros de drill. */
+  label?: string;
 }
 
 /** Per-visual display state captured by a Bookmark (capture.display), Power BI style. */
@@ -601,5 +629,12 @@ export interface DaxSnippet {
   title: string;
   category: 'Time Intelligence' | 'Ranking' | 'ABC / Pareto' | 'Growth' | 'Security';
   description: string;
+  /** Illustrative-only example (fake table/measure names) kept for the
+   * tooltip/documentation. NEVER inserted directly into a query or formula
+   * editor -- see `src/engine/shared/snippetResolver.ts`'s
+   * `resolveDaxSnippet`, which rebuilds an equivalent snippet using the
+   * CURRENT model's real tables/columns/measures (v0.11 Rodada 2: the
+   * literal template used to reference tables like 'd_Calendario' that
+   * don't exist in a real project, so the inserted snippet never ran). */
   template: string;
 }

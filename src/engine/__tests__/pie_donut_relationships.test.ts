@@ -237,7 +237,7 @@ describe('Pie & Donut Visuals with Relationships and DAX Measures', () => {
 
     // Verify raw mapping for ECharts: magnitude Math.abs(val) must be positive and non-zero
     const rawPieData = result.categories.map((cat, i) => {
-      const numVal = result.series[0].data[i];
+      const numVal = result.series[0].data[i] ?? 0;
       return {
         name: cat,
         value: Math.abs(numVal),

@@ -495,8 +495,10 @@ pub(super) fn apply_calculate_modifier(
                 // handling: the resulting rows become the filter, grouped into tuple
                 // filters whenever more than one of their columns trace back to the
                 // same table.
-                "VALUES" | "DISTINCT" | "SUMMARIZE" | "ADDCOLUMNS" | "SELECTCOLUMNS" | "UNION" | "INTERSECT"
-                | "EXCEPT" | "CROSSJOIN" | "GENERATESERIES" | "TOPN" | "CALCULATETABLE" | "RELATEDTABLE" => {
+                "VALUES" | "DISTINCT" | "SUMMARIZE" | "SUMMARIZECOLUMNS" | "ADDCOLUMNS"
+                | "SELECTCOLUMNS" | "UNION" | "INTERSECT" | "EXCEPT" | "CROSSJOIN"
+                | "GENERATESERIES" | "TOPN" | "CALCULATETABLE" | "RELATEDTABLE" | "CALENDAR"
+                | "CALENDARAUTO" | "OFFSET" | "INDEX" | "WINDOW" => {
                     apply_table_filter(expr, model, outer_ctx, next_ctx, row_stack, vars, false)?;
                     return Ok(());
                 }
@@ -653,6 +655,12 @@ pub(super) fn apply_table_filter(
                 let cls: Vec<String> = col_names.iter().map(|c| c.to_lowercase()).collect();
                 if let Some(existing) = outer_ctx.tuple_filters.iter().find(|tf| tf.table == tl && tf.columns == cls) {
                     tuples = tuples.intersection(&existing.tuples).cloned().collect();
+                }
+            } else {
+                // Replacing outer filters on the same columns (e.g., OFFSET/WINDOW returning
+                // another row from ALL(T[C1], T[C2]) when outer ctx filtered only T[C1]).
+                for c in &col_names {
+                    next_ctx.clear_column(&t, c);
                 }
             }
             next_ctx.set_tuple_filter(&t, &col_names, tuples);
@@ -822,7 +830,7 @@ mod tests {
         let mut model = DaxModel::new();
         model.sync_from_payload(DaxModelSyncPayload {
             tables: vec![
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     duckdb_table: None,
                     name: "d_Produto".into(),
                     columns: vec!["ProdutoID".into(), "Produto".into(), "Categoria".into()],
@@ -833,8 +841,9 @@ mod tests {
                         row(json!({"ProdutoID": 4, "Produto": "Teclado", "Categoria": "Informatica"})),
                     ],
                     column_types: vec![],
+                    sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     duckdb_table: None,
                     name: "d_Cliente".into(),
                     columns: vec!["ClienteID".into(), "Cliente".into()],
@@ -844,8 +853,9 @@ mod tests {
                         row(json!({"ClienteID": 3, "Cliente": "Carla"})),
                     ],
                     column_types: vec![],
+                    sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
-                DaxTableInput {
+                DaxTableInput { column_format_strings: Default::default(),
                     duckdb_table: None,
                     name: "f_Vendas".into(),
                     // (ProdutoID, ClienteID): (1,1)x2, (1,2), (2,1), (2,2)x2, (4,1) — a
@@ -854,6 +864,7 @@ mod tests {
                     columns: vec!["VendaID".into(), "ProdutoID".into(), "ClienteID".into(), "Valor".into()],
                     rows: f_rows,
                     column_types: vec![],
+                    sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
                 },
             ],
             relationships: vec![
@@ -874,11 +885,9 @@ mod tests {
                     is_active: true,
                 },
             ],
-            measures: vec![DaxMeasureInput {
-                name: "Total".into(),
+            measures: vec![DaxMeasureInput { name: "Total".into(),
                 table_name: "f_Vendas".into(),
-                formula: "SUM(f_Vendas[Valor])".into(),
-            }],
+                formula: "SUM(f_Vendas[Valor])".into(), format_string: None }],
         });
         model
     }
@@ -893,7 +902,7 @@ mod tests {
             table_id: table.into(),
             column: column.into(),
             values: values.iter().map(|v| json!(v)).collect(),
-        }
+         ..Default::default() }
     }
 
     #[test]

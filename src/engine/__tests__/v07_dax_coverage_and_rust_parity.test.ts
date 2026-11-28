@@ -34,7 +34,7 @@ describe('v0.7.0 DAX Coverage & Expanded Functions', () => {
     expect(DaxEngine.evaluateWithContext('ISINT64(42)', model)).toBe(true);
     expect(DaxEngine.evaluateWithContext('ISINT64(42.5)', model)).toBe(false);
     expect(DaxEngine.evaluateWithContext('ISNUMERIC(100)', model)).toBe(true);
-    expect(DaxEngine.evaluateWithContext('ISSTRING("PrismBI")', model)).toBe(true);
+    expect(DaxEngine.evaluateWithContext('ISSTRING("VetroBI")', model)).toBe(true);
     expect(DaxEngine.evaluateWithContext('ISCURRENCY(19.95)', model)).toBe(true);
     expect(typeof DaxEngine.evaluateWithContext('ISINSCOPE(d_Clientes[Segmento])', model)).toBe('boolean');
     expect(typeof DaxEngine.evaluateWithContext('ISSUBTOTAL(d_Clientes[Segmento])', model)).toBe('boolean');

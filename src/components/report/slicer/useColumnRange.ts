@@ -14,7 +14,7 @@ function quoteIdent(id: string): string {
 /**
  * Min/max of a column across the FULL backing table, not the 5.000-row
  * preview in `table.rows` (see docs/RUST_ENGINE_2.md §3 step 2 / the
- * prismbi skill's "Data-volume rules" — table.rows is only a preview).
+ * VetroBI's "Data-volume rules" — table.rows is only a preview).
  * Uses the native DuckDB table via `queryDuckDbNative` when available
  * (Tauri runtime + `table.duckdbTable` set); falls back to scanning
  * `table.rows` only when there is no native table to query (browser dev

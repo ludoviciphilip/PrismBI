@@ -10,7 +10,7 @@ Each function below documents how its value was derived: either a plain
 Python computation that mirrors a documented DAX semantic rule (cited in the
 docstring/comment), or a value copied verbatim from an official worked
 example on dax.guide / learn.microsoft.com (cited by URL). Never derived by
-running PrismBI itself.
+running VetroBI itself.
 
 Conventions:
   - DAX dates are represented as datetime.date; the JSON "expected" field

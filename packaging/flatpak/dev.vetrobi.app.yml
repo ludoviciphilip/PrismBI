@@ -1,11 +1,11 @@
-app-id: dev.prismbi.app
+app-id: dev.vetrobi.app
 runtime: org.gnome.Platform
 runtime-version: '47'
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
   - org.freedesktop.Sdk.Extension.node22
-command: prismbi
+command: vetrobi
 finish-args:
   - --share=ipc
   - --socket=wayland
@@ -14,7 +14,7 @@ finish-args:
   - --share=network
   - --filesystem=home
 modules:
-  - name: prismbi
+  - name: vetrobi
     buildsystem: simple
     build-options:
       append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/node22/bin
@@ -22,10 +22,10 @@ modules:
       - corepack enable
       - pnpm install --frozen-lockfile
       - pnpm tauri build --bundles deb
-      - install -Dm755 src-tauri/target/release/prismbi /app/bin/prismbi
-      - install -Dm644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/dev.prismbi.app.png
-      - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/dev.prismbi.app.png
+      - install -Dm755 src-tauri/target/release/vetrobi /app/bin/vetrobi
+      - install -Dm644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/dev.vetrobi.app.png
+      - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/dev.vetrobi.app.png
     sources:
       - type: git
-        url: https://github.com/ludoviciphilip/PrismBI.git
-        tag: v0.10.0
+        url: https://github.com/ludoviciphilip/VetroBI.git
+        tag: v0.11.0

@@ -311,14 +311,14 @@ export function getInfoMetadataTable(viewName: string, context: any): DaxTableVa
     case 'ANNOTATIONS': {
       return toDaxTable([
         { Object: 'Model', AnnotationName: 'PBI_ProTooling', Value: '["DevMode"]' },
-        { Object: 'Engine', AnnotationName: 'PrismBIDAX', Value: 'v0.10.0' },
+        { Object: 'Engine', AnnotationName: 'VetroBIDAX', Value: 'v0.11.0' },
       ]);
     }
 
     case 'CULTURES':
       return toDaxTable([{ Name: context?.user?.userCulture || 'pt-BR', LinguisticMetadata: 'BuiltIn' }]);
     case 'CATALOGS':
-      return toDaxTable([{ Name: 'PrismBI_Catalog', Type: 'Tabular', CompatibilityLevel: 1600 }]);
+      return toDaxTable([{ Name: 'VetroBI_Catalog', Type: 'Tabular', CompatibilityLevel: 1600 }]);
     case 'FORMATSTRINGDEFINITIONS':
       return toDaxTable(
         measures
@@ -535,7 +535,7 @@ export const INFO_FUNCTIONS: Record<string, FunctionDefinition> = {
     category: 'Informação',
     syntax: 'ISSTRING(<value>)',
     description: 'Verifica se o valor informado é uma cadeia de caracteres (texto).',
-    example: 'ISSTRING("PrismBI")',
+    example: 'ISSTRING("VetroBI")',
     minArgs: 1,
     maxArgs: 1,
     evaluate: ([v]) => typeof v === 'string',

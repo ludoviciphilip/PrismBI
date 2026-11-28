@@ -395,6 +395,55 @@ describe('Matriz com N níveis', () => {
   });
 });
 
+describe('v0.11 Frente D: cross-filter a partir de um ponto drillado de data / caminho concatenado', () => {
+  it('gráfico: clicar num ponto de nível de data (mês, drilado) aplica filtro cruzado pela parte da data', () => {
+    seed(chartVisual());
+    render(<LiveCard id="v1" />);
+    hover();
+    const toggle = screen.getByRole('button', { name: 'Modo drill down' });
+    fireEvent.click(toggle); // liga o modo drill
+    act(() => chart.onEvents.click({ name: '2024' })); // desce para Trimestre
+    act(() => chart.onEvents.click({ name: 'Trim 1' })); // desce para Mês
+    fireEvent.click(toggle); // desliga o modo drill (clique normal = cross-filter, não desce mais)
+    act(() => chart.onEvents.click({ name: 'janeiro' }));
+
+    const filters = useBiStore.getState().filters;
+    const byPart = (p: string) => filters.find(f => f.datePart === p);
+    expect(byPart('year')).toMatchObject({ tableId: 'fp', column: 'Data', value: 2024 });
+    expect(byPart('quarter')).toMatchObject({ tableId: 'fp', column: 'Data', value: 1 });
+    expect(byPart('month')).toMatchObject({ tableId: 'fp', column: 'Data', value: 1 });
+    expect(byPart('month')!.label).toMatch(/janeiro/);
+
+    // clicar de novo no mesmo ponto limpa o filtro cruzado (toggle)
+    act(() => chart.onEvents.click({ name: 'janeiro' }));
+    expect(useBiStore.getState().filters).toHaveLength(0);
+  });
+
+  it('matriz: clicar numa linha de hierarquia de data (ano) filtra os outros visuais pela parte da data', () => {
+    seed(matrixVisual({ tableId: 'fp', xAxisField: 'Data', matrixRowFields: undefined, yAxisFields: ['Total'], drillMode: 'drill' } as any));
+    render(<LiveCard id="v1" />);
+    expect(rowLabels()[0]).toMatch(/0:2023=R\$.?10,00/);
+    expect(rowLabels()[1]).toMatch(/0:2024=R\$.?16,00/);
+
+    fireEvent.click(screen.getByText('2024'));
+    const filters = useBiStore.getState().filters;
+    expect(filters).toHaveLength(1);
+    expect(filters[0]).toMatchObject({ tableId: 'fp', column: 'Data', datePart: 'year', value: 2024 });
+    expect(filters[0].label).toMatch(/2024/);
+  });
+
+  it('matriz: linha de texto comum (não data) continua filtrando pelo caminho (ancestrais + nível)', () => {
+    seed(matrixVisual());
+    render(<LiveCard id="v1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Expandir Sul' }));
+    fireEvent.click(screen.getByText('POA'));
+    const filters = useBiStore.getState().filters;
+    // Regiao=Sul (ancestral) + Cidade=POA (nível atual) — não só Cidade=POA isolado.
+    expect(filters.find(f => f.column === 'Regiao')).toMatchObject({ value: 'Sul' });
+    expect(filters.find(f => f.column === 'Cidade')).toMatchObject({ value: 'POA' });
+  });
+});
+
 describe('Frente H→G: formatação condicional nos totais/subtotais da matriz hierárquica', () => {
   const valueCell = (label: string) =>
     Array.from(document.querySelectorAll('[data-testid="hierarchical-matrix"] tbody tr')).find(
@@ -525,5 +574,134 @@ describe('i18n (item 6): controles de drill usam src/i18n, não PT-BR fixo', () 
     hover();
     expect(screen.getByTestId('drill-controls').getAttribute('aria-label')).toBe('Controles de drill');
     expect(screen.getByRole('button', { name: 'Fazer drill up' })).toBeTruthy();
+  });
+});
+
+describe('Matriz UI: sortByColumn nas colunas e células BLANK vazias (sem R$ 0,00)', () => {
+  const seedDre = (mv: Visual) => {
+    const dCal: Table = {
+      id: 'dc',
+      name: 'dCal',
+      originalName: 'dCal',
+      columns: [
+        { id: 'c1', name: 'Data', originalName: 'Data', dataType: 'date' },
+        { id: 'c2', name: 'MesNome', originalName: 'MesNome', dataType: 'text', sortByColumn: 'MesNum' },
+        { id: 'c3', name: 'MesNum', originalName: 'MesNum', dataType: 'number' },
+      ],
+      rows: [
+        { Data: '2026-01-10', MesNome: 'jan', MesNum: 1 },
+        { Data: '2026-04-10', MesNome: 'abr', MesNum: 4 },
+        { Data: '2026-11-10', MesNome: 'nov', MesNum: 11 },
+      ],
+    } as Table;
+    const dEst: Table = {
+      id: 'de',
+      name: 'dEstrutura',
+      originalName: 'dEstrutura',
+      columns: [
+        { id: 'e1', name: 'Linha', originalName: 'Linha', dataType: 'text', sortByColumn: 'Ordem' },
+        { id: 'e2', name: 'Ordem', originalName: 'Ordem', dataType: 'number' },
+      ],
+      rows: [
+        { Linha: 'Receita', Ordem: 1 },
+        { Linha: 'ZeroReal', Ordem: 2 },
+        { Linha: '—', Ordem: 3 },
+      ],
+    } as Table;
+    const fLanc: Table = {
+      id: 'fl',
+      name: 'fLanc',
+      originalName: 'fLanc',
+      columns: [
+        { id: 'l1', name: 'Data', originalName: 'Data', dataType: 'date' },
+        { id: 'l2', name: 'Linha', originalName: 'Linha', dataType: 'text' },
+        { id: 'l3', name: 'Valor', originalName: 'Valor', dataType: 'currency' },
+      ],
+      rows: [
+        { Data: '2026-01-10', Linha: 'Receita', Valor: 1000 },
+        { Data: '2026-11-10', Linha: 'Receita', Valor: 2500 },
+        { Data: '2026-04-10', Linha: 'ZeroReal', Valor: 0 },
+      ],
+    } as Table;
+    const mDre: Measure[] = [
+      { id: 'md', name: 'DRE Valor', formula: 'SUMX(FILTER(fLanc, fLanc[Valor] >= 0), fLanc[Valor])', tableName: 'fLanc', format: 'currency' },
+    ];
+    const rels = [
+      { id: 'r1', fromTable: 'fLanc', fromColumn: 'Data', toTable: 'dCal', toColumn: 'Data', cardinality: 'N:1' as const, crossFilterDirection: 'single' as const, isActive: true },
+      { id: 'r2', fromTable: 'fLanc', fromColumn: 'Linha', toTable: 'dEstrutura', toColumn: 'Linha', cardinality: 'N:1' as const, crossFilterDirection: 'single' as const, isActive: true },
+    ];
+    const st = useBiStore.getState();
+    st.newProject('DRE Matrix UI');
+    st.setTables([dCal, dEst, fLanc]);
+    useBiStore.setState({ relationships: rels, measures: mDre, filters: [] });
+    globalDataEngine.setSchema([dCal, dEst, fLanc], rels, mDre);
+    const pageId = useBiStore.getState().activePageId;
+    useBiStore.setState(s => ({ pages: [{ ...s.pages[0], id: pageId, visuals: [mv] }] }));
+  };
+
+  it('matriz hierárquica ordena meses cronologicamente, oculta linha "—" e deixa células BLANK vazias', () => {
+    seedDre({
+      id: 'v1',
+      type: 'matrix',
+      title: 'DRE',
+      x: 0,
+      y: 0,
+      w: 600,
+      h: 400,
+      dataConfig: {
+        tableId: 'fl',
+        xAxisField: 'dEstrutura.Linha',
+        legendField: 'dCal.MesNome',
+        matrixRowFields: ['dEstrutura.Linha', 'dEstrutura.Ordem'],
+        yAxisFields: ['DRE Valor'],
+        aggregation: 'NONE',
+      },
+      formatConfig: { showTitle: true },
+    });
+    render(<LiveCard id="v1" />);
+    const matrix = screen.getByTestId('hierarchical-matrix');
+    const headers = Array.from(matrix.querySelectorAll('thead th')).map(th => th.textContent?.trim());
+    expect(headers).toEqual(['dEstrutura.Linha', 'jan', 'abr', 'nov', 'Total']);
+
+    const bodyRows = Array.from(matrix.querySelectorAll('tbody tr'));
+    expect(bodyRows.map(tr => tr.querySelector('td span')?.textContent)).toEqual(['Receita', 'ZeroReal']);
+
+    const receitaCells = Array.from(bodyRows[0].querySelectorAll('td')).map(td => td.textContent);
+    expect(receitaCells[1]).toContain('1.000');
+    expect(receitaCells[2]).toBe(''); // abr para Receita é BLANK (nunca R$ 0,00)
+    expect(receitaCells[3]).toContain('2.500');
+
+    const zeroCells = Array.from(bodyRows[1].querySelectorAll('td')).map(td => td.textContent);
+    expect(zeroCells[1]).toBe('');
+    expect(zeroCells[2]).toContain('0,00'); // ZeroReal em abr é 0 genuíno
+    expect(zeroCells[3]).toBe('');
+  });
+
+  it('matriz de 1 nível também ordena colunas por sortByColumn e deixa células BLANK vazias', () => {
+    seedDre({
+      id: 'v1',
+      type: 'matrix',
+      title: 'DRE 1L',
+      x: 0,
+      y: 0,
+      w: 600,
+      h: 400,
+      dataConfig: {
+        tableId: 'fl',
+        xAxisField: 'dEstrutura.Linha',
+        legendField: 'dCal.MesNome',
+        yAxisFields: ['DRE Valor'],
+        aggregation: 'NONE',
+      },
+      formatConfig: { showTitle: true },
+    });
+    const { container } = render(<LiveCard id="v1" />);
+    const headers = Array.from(container.querySelectorAll('table thead th')).map(th => th.textContent?.trim());
+    expect(headers).toEqual(['dEstrutura.Linha', 'jan', 'abr', 'nov', 'Total']);
+
+    const bodyRows = Array.from(container.querySelectorAll('table tbody tr'));
+    expect(bodyRows.map(tr => tr.querySelector('td span')?.textContent)).toEqual(['Receita', 'ZeroReal']);
+    const receitaCells = Array.from(bodyRows[0].querySelectorAll('td')).map(td => td.textContent);
+    expect(receitaCells[2]).toBe('');
   });
 });

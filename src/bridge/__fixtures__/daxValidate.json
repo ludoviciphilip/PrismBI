@@ -1,0 +1,24 @@
+[
+  {
+    "name": "measure_ok_with_sample_value",
+    "request": { "expression": "[Total Vendas] * 2", "context": "measure", "table": null },
+    "response": { "ok": true, "diagnostics": [], "resultType": "integer", "sampleValue": 270 }
+  },
+  {
+    "name": "unknown_function",
+    "request": { "expression": "NAOEXISTEFUNC(1,2)", "context": "measure", "table": null },
+    "response": {
+      "ok": false,
+      "diagnostics": [
+        { "severity": "error", "message": "Função DAX 'NAOEXISTEFUNC' ainda não implementada no motor nativo.", "line": 1, "column": 1, "length": 13 }
+      ],
+      "resultType": null,
+      "sampleValue": null
+    }
+  },
+  {
+    "name": "calculated_column_row_context",
+    "request": { "expression": "LEN(Produto[Categoria])", "context": "calculatedColumn", "table": "Produto" },
+    "response": { "ok": true, "diagnostics": [], "resultType": "integer", "sampleValue": 9 }
+  }
+]

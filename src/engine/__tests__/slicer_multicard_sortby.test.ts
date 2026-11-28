@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { DataEngine } from '../dataEngine';
 import { Table, Visual, Filter } from '../../types/bi';
 
-describe('PrismBI Visual Planner - Slicer, SortByColumn & Multi-Card', () => {
+describe('VetroBI Visual Planner - Slicer, SortByColumn & Multi-Card', () => {
   const buildModel = () => {
     const engine = new DataEngine();
     const tables: Table[] = [

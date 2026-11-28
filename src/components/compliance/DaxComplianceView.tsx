@@ -149,7 +149,7 @@ export const DaxComplianceView: React.FC = () => {
 
   const exportReportJson = () => {
     const report = {
-      title: 'PrismBI DAX Engine - Relatório de Conformidade DAX.guide',
+      title: 'VetroBI DAX Engine - Relatório de Conformidade DAX.guide',
       version: APP_VERSION,
       timestamp: new Date().toISOString(),
       summary: DAX_CONFORMANCE_SUMMARY,

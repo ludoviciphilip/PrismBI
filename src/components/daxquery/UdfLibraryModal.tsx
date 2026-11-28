@@ -3,7 +3,7 @@ import { X, Plus, Trash2, Edit3, Download, Upload, Check, AlertCircle, Code } fr
 import { useBiStore } from '../../store/useBiStore';
 import { UserDefinedFunction } from '../../types/bi';
 import { UdfManager } from '../../engine/model/udfManager';
-import { DaxEngine } from '../../engine/daxEngine';
+import { validateDaxFormula } from '../../engine/nativeDax';
 
 interface UdfLibraryModalProps {
   isOpen: boolean;
@@ -55,7 +55,7 @@ export const UdfLibraryModal: React.FC<UdfLibraryModalProps> = ({ isOpen, onClos
     setSuccessMsg('');
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setErrorMsg('');
     if (!name.trim()) {
       setErrorMsg('O nome da função é obrigatório.');
@@ -66,8 +66,10 @@ export const UdfLibraryModal: React.FC<UdfLibraryModalProps> = ({ isOpen, onClos
       return;
     }
 
-    // Validate body syntax with DaxEngine
-    const valRes = DaxEngine.validate(body.trim(), [], []);
+    // Validate body syntax: native Rust `dax_validate` inside Tauri, TS
+    // fallback only outside it. No table/measure context (UDF parameters
+    // aren't model columns), same as before.
+    const valRes = await validateDaxFormula(body.trim(), [], [], 'measure');
     if (!valRes.isValid) {
       setErrorMsg(`Erro de sintaxe na fórmula: ${valRes.errorMessage}`);
       return;

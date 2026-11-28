@@ -37,9 +37,9 @@ export const DEFAULT_PORT_BY_KIND: Record<DbConnectorKind, number | undefined> =
 /** Gera uma chave estável para o keyring (independente do connectionId efêmero de sessão). */
 export function generateCredentialKey(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return `prismbi-db-${crypto.randomUUID()}`;
+    return `vetrobi-db-${crypto.randomUUID()}`;
   }
-  return `prismbi-db-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `vetrobi-db-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 /** Valida os campos obrigatórios do formulário de conexão por tipo de conector. */

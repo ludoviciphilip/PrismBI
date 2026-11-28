@@ -175,6 +175,11 @@ export interface Translations {
     drillthroughAction: string;
     drillthroughActionHint: string;
     drillthroughUnavailableHint: string;
+    /** v0.11 Rodada 2 (Frente I): alterna qual eixo da matriz os controles de
+     * drill/expandir afetam — paridade com "Linhas"/"Colunas" no Power BI Desktop. */
+    axisRows: string;
+    axisColumns: string;
+    switchAxisHint: string;
   };
   slicer: {
     searchPlaceholder: string;
@@ -213,6 +218,77 @@ export interface Translations {
     emptyPageSubtitle: string;
     canvasSize: string;
   };
+  /** v0.11 Frente D: painel Indicadores (Bookmarks). */
+  bookmarks: {
+    title: string;
+    expandPanel: string;
+    collapsePanel: string;
+    add: string;
+    groupAll: string;
+    ungroupAll: string;
+    play: string;
+    previous: string;
+    next: string;
+    exit: string;
+    empty: string;
+    moreOptions: string;
+    optionsOf: string;
+    refresh: string;
+    duplicate: string;
+    delete: string;
+    captureData: string;
+    captureDisplay: string;
+    captureCurrentPage: string;
+    scopeAllVisuals: string;
+    scopeSelectedVisuals: string;
+    renameAria: string;
+    newBookmarkPrefix: string;
+    newGroupName: string;
+  };
+  /** v0.11 Frente D: painel Seleção. */
+  selection: {
+    title: string;
+    expandPanel: string;
+    collapsePanel: string;
+    empty: string;
+    showVisual: string;
+    hideVisual: string;
+  };
+  /** v0.11 Frente D: Dicas de página (PageTooltipSettings/TooltipCard). */
+  pageTooltip: {
+    pageInfo: string;
+    allowAsTooltip: string;
+    hiddenInPresentation: string;
+    fieldsLabel: string;
+    noFieldsAvailable: string;
+    tooltipLabel: string;
+    type: string;
+    typeDefault: string;
+    typeReportPage: string;
+    pageLabel: string;
+    automatic: string;
+    noTooltipPagesYet: string;
+  };
+  /** v0.11 Frente D: literais fixos da matriz hierárquica (HierarchicalMatrix). */
+  matrix: {
+    total: string;
+    grandTotal: string;
+    blank: string;
+    rowsLabel: string;
+  };
+  /** v0.11 Frente D: editor de níveis de drill (DrillLevelsEditor). */
+  drillEditor: {
+    rowLevelsLabel: string;
+    axisHierarchyLabel: string;
+    level: string;
+    removeLevel: string;
+    addLevelAria: string;
+    addLevelOption: string;
+    addLevelTitle: string;
+    chooseAxisFirstMatrix: string;
+    chooseAxisFirstChart: string;
+    autoDateHierarchy: string;
+  };
   connectors: {
     tabLabel: string;
     nativeBadge: string;
@@ -237,5 +313,18 @@ export interface Translations {
     parquetUrl: string;
     selectTableOrWriteSql: string;
     importSuccess: string;
+  };
+  /** v0.11 (atalhos de teclado): toasts dos atalhos e diálogo "Atalhos de teclado". */
+  shortcuts: {
+    toastSaved: string;
+    toastSaveFailed: string;
+    toastExported: string;
+    dialogTitle: string;
+    dialogSubtitle: string;
+    searchPlaceholder: string;
+    noResults: string;
+    menuItem: string;
+    columnAction: string;
+    columnShortcut: string;
   };
 }

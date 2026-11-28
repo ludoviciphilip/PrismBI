@@ -1472,7 +1472,7 @@ mod tests {
             Some(DaxValue::number_smart(6.0))
         );
         assert_eq!(
-            try_eval_scalar_fn("MID", &[DaxValue::Text("PrismBI".into()), DaxValue::number_smart(6.0), DaxValue::number_smart(2.0)]).unwrap(),
+            try_eval_scalar_fn("MID", &[DaxValue::Text("VetroBI".into()), DaxValue::number_smart(6.0), DaxValue::number_smart(2.0)]).unwrap(),
             Some(DaxValue::Text("BI".into()))
         );
         assert_eq!(

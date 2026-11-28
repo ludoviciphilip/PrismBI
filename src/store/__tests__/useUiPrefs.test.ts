@@ -89,9 +89,9 @@ describe('useUiPrefs', () => {
     });
   });
 
-  it('persists to localStorage under the "prismbi.ui" key', () => {
+  it('persists to localStorage under the "vetrobi.ui" key', () => {
     useUiPrefs.getState().setPaneState('filters', 'collapsed');
-    const raw = localStorage.getItem('prismbi.ui');
+    const raw = localStorage.getItem('vetrobi.ui');
     expect(raw).toBeTruthy();
     const parsed = JSON.parse(raw!);
     expect(parsed.state.panes.filters).toBe('collapsed');
@@ -99,13 +99,25 @@ describe('useUiPrefs', () => {
 
   it('rehydrates a previously persisted state on a fresh store creation', async () => {
     localStorage.setItem(
-      'prismbi.ui',
+      'vetrobi.ui',
       JSON.stringify({ state: { panes: { filters: 'collapsed', visualizations: 'hidden', fields: 'open' } }, version: 1 })
     );
     // Zustand persist rehydrates asynchronously; re-trigger it explicitly for a deterministic test.
     await useUiPrefs.persist.rehydrate();
     expect(useUiPrefs.getState().panes.filters).toBe('collapsed');
     expect(useUiPrefs.getState().panes.visualizations).toBe('hidden');
+    expect(useUiPrefs.getState().panes.fields).toBe('open');
+  });
+
+  it('rehydrates legacy "prismbi.ui" preferences when "vetrobi.ui" is absent', async () => {
+    localStorage.removeItem('vetrobi.ui');
+    localStorage.setItem(
+      'prismbi.ui',
+      JSON.stringify({ state: { panes: { filters: 'hidden', visualizations: 'collapsed', fields: 'open' } }, version: 1 })
+    );
+    await useUiPrefs.persist.rehydrate();
+    expect(useUiPrefs.getState().panes.filters).toBe('hidden');
+    expect(useUiPrefs.getState().panes.visualizations).toBe('collapsed');
     expect(useUiPrefs.getState().panes.fields).toBe('open');
   });
 

@@ -1,6 +1,6 @@
-# Contribuindo com o PrismBI
+# Contribuindo com o VetroBI
 
-Obrigado pelo interesse em contribuir com o **PrismBI**!
+Obrigado pelo interesse em contribuir com o **VetroBI**!
 
 ## Ambiente de Desenvolvimento
 

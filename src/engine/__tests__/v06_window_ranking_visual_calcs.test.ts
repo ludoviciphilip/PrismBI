@@ -394,8 +394,9 @@ describe('V0.6: Funções de Janela, Ranking e Visual Calculations', () => {
       // Verify that values are strictly increasing / cumulative
       let prev = 0;
       for (const val of accSeries!.data) {
-        expect(val).toBeGreaterThanOrEqual(prev);
-        prev = val;
+        expect(val).not.toBeNull();
+        expect(val!).toBeGreaterThanOrEqual(prev);
+        prev = val!;
       }
     });
   });

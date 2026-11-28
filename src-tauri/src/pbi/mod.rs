@@ -139,6 +139,10 @@ pub struct PbiVisualMeta {
     /// nos gráficos, níveis seguintes das linhas na matriz).
     #[serde(default)]
     pub drill_fields: Vec<String>,
+    /// v0.11 Rodada 2 (Frente I): projeções extras de Columns/Series/Legend
+    /// (níveis seguintes das COLUNAS da matriz, depois de `legend_field`).
+    #[serde(default)]
+    pub legend_drill_fields: Vec<String>,
     #[serde(default)]
     pub column_count: Option<u32>,
     #[serde(default)]
@@ -151,10 +155,10 @@ pub struct PbiVisualMeta {
     pub text_content: Option<String>,
     #[serde(default)]
     pub filters: Vec<PbiFilterMeta>,
-    /// Primary sort field from PBIR `query.sortDefinition` (PrismBI `dataConfig.sortField`).
+    /// Primary sort field from PBIR `query.sortDefinition` (VetroBI `dataConfig.sortField`).
     #[serde(default)]
     pub sort_field: Option<String>,
-    /// "asc" | "desc" (PrismBI `dataConfig.sortOrder`).
+    /// "asc" | "desc" (VetroBI `dataConfig.sortOrder`).
     #[serde(default)]
     pub sort_order: Option<String>,
     /// v0.10 Frente B: formatação condicional (gradiente/regras/barras) lida de `objects`.
@@ -576,6 +580,7 @@ pub fn parse_legacy_report_json(json_str: &str) -> Result<Vec<PbiPageMeta>, Stri
                     legend_field,
                     value_fields,
                     drill_fields,
+                    legend_drill_fields: Vec::new(),
                     column_count: None,
                     slicer_mode: None,
                     action_type: None,

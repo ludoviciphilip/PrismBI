@@ -13,9 +13,12 @@ import { MousePointer2, Eye, EyeOff } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { useUiPrefs } from '../../store/useUiPrefs';
+import { useTranslation } from '../../i18n';
 import { CollapsedPaneStrip, PaneCollapseButton } from './PaneCollapseShell';
 
 export const SelectionPane: React.FC = React.memo(() => {
+  const { t } = useTranslation();
+  const s0 = t.selection;
   const paneState = useUiPrefs(s => s.panes.selection);
   const togglePaneCollapsed = useUiPrefs(s => s.togglePaneCollapsed);
   const { pages, activePageId, updateVisual, selectedVisualId, setSelectedVisualId } = useBiStore(
@@ -33,8 +36,8 @@ export const SelectionPane: React.FC = React.memo(() => {
       <CollapsedPaneStrip
         icon={MousePointer2}
         iconClassName="w-4 h-4 text-amber-500"
-        title="Seleção"
-        expandLabel="Expandir painel"
+        title={s0.title}
+        expandLabel={s0.expandPanel}
         onExpand={() => togglePaneCollapsed('selection')}
         testId="selection-pane-collapsed"
       />
@@ -49,10 +52,10 @@ export const SelectionPane: React.FC = React.memo(() => {
       <div className="p-2.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 flex items-center justify-between font-semibold text-slate-700 dark:text-slate-200">
         <div className="flex items-center gap-1.5">
           <MousePointer2 className="w-4 h-4 text-amber-500" />
-          <span>Seleção</span>
+          <span>{s0.title}</span>
         </div>
         <PaneCollapseButton
-          collapseLabel="Recolher painel"
+          collapseLabel={s0.collapsePanel}
           onCollapse={() => togglePaneCollapsed('selection')}
           testId="selection-pane-collapse"
         />
@@ -60,7 +63,7 @@ export const SelectionPane: React.FC = React.memo(() => {
 
       <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
         {visuals.length === 0 ? (
-          <div className="p-4 text-center text-slate-400 dark:text-slate-500 text-[11px]">Nenhum visual nesta página.</div>
+          <div className="p-4 text-center text-slate-400 dark:text-slate-500 text-[11px]">{s0.empty}</div>
         ) : (
           visuals.map(v => {
             const hidden = v.formatConfig?.hidden ?? false;
@@ -78,8 +81,8 @@ export const SelectionPane: React.FC = React.memo(() => {
                 <span className={`flex-1 min-w-0 truncate ${hidden ? 'opacity-50 italic' : ''}`}>{v.title || v.type}</span>
                 <button
                   type="button"
-                  title={hidden ? 'Mostrar visual' : 'Ocultar visual'}
-                  aria-label={hidden ? `Mostrar ${v.title}` : `Ocultar ${v.title}`}
+                  title={hidden ? s0.showVisual : s0.hideVisual}
+                  aria-label={`${hidden ? s0.showVisual : s0.hideVisual}: ${v.title}`}
                   onClick={e => {
                     e.stopPropagation();
                     updateVisual(v.id, { formatConfig: { ...v.formatConfig, hidden: !hidden } });

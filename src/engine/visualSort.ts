@@ -154,7 +154,7 @@ export function sortRows<T extends Record<string, any>>(
 
 export interface CategorySeriesData {
   categories: string[];
-  series: { name: string; data: number[] }[];
+  series: { name: string; data: (number | null)[] }[];
 }
 
 export interface VisualSortSpec {
@@ -168,6 +168,8 @@ export interface VisualSortSpec {
   valueFields: string[];
   /** categoryLabel -> sortBy value (from the category column's `sortByColumn`). */
   categorySortKeys?: Map<string, unknown>;
+  /** legendLabel -> sortBy value (from the legend column's `sortByColumn`). */
+  legendSortKeys?: Map<string, unknown>;
 }
 
 export type ResolvedSortTarget =
@@ -203,9 +205,19 @@ function categoryKey(spec: VisualSortSpec, cat: string): unknown {
  */
 export function applyVisualSort<T extends CategorySeriesData>(data: T, spec: VisualSortSpec): T {
   const dir: SortDirection = spec.sortOrder === 'desc' ? 'desc' : 'asc';
-  const { categories, series } = data;
+  const { categories } = data;
+  let { series } = data;
+  if (spec.legendSortKeys && spec.legendSortKeys.size > 0 && series.length > 1) {
+    const sPerm = sortPermutation(
+      series,
+      s => (spec.legendSortKeys!.has(s.name) ? spec.legendSortKeys!.get(s.name) : s.name),
+      'asc'
+    );
+    series = sPerm.map(i => series[i]);
+  }
+  const workingData = { ...data, series };
   const limit = spec.limit && spec.limit > 0 ? spec.limit : undefined;
-  const target = resolveSortTarget(data, spec);
+  const target = resolveSortTarget(workingData, spec);
 
   let perm: number[];
   if (target.kind === 'series') {
@@ -214,7 +226,10 @@ export function applyVisualSort<T extends CategorySeriesData>(data: T, spec: Vis
   } else if (target.kind === 'total') {
     perm = sortPermutation(
       categories,
-      (_, i) => series.reduce((acc, s) => acc + (Number(s.data[i]) || 0), 0),
+      (_, i) => {
+        const vals = series.map(s => s.data[i]).filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v));
+        return vals.length === 0 ? null : vals.reduce((acc, v) => acc + v, 0);
+      },
       dir
     );
   } else if (target.kind === 'category') {
@@ -227,7 +242,7 @@ export function applyVisualSort<T extends CategorySeriesData>(data: T, spec: Vis
 
   if (limit) perm = perm.slice(0, limit);
   return {
-    ...data,
+    ...workingData,
     categories: perm.map(i => categories[i]),
     series: series.map(s => ({ ...s, data: perm.map(i => s.data[i]) })),
   };

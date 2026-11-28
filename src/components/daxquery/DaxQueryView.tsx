@@ -25,12 +25,13 @@ import { DaxEngine } from '../../engine/daxEngine';
 import { globalDataEngine } from '../../engine/dataEngine';
 import { DaxQueryExecutionResult, DaxQueryTab, DaxQueryHistoryItem } from '../../types/bi';
 import { DAX_SNIPPETS, getSignatureHelpAtOffset, getDaxGuideUrl } from '../../engine/shared/intellisense';
+import { buildModelParts, resolveDaxSnippet } from '../../engine/shared/snippetResolver';
 import { UdfLibraryModal } from './UdfLibraryModal';
 import { DependencyGraphModal } from './DependencyGraphModal';
 import { DaxAiAssistantModal } from './DaxAiAssistantModal';
 import { DaxImportModal } from './DaxImportModal';
-import { formatNumber } from '../../engine/shared/formatter';
-import { evaluateDaxNative, isTauriRuntime } from '../../bridge/tauriBridge';
+import { formatNumber, formatValue, getGlobalLocale } from '../../engine/shared/formatter';
+import { daxQueryExecuteNative, isTauriRuntime, NativeDaxQueryResultSet, NativeDaxQueryColumn } from '../../bridge/tauriBridge';
 
 export const DaxQueryView: React.FC = () => {
   const {
@@ -59,6 +60,11 @@ export const DaxQueryView: React.FC = () => {
   const [activeBottomTab, setActiveBottomTab] = useState<'results' | 'plan' | 'history'>('results');
   const [history, setHistory] = useState<DaxQueryHistoryItem[]>([]);
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+  // v0.11 Rodada 2 Frente F: posição (linha/coluna) do último erro de
+  // referência nativo, para mostrar "Linha X, coluna Y" e destacar o
+  // trecho no editor (ver `QueryPos`/`locate_runtime_error` em
+  // qexec.rs/qvalidate.rs).
+  const [errorPos, setErrorPos] = useState<{ line: number; column: number } | null>(null);
 
   // Modals
   const [isUdfModalOpen, setIsUdfModalOpen] = useState(false);
@@ -77,6 +83,23 @@ export const DaxQueryView: React.FC = () => {
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // v0.11 Rodada 2 Frente F: converts the 1-indexed line/column from a
+  // native `QError` into a textarea selection, so clicking the error
+  // highlights the offending token in the editor instead of only
+  // reporting "Linha X, coluna Y" as text.
+  const highlightErrorInEditor = (pos: { line: number; column: number }) => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const lines = ta.value.split('\n');
+    let offset = 0;
+    for (let i = 0; i < pos.line - 1 && i < lines.length; i++) {
+      offset += lines[i].length + 1;
+    }
+    offset += Math.max(0, pos.column - 1);
+    ta.focus();
+    ta.setSelectionRange(offset, offset + 1);
+  };
+
   // Keyboard shortcut Ctrl+Enter to run query
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -94,85 +117,106 @@ export const DaxQueryView: React.FC = () => {
     setTimeout(() => setToastMsg(null), 4000);
   };
 
-  const handleExecuteQuery = () => {
+  const handleExecuteQuery = async () => {
     if (!activeTab || !activeTab.query.trim()) return;
 
     setIsRunning(true);
     setCurrentPage(1);
+    setErrorPos(null);
 
-    setTimeout(() => {
-      try {
-        const model = globalDataEngine;
-        const res = DaxEngine.executeDaxQuery(activeTab.query, model);
-        setQueryResult(res);
-        setActiveResultIndex(0);
-
-        // Record history
-        const rowCount = res.results.reduce((acc, r) => acc + (r.rowCount || 0), 0);
-        const historyItem: DaxQueryHistoryItem = {
-          id: `hist_${Date.now()}`,
-          timestamp: new Date().toLocaleTimeString('pt-BR'),
-          query: activeTab.query,
-          success: res.success,
-          durationMs: res.totalDurationMs,
-          rowCount,
-          error: res.error,
-        };
-        setHistory(prev => [historyItem, ...prev.slice(0, 19)]);
-
-        if (!res.success && res.error) {
-          showToast(`Erro na consulta: ${res.error}`, 'error');
-        }
-      } catch (err: any) {
-        showToast(err.message || 'Erro inesperado ao executar consulta DAX.', 'error');
-      } finally {
-        setIsRunning(false);
-      }
-    }, 20);
-  };
-
-  const handleEvaluateScalarRust = async () => {
-    if (!activeTab) return;
-    if (!isTauriRuntime()) {
-      showToast('Motor DAX nativo em Rust ativo apenas no app desktop Tauri.', 'error');
-      return;
-    }
-    const expr = activeTab.query
-      .replace(/^\s*EVALUATE\s+/i, '')
-      .replace(/^\s*\{\s*|\s*\}\s*$/g, '')
-      .trim();
-    const start = performance.now();
     try {
-      const res = await evaluateDaxNative(expr);
-      const durationMs = Number((performance.now() - start).toFixed(2));
-      setQueryResult({
-        success: true,
-        results: [
-          {
-            statementIndex: 0,
-            rowCount: 1,
-            columns: ['Resultado (Rust Nativo)'],
-            rows: [{ 'Resultado (Rust Nativo)': res.value ?? res.display }],
-            table: {
-              columns: ['Resultado (Rust Nativo)'],
-              rows: [{ 'Resultado (Rust Nativo)': res.value ?? res.display }],
-            },
-          },
-        ],
-        executionPlan: [
-          {
-            name: 'Motor DAX Nativo (Rust)',
-            durationMs,
-            details: 'Avaliação escalar executada diretamente no backend Rust.',
-            status: 'success',
-          },
-        ],
-        totalDurationMs: durationMs,
-      });
+      let res: DaxQueryExecutionResult;
+      if (isTauriRuntime()) {
+        // v0.11 Frente F: DEFINE/EVALUATE/ORDER BY/START AT executado no
+        // motor DAX nativo em Rust (`dax_query_execute`,
+        // src-tauri/src/dax/query_view/**).
+        const native = await daxQueryExecuteNative(activeTab.query);
+        if (native.error) {
+          setErrorPos({ line: native.error.line, column: native.error.column });
+          res = {
+            success: false,
+            results: [],
+            executionPlan: [
+              { name: 'Motor DAX Nativo (Rust)', durationMs: native.elapsedMs, status: 'error', details: `Linha ${native.error.line}, coluna ${native.error.column}` },
+            ],
+            totalDurationMs: native.elapsedMs,
+            error: native.error.message,
+          };
+        } else {
+          res = {
+            success: true,
+            results: native.resultSets.map((rs: NativeDaxQueryResultSet, idx: number) => ({
+              statementIndex: idx,
+              rowCount: rs.rowCount,
+              columns: rs.columns.map((c: NativeDaxQueryColumn) => c.name),
+              rows: rs.rows.map((row: any[]) => {
+                const obj: Record<string, any> = {};
+                rs.columns.forEach((c: NativeDaxQueryColumn, i: number) => {
+                  obj[c.name] = row[i];
+                });
+                return obj;
+              }),
+              table: {
+                columns: rs.columns.map((c: NativeDaxQueryColumn) => c.name),
+                rows: rs.rows.map((row: any[]) => {
+                  const obj: Record<string, any> = {};
+                  rs.columns.forEach((c: NativeDaxQueryColumn, i: number) => {
+                    obj[c.name] = row[i];
+                  });
+                  return obj;
+                }),
+                // v0.11 Rodada 2 Frente F: column name -> the model's TMDL
+                // `formatString` (e.g. `dCalendario[Ano]` -> "0"), so the
+                // grid can skip thousands-grouping for an integer year
+                // instead of always falling back to generic `formatNumber`
+                // (see `DaxQueryColumn.format_string` in qexec.rs).
+                columnFormats: rs.columns.reduce((acc: Record<string, string>, c: NativeDaxQueryColumn) => {
+                  if (c.formatString) acc[c.name] = c.formatString;
+                  return acc;
+                }, {}),
+              },
+            })),
+            executionPlan: [
+              {
+                name: 'Motor DAX Nativo (Rust)',
+                durationMs: native.elapsedMs,
+                details: `${native.resultSets.length} EVALUATE, limite de linhas aplicado na UI (ver opts.rowLimit).`,
+                status: 'success',
+              },
+            ],
+            totalDurationMs: native.elapsedMs,
+          };
+        }
+      } else {
+        // Fallback TS: somente modo navegador sem Tauri (sem bridge nativa
+        // para executar `dax_query_execute`).
+        const model = globalDataEngine;
+        res = DaxEngine.executeDaxQuery(activeTab.query, model);
+      }
+
+      setQueryResult(res);
       setActiveResultIndex(0);
-      showToast(`Avaliado no Rust Nativo em ${durationMs} ms: ${res.display}`);
+
+      // Record history
+      const rowCount = res.results.reduce((acc, r) => acc + (r.rowCount || 0), 0);
+      const historyItem: DaxQueryHistoryItem = {
+        id: `hist_${Date.now()}`,
+        timestamp: new Date().toLocaleTimeString('pt-BR'),
+        query: activeTab.query,
+        success: res.success,
+        durationMs: res.totalDurationMs,
+        rowCount,
+        error: res.error,
+      };
+      setHistory(prev => [historyItem, ...prev.slice(0, 19)]);
+
+      if (!res.success && res.error) {
+        showToast(`Erro na consulta: ${res.error}`, 'error');
+      }
     } catch (err: any) {
-      showToast(`Erro Rust DAX: ${err?.message || err}`, 'error');
+      showToast(err.message || 'Erro inesperado ao executar consulta DAX.', 'error');
+    } finally {
+      setIsRunning(false);
     }
   };
 
@@ -256,10 +300,10 @@ export const DaxQueryView: React.FC = () => {
     showToast('Resultado exportado com sucesso para CSV!');
   };
 
-  const handleInsertSnippet = (template: string) => {
+  const handleInsertSnippet = (query: string) => {
     if (!activeTab) return;
     const currentQuery = activeTab.query;
-    const newQuery = currentQuery ? `${currentQuery}\n\n${template}` : template;
+    const newQuery = currentQuery ? `${currentQuery}\n\n${query}` : query;
     updateDaxQueryText(activeTab.id, newQuery);
     showToast('Snippet inserido na consulta ativa.');
   };
@@ -333,17 +377,6 @@ export const DaxQueryView: React.FC = () => {
             <kbd className="text-[10px] bg-slate-950/15 px-1 py-0.5 rounded font-mono">Ctrl+Enter</kbd>
           </button>
 
-          {isTauriRuntime() && (
-            <button
-              onClick={handleEvaluateScalarRust}
-              className="px-3 py-1.5 bg-emerald-50 dark:bg-emerald-600/20 hover:bg-emerald-100 dark:hover:bg-emerald-600/30 border border-emerald-300 dark:border-emerald-500/40 text-emerald-800 dark:text-emerald-300 text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer"
-              title="Avaliar expressão DAX diretamente no motor nativo em Rust"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-              <span>DAX Nativo (Rust)</span>
-            </button>
-          )}
-
           {/* Apply Definitions to Model */}
           <button
             onClick={handleApplyDefinitionsToModel}
@@ -380,16 +413,27 @@ export const DaxQueryView: React.FC = () => {
               <span>Snippets DAX</span>
             </button>
             <div className="absolute right-0 top-full mt-1 w-64 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-2xl py-1 z-30 hidden group-hover:block">
-              {DAX_SNIPPETS.map(snip => (
-                <button
-                  key={snip.id}
-                  onClick={() => handleInsertSnippet(snip.template)}
-                  className="w-full text-left px-3 py-2 text-xs text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/80 flex flex-col gap-0.5 cursor-pointer"
-                >
-                  <span className="font-semibold text-amber-700 dark:text-amber-300">{snip.title}</span>
-                  <span className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1">{snip.description}</span>
-                </button>
-              ))}
+              {DAX_SNIPPETS.map(snip => {
+                const resolved = resolveDaxSnippet(snip.id, buildModelParts(tables, measures));
+                return (
+                  <button
+                    key={snip.id}
+                    onClick={() => resolved.enabled && handleInsertSnippet(resolved.query)}
+                    disabled={!resolved.enabled}
+                    title={resolved.enabled ? undefined : resolved.disabledReason}
+                    className={`w-full text-left px-3 py-2 text-xs flex flex-col gap-0.5 ${
+                      resolved.enabled
+                        ? 'text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/80 cursor-pointer'
+                        : 'text-slate-400 dark:text-slate-600 opacity-60 cursor-not-allowed'
+                    }`}
+                  >
+                    <span className={`font-semibold ${resolved.enabled ? 'text-amber-700 dark:text-amber-300' : ''}`}>{snip.title}</span>
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-1">
+                      {resolved.enabled ? snip.description : `Indisponível: ${resolved.disabledReason}`}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -619,6 +663,15 @@ export const DaxQueryView: React.FC = () => {
                     <div>
                       <h4 className="font-bold text-rose-900 dark:text-rose-200 mb-1">Erro na Execução da Consulta DAX</h4>
                       <p className="font-mono leading-relaxed">{queryResult.error}</p>
+                      {errorPos && (
+                        <button
+                          onClick={() => highlightErrorInEditor(errorPos)}
+                          className="mt-1.5 text-[11px] font-mono underline decoration-dotted text-rose-700 dark:text-rose-400 hover:text-rose-900 dark:hover:text-rose-200 cursor-pointer"
+                          title="Destacar o trecho no editor"
+                        >
+                          Linha {errorPos.line}, coluna {errorPos.column}
+                        </button>
+                      )}
                     </div>
                   </div>
                 ) : !activeTableResult || activeTableResult.rows.length === 0 ? (
@@ -630,7 +683,10 @@ export const DaxQueryView: React.FC = () => {
                   <div className="flex-1 flex flex-col overflow-hidden bg-white dark:bg-transparent">
                     {/* Paginated Grid */}
                     <div className="flex-1 overflow-auto">
-                      <table className="w-full text-left text-xs border-collapse">
+                      {/* Largura pelo conteúdo (como a grade do DAX Query View do Power BI):
+                          com w-full e poucas colunas, a 1ª coluna esticava pela tela toda e
+                          empurrava as demais (o valor de "T" ficava fora da área visível). */}
+                      <table className="w-auto text-left text-xs border-collapse">
                         <thead className="bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 sticky top-0 z-10">
                           <tr>
                             <th className="py-2 px-3 text-[11px] text-slate-500 font-mono w-12 border-r border-slate-200 dark:border-slate-800/60">
@@ -639,7 +695,7 @@ export const DaxQueryView: React.FC = () => {
                             {activeTableResult.columns.map((col: string) => (
                               <th
                                 key={col}
-                                className="py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold font-mono text-xs border-r border-slate-200 dark:border-slate-800/60 truncate"
+                                className="py-2 px-3 text-slate-700 dark:text-slate-300 font-semibold font-mono text-xs border-r border-slate-200 dark:border-slate-800/60 whitespace-nowrap min-w-[8rem]"
                               >
                                 {col}
                               </th>
@@ -657,17 +713,20 @@ export const DaxQueryView: React.FC = () => {
                                 {activeTableResult.columns.map((col: string) => {
                                   const val = row[col];
                                   const isNum = typeof val === 'number';
+                                  const colFormat = activeTableResult.columnFormats?.[col];
                                   return (
                                     <td
                                       key={col}
-                                      className={`py-1.5 px-3 font-mono text-xs border-r border-slate-200 dark:border-slate-800/60 truncate ${
+                                      className={`py-1.5 px-3 font-mono text-xs border-r border-slate-200 dark:border-slate-800/60 whitespace-nowrap ${
                                         isNum ? 'text-right text-emerald-700 dark:text-emerald-300' : 'text-slate-800 dark:text-slate-300'
                                       }`}
                                     >
                                       {val === null || val === undefined
                                         ? '(Em branco)'
                                         : isNum
-                                        ? formatNumber(val)
+                                        ? colFormat
+                                          ? formatValue(val, colFormat, getGlobalLocale())
+                                          : formatNumber(val)
                                         : String(val)}
                                     </td>
                                   );

@@ -36,7 +36,7 @@ export function resolverFromRows(rows: Record<string, unknown>[], currentRow: Re
 }
 
 /** Monta um `BasedOnResolver` a partir de séries do ECharts/matriz: `{ name -> data[] }`, no índice de linha `rowIdx`. */
-export function resolverFromSeries(series: { name: string; data: number[] }[], rowIdx: number): BasedOnResolver {
+export function resolverFromSeries(series: { name: string; data: (number | null)[] }[], rowIdx: number): BasedOnResolver {
   return {
     value: (field) => {
       const s = series.find(s => s.name === field);
@@ -121,7 +121,7 @@ export function cellStyleFromFormat(result: FormatResult): CSSProperties {
   return style;
 }
 
-export type BarSeriesDatum = number | { value: number; itemStyle: { color: string } };
+export type BarSeriesDatum = number | null | { value: number; itemStyle: { color: string } };
 
 /**
  * Colore cada ponto de uma série de barras/colunas do ECharts via
@@ -129,12 +129,13 @@ export type BarSeriesDatum = number | { value: number; itemStyle: { color: strin
  * aplicado ao campo da série (`fieldName`). Pontos sem cor condicional
  * mantêm o número puro (herdam a cor padrão/paleta da série).
  */
-export function buildBarSeriesData(formats: ConditionalFormat[] | undefined, fieldName: string, rawData: number[]): BarSeriesDatum[] {
+export function buildBarSeriesData(formats: ConditionalFormat[] | undefined, fieldName: string, rawData: (number | null)[]): BarSeriesDatum[] {
   if (!formats || formats.length === 0) return rawData;
   const applicable = formats.some(f => f.applyTo === fieldName && f.target === 'background');
   if (!applicable) return rawData;
   const visible = toNumArray(rawData);
   return rawData.map((value, idx) => {
+    if (value === null || value === undefined) return null;
     const resolver = resolverFromSeries([{ name: fieldName, data: rawData }], idx);
     const result = getFieldFormat(formats, fieldName, value, visible, resolver);
     if (!result.background) return value;

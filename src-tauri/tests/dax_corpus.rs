@@ -5,8 +5,8 @@
 //! não podem voltar a falhar. Para registrar casos novos que passaram:
 //! `UPDATE_DAX_BASELINE=1 cargo test --test dax_corpus`.
 
-use prismbi_lib::dax::functions::{civil_to_days, days_to_civil};
-use prismbi_lib::dax::{
+use vetrobi_lib::dax::functions::{civil_to_days, days_to_civil};
+use vetrobi_lib::dax::{
     build_filter_context, DaxMeasureInput, DaxModel, DaxModelSyncPayload, DaxRelationshipInput,
     DaxTableInput, DaxValue, NativeFilterInput,
 };
@@ -34,10 +34,22 @@ struct CalendarSpec {
 #[derive(Deserialize)]
 struct CorpusTable {
     name: String,
+    #[serde(default)]
     columns: Vec<CorpusColumn>,
     #[serde(default)]
     rows: Vec<Vec<Value>>,
     calendar: Option<CalendarSpec>,
+    /// Marks this model table as a calculated table (TMDL `calculated`
+    /// partition equivalent) -- CALENDARAUTO must skip it when scanning for
+    /// date columns (see `window.calendarauto.fiscal_july_days`).
+    #[serde(default)]
+    calculated: bool,
+    /// When present, this table is built by the real `dax::calculated`
+    /// pipeline from a DAX table expression (CALENDAR, ADDCOLUMNS,
+    /// SUMMARIZE, UNION, FILTER, ...) instead of from `rows` -- exercises
+    /// the production calculated-table engine, not a hand-copied fixture.
+    #[serde(default)]
+    expression: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -61,6 +73,10 @@ struct CorpusModel {
     tables: Vec<CorpusTable>,
     relationships: Vec<CorpusRelationship>,
     measures: Vec<CorpusMeasure>,
+    /// table name -> (column name -> DAX row expression). See
+    /// `models/calculated.json` for RELATED/EARLIER examples.
+    #[serde(default, rename = "calculatedColumns")]
+    calculated_columns: HashMap<String, HashMap<String, String>>,
 }
 
 #[derive(Deserialize)]
@@ -153,7 +169,22 @@ fn build_model(m: &CorpusModel) -> DaxModel {
                     })
                     .collect(),
             };
-            DaxTableInput { duckdb_table: None, name: t.name.clone(), columns, rows, column_types }
+            DaxTableInput {
+                duckdb_table: None,
+                column_format_strings: Default::default(),
+                name: t.name.clone(),
+                columns,
+                rows,
+                column_types,
+                sort_by_columns: Default::default(),
+                is_calculated: t.expression.is_some(),
+                expression: t.expression.clone(),
+                calculated_columns: m
+                    .calculated_columns
+                    .get(&t.name)
+                    .cloned()
+                    .unwrap_or_default(),
+            }
         })
         .collect();
     let relationships = m
@@ -179,10 +210,23 @@ fn build_model(m: &CorpusModel) -> DaxModel {
             name: x.name.clone(),
             table_name: x.table.clone(),
             formula: x.formula.clone(),
+            format_string: None,
         })
         .collect();
     let mut model = DaxModel::new();
     model.sync_from_payload(DaxModelSyncPayload { tables, relationships, measures });
+    // Corpus tables marked `"calculated": true` carry literal hand-derived
+    // `rows` (never run through the real DAX calculated-table pipeline, per
+    // the corpus rule against deriving expected values from any engine) but
+    // still need `is_calculated` set so CALENDARAUTO and future
+    // calculated-aware logic treat them like a real calculated table.
+    for t in &m.tables {
+        if t.calculated {
+            if let Some(tbl) = model.tables.get_mut(&t.name.to_lowercase()) {
+                tbl.is_calculated = true;
+            }
+        }
+    }
     model
 }
 
@@ -253,6 +297,7 @@ fn dax_corpus_rust_engine() {
                     table_id: f.table.clone(),
                     column: f.column.clone(),
                     values: f.values.clone(),
+                    operator: None,
                 })
                 .collect();
             let ctx = build_filter_context(&filters, model);

@@ -43,6 +43,14 @@ pub struct ExportTablePayload {
     pub is_hidden: Option<bool>,
     #[serde(default)]
     pub m_script: Option<String>,
+    /// True for a calculated table (TMDL `partition ... = calculated`):
+    /// writes `calculated_expression` as the partition's DAX source instead
+    /// of an `m`-mode partition. See `dax::calculated` / `pbi::tmdl` (import
+    /// side) for the matching round-trip.
+    #[serde(default)]
+    pub is_calculated: Option<bool>,
+    #[serde(default)]
+    pub calculated_expression: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,10 +96,10 @@ pub struct ExportVisualPayload {
     pub border_color: Option<String>,
     #[serde(default)]
     pub filters: Vec<ExportFilterPayload>,
-    /// PrismBI `dataConfig.sortField` (column or measure name, optionally "Tabela.Coluna").
+    /// VetroBI `dataConfig.sortField` (column or measure name, optionally "Tabela.Coluna").
     #[serde(default)]
     pub sort_field: Option<String>,
-    /// PrismBI `dataConfig.sortOrder` ("asc" | "desc").
+    /// VetroBI `dataConfig.sortOrder` ("asc" | "desc").
     #[serde(default)]
     pub sort_order: Option<String>,
     /// v0.10 Frente H: formatação condicional (gradiente/regras/barras/ícones),
@@ -124,6 +132,11 @@ pub struct ExportVisualPayload {
     /// (N níveis). O 1º espelha `x_axis_field` (não duplicado na exportação).
     #[serde(default)]
     pub matrix_row_fields: Vec<String>,
+    /// v0.11 Rodada 2 (Frente I): campos das COLUNAS de uma matriz hierárquica
+    /// (N níveis). O 1º espelha `legend_field` (não duplicado na exportação,
+    /// igual a `matrix_row_fields`/`x_axis_field`); vazio = só a legenda (1 nível).
+    #[serde(default)]
+    pub matrix_column_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -206,11 +219,11 @@ pub struct ExportBookmarkPayload {
     #[serde(default)]
     pub scope: Vec<String>,
     /// `visualState`/`slicerSelections` do contrato: passados como JSON cru
-    /// para dentro de `explorationState.objects.merge.prismBiState` (não é
+    /// para dentro de `explorationState.objects.merge.vetroBiState` (não é
     /// um objeto nativo do PBIR — ver `write_bookmarks`), porque mapear cada
     /// um para o `objects`/`filters` real de cada visual exigiria conhecer o
-    /// tipo de cada visual-alvo; a PrismBI relê essa extensão no próprio
-    /// round-trip, mas o Power BI Desktop ignoraria esse bloco.
+    /// tipo de cada visual-alvo; a VetroBI relê essa extensão (e `prismBiState`
+    /// legado) no próprio round-trip, mas o Power BI Desktop ignoraria esse bloco.
     #[serde(default)]
     pub visual_state: Option<serde_json::Value>,
     #[serde(default)]
@@ -339,7 +352,18 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
             tmdl.push('\n');
         }
 
-        if let Some(ref m_code) = tbl.m_script.as_deref().filter(|s| !s.trim().is_empty()) {
+        if tbl.is_calculated.unwrap_or(false) {
+            // TMDL calculated partition (round-trips with `pbi::tmdl::parse_table_tmdl`,
+            // which sets `is_calculated_table = true` on `source_type.eq_ignore_ascii_case("calculated")`).
+            let expr = tbl.calculated_expression.as_deref().unwrap_or("");
+            tmdl.push_str(&format!("\tpartition {} = calculated\n\t\tmode: import\n\t\tsource =\n", quote_tmdl_ident(&tbl.name)));
+            tmdl.push_str("\t\t\t```\n");
+            for line in expr.lines() {
+                tmdl.push_str(&format!("\t\t\t{}\n", line));
+            }
+            tmdl.push_str("\t\t\t```\n");
+            tmdl.push('\n');
+        } else if let Some(ref m_code) = tbl.m_script.as_deref().filter(|s| !s.trim().is_empty()) {
             tmdl.push_str(&format!("\tpartition {} = m\n\t\tmode: import\n\t\tsource =\n", quote_tmdl_ident(&tbl.name)));
             for line in m_code.lines() {
                 tmdl.push_str(&format!("\t\t\t\t{}\n", line));
@@ -398,19 +422,19 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
         let res_dir = rep_dir.join("StaticResources").join("RegisteredResources");
         fs::create_dir_all(&res_dir).map_err(|e| format!("Erro ao criar StaticResources: {}", e))?;
         let theme_json = json!({
-            "name": payload.theme_name.clone().unwrap_or_else(|| "PrismTheme".to_string()),
+            "name": payload.theme_name.clone().unwrap_or_else(|| "VetroTheme".to_string()),
             "dataColors": palette,
         });
         fs::write(
-            res_dir.join("PrismTheme.json"),
+            res_dir.join("VetroTheme.json"),
             serde_json::to_string_pretty(&theme_json).unwrap(),
         )
-        .map_err(|e| format!("Erro ao gravar PrismTheme.json: {}", e))?;
+        .map_err(|e| format!("Erro ao gravar VetroTheme.json: {}", e))?;
 
         let report_json = json!({
             "themeCollection": {
                 "customTheme": {
-                    "name": "PrismTheme.json",
+                    "name": "VetroTheme.json",
                     "type": "RegisteredResources"
                 }
             }
@@ -474,7 +498,7 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
             {
                 "advancedSlicerVisual"
             } else {
-                map_prism_to_pbi_visual_type(&vis.visual_type)
+                map_vetro_to_pbi_visual_type(&vis.visual_type)
             };
             let mut query_state = serde_json::Map::new();
 
@@ -525,7 +549,17 @@ pub fn save_pbip_project(target_dir: &Path, payload: &ExportPbipPayload) -> Resu
                     format!("{}.{}", vis.table_id, leg)
                 };
                 let role = if vis.visual_type == "matrix" { "Columns" } else { "Series" };
-                query_state.insert(role.to_string(), json!({ "projections": [{ "queryRef": qref }] }));
+                // v0.11 Rodada 2 (Frente I): paridade com o bloco de `Rows` acima —
+                // `matrix_column_fields[1..]` (o 1º espelha `legend_field`) vira
+                // projeções extras na MESMA role "Columns".
+                let mut projections = vec![json!({ "queryRef": qref })];
+                if vis.visual_type == "matrix" {
+                    for f in vis.matrix_column_fields.iter().skip(1) {
+                        let fqref = if f.contains('.') { f.clone() } else { format!("{}.{}", vis.table_id, f) };
+                        projections.push(json!({ "queryRef": fqref }));
+                    }
+                }
+                query_state.insert(role.to_string(), json!({ "projections": projections }));
             }
 
             if !vis.y_axis_fields.is_empty() {
@@ -744,7 +778,7 @@ fn sanitize_fs_name(raw: &str) -> String {
         })
         .collect();
     let t = cleaned.trim();
-    if t.is_empty() { "PrismProject".to_string() } else { t.to_string() }
+    if t.is_empty() { "VetroProject".to_string() } else { t.to_string() }
 }
 
 fn map_bi_type_to_tmdl(dt: &str) -> &'static str {
@@ -758,7 +792,7 @@ fn map_bi_type_to_tmdl(dt: &str) -> &'static str {
     }
 }
 
-/// Maps PrismBI `sortField`/`sortOrder` to PBIR `query.sortDefinition`
+/// Maps VetroBI `sortField`/`sortOrder` to PBIR `query.sortDefinition`
 /// (`{ sort: [{ field: { Column|Measure: {...} }, direction }], isDefaultSort }`).
 /// A slicer (or any visual) with only `sortOrder` sorts by its category field.
 fn build_sort_definition(
@@ -788,7 +822,7 @@ fn build_sort_definition(
     }))
 }
 
-fn map_prism_to_pbi_visual_type(vt: &str) -> &'static str {
+fn map_vetro_to_pbi_visual_type(vt: &str) -> &'static str {
     match vt {
         "column" => "clusteredColumnChart",
         "stacked-column" => "stackedColumnChart",
@@ -820,7 +854,7 @@ fn map_prism_to_pbi_visual_type(vt: &str) -> &'static str {
 /// consiga detectar o `set` de volta na importação. Não são nomes reais do
 /// Power BI Desktop (ex.: `'SymbolMedium'`) — são só substrings
 /// identificáveis (`Arrows`/`Traffic`/`Flags`), suficiente para o
-/// round-trip da PrismBI; documentado como aproximação no relatório.
+/// round-trip da VetroBI; documentado como aproximação no relatório.
 fn icon_literal_for_rule(set: &str, idx: usize) -> String {
     let label = match set {
         "traffic" => "Traffic",
@@ -1007,9 +1041,9 @@ fn build_pbir_slicer_self_filter(vis: &ExportVisualPayload, tables: &[ExportTabl
 /// e `bookmarks.json` (schema `bookmarksMetadata/1.0.0`). `explorationState`
 /// cobre `activeSection` e os filtros de dados (`filters.byExpr`); o estado
 /// por visual (`visualState`/`slicerSelections` do contrato) é passado como
-/// extensão em `objects.merge.prismBiState` — não é lido pelo Power BI
-/// Desktop, só pela própria PrismBI no round-trip (ver doc de
-/// `ExportBookmarkPayload`).
+/// extensão em `objects.merge.vetroBiState` — não é lido pelo Power BI
+/// Desktop, só pela própria VetroBI no round-trip (e `read_bookmarks` também
+/// aceita a chave legada `prismBiState`; ver doc de `ExportBookmarkPayload`).
 fn write_bookmarks(rep_def_dir: &Path, bookmarks: &[ExportBookmarkPayload]) -> Result<(), String> {
     if bookmarks.is_empty() {
         return Ok(());
@@ -1033,7 +1067,7 @@ fn write_bookmarks(rep_def_dir: &Path, bookmarks: &[ExportBookmarkPayload]) -> R
                 "objects".into(),
                 json!({
                     "merge": {
-                        "prismBiState": {
+                        "vetroBiState": {
                             "visualState": bm.visual_state.clone().unwrap_or(serde_json::Value::Null),
                             "slicerSelections": bm.slicer_selections.clone().unwrap_or(serde_json::Value::Null)
                         }
@@ -1123,13 +1157,13 @@ pub fn read_bookmarks(rep_def_dir: &Path) -> Vec<ExportBookmarkPayload> {
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
             .unwrap_or_default();
-        let prism_state = v
+        let vetro_state = v
             .get("explorationState")
             .and_then(|e| e.get("objects"))
             .and_then(|o| o.get("merge"))
-            .and_then(|m| m.get("prismBiState"));
-        let visual_state = prism_state.and_then(|p| p.get("visualState")).filter(|v| !v.is_null()).cloned();
-        let slicer_selections = prism_state.and_then(|p| p.get("slicerSelections")).filter(|v| !v.is_null()).cloned();
+            .and_then(|m| m.get("vetroBiState").or_else(|| m.get("prismBiState")));
+        let visual_state = vetro_state.and_then(|p| p.get("visualState")).filter(|v| !v.is_null()).cloned();
+        let slicer_selections = vetro_state.and_then(|p| p.get("slicerSelections")).filter(|v| !v.is_null()).cloned();
 
         out.push(ExportBookmarkPayload {
             id,
@@ -1154,6 +1188,47 @@ mod tests {
     use super::*;
     use crate::pbi::pbip::open_pbip_project;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_pbip_round_trip_calculated_table_partition() {
+        // v0.11 Frente C: a calculated table (TMDL `partition ... = calculated`)
+        // round-trips through export -> TMDL -> import.
+        let dir = tempdir().unwrap();
+        let payload = ExportPbipPayload {
+            project_name: "Projeto Calculada".into(),
+            tables: vec![ExportTablePayload {
+                name: "CalendarioCalc".into(),
+                is_hidden: Some(false),
+                m_script: None,
+                columns: vec![ExportColumnPayload {
+                    name: "Date".into(),
+                    data_type: "date".into(),
+                    ..Default::default()
+                }],
+                is_calculated: Some(true),
+                calculated_expression: Some("CALENDAR(DATE(2024,1,1), DATE(2024,12,31))".into()),
+            }],
+            relationships: vec![],
+            measures: vec![],
+            pages: vec![],
+            theme_name: None,
+            theme_palette: None,
+            ..Default::default()
+        };
+        save_pbip_project(dir.path(), &payload).unwrap();
+        let tmdl_path = dir
+            .path()
+            .join("Projeto Calculada.SemanticModel")
+            .join("definition")
+            .join("tables")
+            .join("CalendarioCalc.tmdl");
+        let content = fs::read_to_string(&tmdl_path).expect("tmdl de tabela calculada deve existir");
+        assert!(content.contains("partition 'CalendarioCalc' = calculated") || content.contains("partition CalendarioCalc = calculated"));
+        let parsed = crate::pbi::tmdl::parse_table_tmdl(&content).expect("tmdl de tabela calculada deve parsear");
+        assert!(parsed.is_calculated, "tabela importada deve ficar marcada como calculada");
+        assert_eq!(parsed.partitions.len(), 1);
+        assert!(parsed.partitions[0].expression.contains("CALENDAR(DATE(2024,1,1), DATE(2024,12,31))"));
+    }
 
     #[test]
     fn test_pbip_round_trip_save_and_reopen() {
@@ -1184,6 +1259,8 @@ mod tests {
                         expression: None,
                     },
                 ],
+                is_calculated: None,
+                calculated_expression: None,
             }],
             relationships: vec![],
             measures: vec![ExportMeasurePayload {
@@ -1257,7 +1334,7 @@ mod tests {
                     },
                 ],
             }],
-            theme_name: Some("Tema PrismBI".into()),
+            theme_name: Some("Tema VetroBI".into()),
             theme_palette: Some(vec!["#f59e0b".into(), "#3b82f6".into()]),
             ..Default::default()
         };
@@ -1300,6 +1377,8 @@ mod tests {
                     ExportColumnPayload { name: "Categoria".into(), data_type: "text".into(), ..Default::default() },
                     ExportColumnPayload { name: "Receita".into(), data_type: "currency".into(), ..Default::default() },
                 ],
+                is_calculated: None,
+                calculated_expression: None,
             }],
             relationships: vec![],
             measures: vec![],
@@ -1531,6 +1610,8 @@ mod tests {
                         expression: None,
                     },
                 ],
+                is_calculated: None,
+                calculated_expression: None,
             }],
             relationships: vec![],
             measures: vec![ExportMeasurePayload {
@@ -1575,9 +1656,10 @@ mod tests {
                         h: 300.0,
                         table_id: "f_Vendas".into(),
                         x_axis_field: Some("Regiao".into()),
-                        legend_field: None,
+                        legend_field: Some("Ano".into()),
                         y_axis_fields: vec!["Total".into()],
                         matrix_row_fields: vec!["Regiao".into(), "Cidade".into(), "Loja".into()],
+                        matrix_column_fields: vec!["Ano".into(), "Trimestre".into()],
                         ..Default::default()
                     },
                 ],
@@ -1596,5 +1678,40 @@ mod tests {
         assert_eq!(matrix.category_field.as_deref(), Some("f_Vendas.Regiao"));
         // Os níveis ALÉM do primeiro (Cidade, Loja) não podem se perder.
         assert_eq!(matrix.drill_fields, vec!["f_Vendas.Cidade".to_string(), "f_Vendas.Loja".to_string()]);
+        // v0.11 Rodada 2 (Frente I): o mesmo round-trip para as COLUNAS da matriz.
+        assert_eq!(matrix.legend_field.as_deref(), Some("f_Vendas.Ano"));
+        assert_eq!(matrix.legend_drill_fields, vec!["f_Vendas.Trimestre".to_string()]);
+    }
+
+    #[test]
+    fn read_bookmarks_accepts_legacy_prismbi_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rep_def_dir = dir.path().join("definition");
+        let bm_dir = rep_def_dir.join("bookmarks");
+        fs::create_dir_all(&bm_dir).unwrap();
+        let bm_json = json!({
+            "name": "bm_legacy",
+            "displayName": "Legado",
+            "explorationState": {
+                "activeSection": "pg_1",
+                "objects": {
+                    "merge": {
+                        "prismBiState": {
+                            "visualState": { "v1": { "visible": false } },
+                            "slicerSelections": { "s1": ["Sul"] }
+                        }
+                    }
+                }
+            }
+        });
+        fs::write(
+            bm_dir.join("bm_legacy.bookmark.json"),
+            serde_json::to_string_pretty(&bm_json).unwrap(),
+        )
+        .unwrap();
+        let list = read_bookmarks(&rep_def_dir);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].visual_state, Some(json!({ "v1": { "visible": false } })));
+        assert_eq!(list[0].slicer_selections, Some(json!({ "s1": ["Sul"] })));
     }
 }

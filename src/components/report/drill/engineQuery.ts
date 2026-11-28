@@ -15,7 +15,9 @@ import { FilterContext, filterContextFromUIFilters } from '../../../engine/model
 import { DaxEngine } from '../../../engine/daxEngine';
 import { isBlank } from '../../../engine/expr/types';
 import { parseNumber } from '../../../engine/shared/valueParser';
+import { buildSortByLookup, sortPermutation } from '../../../engine/visualSort';
 import {
+  COLLAPSED_MATRIX,
   DrillFilterSpec,
   DrillLevel,
   MatrixExpansion,
@@ -30,13 +32,13 @@ export interface LevelQueryResult {
   categories: string[];
   /** Valor de cada nível agrupado, alinhado com `categories`. */
   categoryKeys: unknown[][];
-  series: { name: string; data: number[] }[];
+  series: { name: string; data: (number | null)[] }[];
 }
 
 export interface MatrixNode {
   key: unknown;
   label: string;
-  values: number[];
+  values: (number | null)[];
   rowTotal: number | null;
   hasChildren: boolean;
   expanded: boolean;
@@ -46,8 +48,22 @@ export interface MatrixNode {
 export interface MatrixQueryResult {
   seriesNames: string[];
   rows: MatrixNode[];
-  columnTotals: number[];
+  columnTotals: (number | null)[];
   grandTotal: number | null;
+  /** v0.11 Rodada 2 (Frente I): árvore de colunas quando a matriz tem N níveis
+   * nas colunas (`matrixColumnFields`). `rows[].values`/`columnTotals` ficam
+   * alinhados com a ordem DFS das colunas VISÍVEIS desta árvore (folha ou
+   * subtotal recolhido), nunca com `seriesNames` (que fica vazio aqui). */
+  columnHeader?: MatrixColumnNode[];
+}
+
+export interface MatrixColumnNode {
+  key: unknown;
+  label: string;
+  value: number | null;
+  hasChildren: boolean;
+  expanded: boolean;
+  children: MatrixColumnNode[];
 }
 
 const MAX_MATRIX_NODES = 50_000;
@@ -118,7 +134,7 @@ function compareKeys(a: unknown, b: unknown): number {
   return String(a).localeCompare(String(b), 'pt-BR', { sensitivity: 'base', numeric: true });
 }
 
-/** Valores distintos de um nível visíveis no contexto (em ordem). */
+/** Valores distintos de um nível visíveis no contexto (em ordem, honrando sortByColumn). */
 function distinctKeys(model: ModelAccess, ctx: FilterContext, rc: ResolvedColumn, level: DrillLevel): unknown[] {
   const seen = new Map<string, unknown>();
   for (const r of ctx.getFilteredRows(rc.table.id, model)) {
@@ -127,7 +143,21 @@ function distinctKeys(model: ModelAccess, ctx: FilterContext, rc: ResolvedColumn
     const id = typeof key === 'string' ? `s:${key.toLowerCase()}` : `v:${String(key)}`;
     if (!seen.has(id)) seen.set(id, key);
   }
-  return Array.from(seen.values()).sort(compareKeys);
+  const values = Array.from(seen.values());
+  if (!level.datePart) {
+    const meta = rc.table.columns.find(c => c.name.toLowerCase() === rc.col.toLowerCase());
+    if (meta?.sortByColumn) {
+      const lookup = buildSortByLookup(rc.table.rows, rc.col, meta.sortByColumn);
+      if (lookup.size > 0) {
+        const perm = sortPermutation(values, k => {
+          const s = blankValue(k) ? '' : String(k);
+          return lookup.has(s) ? lookup.get(s) : k;
+        }, 'asc');
+        return perm.map(i => values[i]);
+      }
+    }
+  }
+  return values.sort(compareKeys);
 }
 
 function aggregate(values: unknown[], agg: string): number | null {
@@ -232,7 +262,7 @@ export function queryLevelsTs(model: ModelAccess, input: LevelQueryInput): Level
       count++;
       out.categories.push(concatLevelLabels(input.levels, path));
       out.categoryKeys.push(path);
-      vals.forEach((v, i) => out.series[i].data.push(v ?? 0));
+      vals.forEach((v, i) => out.series[i].data.push(v));
     }
   };
   walk(ctx, 0, []);
@@ -245,15 +275,91 @@ export interface MatrixQueryInput {
   levels: DrillLevel[];
   expansion: MatrixExpansion;
   drillFilters?: DrillFilterSpec[];
+  /** v0.11 Rodada 2 (Frente I): níveis/expansão das COLUNAS (N níveis). */
+  columnLevels?: DrillLevel[];
+  columnExpansion?: MatrixExpansion;
+}
+
+interface ColumnFilterStep {
+  rc: ResolvedColumn;
+  level: DrillLevel;
+  key: unknown;
+}
+
+interface ColumnLeaf {
+  steps: ColumnFilterStep[];
+}
+
+/**
+ * v0.11 Rodada 2 (Frente I): constrói a árvore de colunas UMA VEZ a partir do
+ * contexto base (igual à legenda hoje, que já é um caso particular de 1
+ * nível), achatando (DFS) as colunas VISÍVEIS em `leavesOut` — cada uma com o
+ * caminho de filtros completo (ancestrais + o próprio nível) para intersectar
+ * com o contexto de qualquer linha depois. `node.value` é o subtotal do nível
+ * (ou a folha) avaliado no contexto BASE, nunca a soma dos filhos.
+ */
+function buildColumnTree(
+  model: ModelAccess,
+  base: Table,
+  ctx: FilterContext,
+  levels: DrillLevel[],
+  expansion: MatrixExpansion,
+  primaryField: string,
+  agg: string | undefined,
+  depth: number,
+  path: unknown[],
+  steps: ColumnFilterStep[],
+  leavesOut: ColumnLeaf[]
+): MatrixColumnNode[] {
+  const rc = resolveColumn(model, base, levels[depth].field);
+  const keys = distinctKeys(model, ctx, rc, levels[depth]);
+  const out: MatrixColumnNode[] = [];
+  for (const k of keys) {
+    path.push(k);
+    steps.push({ rc, level: levels[depth], key: k });
+    const nc = ctx.clone();
+    for (const s of steps) applyLevelFilter(nc, s.rc, s.level, s.key);
+    const value = primaryField ? evalField(model, nc, base, primaryField, agg) : null;
+    const hasChildren = depth + 1 < levels.length;
+    const expanded = hasChildren && isMatrixPathExpanded(expansion, path);
+    const children = expanded
+      ? buildColumnTree(model, base, nc, levels, expansion, primaryField, agg, depth + 1, path, steps, leavesOut)
+      : (leavesOut.push({ steps: steps.slice() }), []);
+    steps.pop();
+    path.pop();
+    out.push({ key: k, label: levelValueLabel(levels[depth], k), value, hasChildren, expanded, children });
+  }
+  return out;
+}
+
+function rowValuesForLeaves(model: ModelAccess, base: Table, rowCtx: FilterContext, leaves: ColumnLeaf[], primaryField: string, agg?: string): (number | null)[] {
+  return leaves.map(leaf => {
+    if (!primaryField) return null;
+    const c = rowCtx.clone();
+    for (const s of leaf.steps) applyLevelFilter(c, s.rc, s.level, s.key);
+    return evalField(model, c, base, primaryField, agg);
+  });
 }
 
 export function queryMatrixTs(model: ModelAccess, input: MatrixQueryInput): MatrixQueryResult {
   const base = model.getTable(input.visual.dataConfig.tableId);
   if (!base || input.levels.length === 0) return { seriesNames: [], rows: [], columnTotals: [], grandTotal: null };
   const ctx = baseContext(model, input.visual, base, input.filters, input.drillFilters || []);
+  const columnLevels = input.columnLevels ?? [];
+  const hasColumnLevels = columnLevels.length > 0;
   const series = seriesEval(model, input.visual, base, ctx);
   const cols = input.levels.map(l => resolveColumn(model, base, l.field));
   let budget = MAX_MATRIX_NODES;
+
+  // v0.11 Rodada 2 (Frente I): com N níveis nas colunas, a árvore de colunas é
+  // construída uma única vez (igual à legenda de hoje) e cada linha é
+  // reavaliada contra as colunas VISÍVEIS (interseção linha×coluna pelo motor).
+  const primaryField = (input.visual.dataConfig.yAxisFields || [])[0]?.replace(/^Σ\s*/, '').trim() ?? '';
+  const agg = input.visual.dataConfig.aggregation;
+  const columnLeaves: ColumnLeaf[] = [];
+  const columnHeader = hasColumnLevels
+    ? buildColumnTree(model, base, ctx, columnLevels, input.columnExpansion ?? COLLAPSED_MATRIX, primaryField, agg, 0, [], [], columnLeaves)
+    : undefined;
 
   const build = (c: FilterContext, depth: number, path: unknown[]): MatrixNode[] => {
     const nodes: MatrixNode[] = [];
@@ -261,7 +367,7 @@ export function queryMatrixTs(model: ModelAccess, input: MatrixQueryInput): Matr
       if (budget <= 0) break;
       const nc = c.clone();
       applyLevelFilter(nc, cols[depth], input.levels[depth], k);
-      const vals = series.values(nc);
+      const vals = hasColumnLevels ? rowValuesForLeaves(model, base, nc, columnLeaves, primaryField, agg) : series.values(nc);
       const rowTotal = series.rowTotal(nc);
       if (vals.every(v => v === null) && rowTotal === null) continue;
       budget--;
@@ -271,7 +377,7 @@ export function queryMatrixTs(model: ModelAccess, input: MatrixQueryInput): Matr
       nodes.push({
         key: k,
         label: levelValueLabel(input.levels[depth], k),
-        values: vals.map(v => v ?? 0),
+        values: vals,
         rowTotal,
         hasChildren,
         expanded,
@@ -281,12 +387,27 @@ export function queryMatrixTs(model: ModelAccess, input: MatrixQueryInput): Matr
     return nodes;
   };
 
+  const rows = build(ctx, 0, []);
+  const columnTotals = hasColumnLevels ? flattenVisibleColumnValues(columnHeader!) : series.values(ctx);
   return {
-    seriesNames: series.names,
-    rows: build(ctx, 0, []),
-    columnTotals: series.values(ctx).map(v => v ?? 0),
+    seriesNames: hasColumnLevels ? [] : series.names,
+    rows,
+    columnTotals,
     grandTotal: series.rowTotal(ctx),
+    columnHeader,
   };
+}
+
+function flattenVisibleColumnValues(nodes: MatrixColumnNode[]): (number | null)[] {
+  const out: (number | null)[] = [];
+  const walk = (ns: MatrixColumnNode[]) => {
+    for (const n of ns) {
+      if (n.expanded) walk(n.children);
+      else out.push(n.value);
+    }
+  };
+  walk(nodes);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,12 +422,22 @@ export function toNativeDrillFilters(filters: DrillFilterSpec[]) {
   return filters.map(f => ({ field: f.field, datePart: f.datePart ?? null, value: f.value ?? null }));
 }
 
-/** Mesma conversão de filtros do relatório usada pelo VisualCard para o caminho nativo. */
+/** Mesma conversão de filtros do relatório usada pelo VisualCard para o caminho nativo.
+ *
+ * v0.11 Rodada 2, Frente H/E (bug fix): preserva `f.operator` em vez de
+ * espalhar `f.value` direto em `values` — um filtro `between` (segmentador
+ * "Entre" / janelas de data relativa) guarda seu intervalo como
+ * `value: [from, to]`, e sem o operador isso virava uma lista IN com só as
+ * duas pontas (match apenas em `from` e `to`, nunca no meio). O Rust
+ * (`NativeFilterInput.operator`, `FilterContext::range_filters`) usa o
+ * operador para aplicar um range real — ver o mesmo fix em `VisualCard.tsx`.
+ */
 export function toNativeFilters(filters: Filter[]): NativeVisualQueryRequest['filters'] {
   return filters
     .map(f => ({
       tableId: f.tableId,
       column: f.column,
+      operator: f.operator,
       values: Array.isArray(f.value) ? f.value : f.value !== undefined && f.value !== '' ? [f.value] : [],
     }))
     .filter(f => f.values.length > 0);
@@ -344,10 +475,37 @@ export function matrixFromNative(res: NativeVisualQueryResult, levels: DrillLeve
     expanded: n.expanded,
     children: (n.children || []).map(c => conv(c, depth + 1)),
   });
+  const convCol = (n: NonNullable<NonNullable<NativeVisualQueryResult['matrix']>['columnHeader']>[number], depth: number, columnLevels: DrillLevel[]): MatrixColumnNode => ({
+    key: n.key,
+    label: levelValueLabel(columnLevels[depth] ?? columnLevels[columnLevels.length - 1], n.key),
+    value: n.value,
+    hasChildren: n.hasChildren,
+    expanded: n.expanded,
+    children: (n.children || []).map(c => convCol(c, depth + 1, columnLevels)),
+  });
+  void convCol;
   return {
     seriesNames: res.series.map(s => s.name),
     rows: (res.matrix?.rows || []).map(n => conv(n, 0)),
     columnTotals: res.matrix?.columnTotals || [],
     grandTotal: res.matrix?.grandTotal ?? null,
+    columnHeader: undefined,
   };
+}
+
+/** v0.11 Rodada 2 (Frente I): mesma conversão de `matrixFromNative`, mas
+ * recebendo também os níveis de COLUNA para rotular `matrix.columnHeader`. */
+export function matrixFromNativeWithColumns(res: NativeVisualQueryResult, rowLevels: DrillLevel[], columnLevels: DrillLevel[]): MatrixQueryResult {
+  const base = matrixFromNative(res, rowLevels);
+  const header = res.matrix?.columnHeader;
+  if (!header) return base;
+  const convCol = (n: NonNullable<typeof header>[number], depth: number): MatrixColumnNode => ({
+    key: n.key,
+    label: levelValueLabel(columnLevels[depth] ?? columnLevels[columnLevels.length - 1], n.key),
+    value: n.value,
+    hasChildren: n.hasChildren,
+    expanded: n.expanded,
+    children: (n.children || []).map(c => convCol(c, depth + 1)),
+  });
+  return { ...base, columnHeader: header.map(n => convCol(n, 0)), seriesNames: [] };
 }

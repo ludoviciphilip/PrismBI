@@ -54,7 +54,7 @@ import { tableToEtlSource } from '../services/etl/etlSource';
 import { getSampleDatasets, generateCalendarTable } from '../data/sampleDatasets';
 import { globalDataEngine } from '../engine/dataEngine';
 import { DaxEngine } from '../engine/daxEngine';
-import { saveProjectToStorage, loadProjectFromStorage, ProjectState } from '../engine/storage';
+import { saveProjectToStorage, loadProjectFromStorage, ProjectState, ensureProjectId, buildTableCacheMetas } from '../engine/storage';
 import { migrateProjectState, syncWhatIfWithModel } from '../engine/migrations';
 import { globalDuckDb } from '../engine/duckdbEngine';
 import { getEffectiveCanvasSize } from '../engine/shared/canvasPresets';
@@ -64,6 +64,8 @@ import {
   refreshTableNative,
   refreshPbipTables,
   dbRefreshImport,
+  projectCacheSave,
+  projectCacheLoad,
   NativeImportedTable,
   UpdateCheckResult,
 } from '../bridge/tauriBridge';
@@ -77,12 +79,15 @@ export interface RecentProjectEntry {
   openedAt: string;
 }
 
-const RECENT_PROJECTS_KEY = 'prismbi_recent_projects';
+const RECENT_PROJECTS_KEY = 'vetrobi_recent_projects';
+const LEGACY_RECENT_PROJECTS_KEY = 'prismbi_recent_projects';
 
 function loadRecentProjects(): RecentProjectEntry[] {
   try {
     if (typeof localStorage === 'undefined') return [];
-    const raw = localStorage.getItem(RECENT_PROJECTS_KEY);
+    const raw =
+      localStorage.getItem(RECENT_PROJECTS_KEY) ??
+      localStorage.getItem(LEGACY_RECENT_PROJECTS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.slice(0, 8) : [];
@@ -186,6 +191,9 @@ interface BiState {
   // Project Info
   projectName: string;
   setProjectName: (name: string) => void;
+  /** Id estável do projeto (v0.11+), usado só como chave do cache
+   * colunar nativo (`project_cache_*`). Nunca exibido/editável na UI. */
+  projectId?: string;
   lastSavedAt: string | null;
   dataVersion: number;
   sourcePbipPath: string | null;
@@ -260,6 +268,12 @@ interface BiState {
   deleteVisual: (id: string) => void;
   moveVisualsDelta: (ids: string[], dx: number, dy: number) => void;
   deleteSelectedVisuals: () => void;
+  /** v0.11 (atalhos de teclado): clipboard interno de visuais para Ctrl+C/Ctrl+V. */
+  visualClipboard: Visual[] | null;
+  copySelectedVisuals: () => void;
+  pasteVisuals: () => void;
+  duplicateSelectedVisuals: () => void;
+  selectAllVisualsOnPage: () => void;
   alignSelectedVisuals: (
     mode: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom' | 'distribute-h' | 'distribute-v'
   ) => void;
@@ -272,6 +286,10 @@ interface BiState {
   removeFilter: (id: string) => void;
   clearFilters: () => void;
   setCrossFilter: (tableId: string, column: string, value: any) => void;
+  /** v0.11 Frente D: cross-filter a partir de um ponto drillado de data (ano/trimestre/mês/dia)
+   *  ou de um caminho concatenado (modo expandido) — um `Filter` por `DrillFilterSpec`, todos com
+   *  `level: 'visual'`. Clicar de novo no mesmo ponto (mesmos specs/valores) limpa o filtro. */
+  setDrillCrossFilter: (specs: { field: string; datePart?: 'year' | 'quarter' | 'month' | 'day'; value: unknown; label: string }[]) => void;
   /** Sets a slicer visual's selection (list/between/relative), computes its Filter,
    *  and — when the visual has a syncGroup — propagates the same selection to every
    *  other slicer visual sharing that group on the pages allowed by its syncPages. */
@@ -429,6 +447,9 @@ interface BiState {
   setCanvasSizeModalOpen: (open: boolean) => void;
   updateModalOpen: boolean;
   setUpdateModalOpen: (open: boolean) => void;
+  /** v0.11 (atalhos de teclado): diálogo "Atalhos de teclado" (Ctrl+/ ou ?). */
+  shortcutsModalOpen: boolean;
+  setShortcutsModalOpen: (open: boolean) => void;
   availableUpdate: UpdateCheckResult | null;
   setAvailableUpdate: (update: UpdateCheckResult | null) => void;
 
@@ -771,6 +792,28 @@ setGlobalCurrency(initialCurrency);
 const initialThemeMode = getStoredThemeMode();
 const initialIsDark = applyThemeToDocument(initialThemeMode);
 
+/** v0.11 Rodada 2 Frente F (bugfix): fallback TMDL-style pattern derived
+ * from `Measure.format` (the generic currency/number/percentage/integer
+ * enum) when the measure has no real TMDL `formatString` (manually created
+ * measures, samples). `formatValue` (src/engine/shared/formatter.ts)
+ * understands the named "Currency"/"Percent" forms as well as numeric
+ * patterns, so this stays consistent with how the rest of the app formats
+ * these same measures.
+ */
+function measureFormatToTmdlPattern(format: Measure['format']): string {
+  switch (format) {
+    case 'currency':
+      return 'Currency';
+    case 'percentage':
+      return 'Percent';
+    case 'integer':
+      return '#,##0';
+    case 'number':
+    default:
+      return '#,##0.00';
+  }
+}
+
 async function pushModelToRustAsync(
   tables: Table[],
   relationships: Relationship[],
@@ -790,7 +833,17 @@ async function pushModelToRustAsync(
         // there would leave the table EMPTY in the model.
         rows: t.rows || [],
         columnTypes: t.columns.map(c => c.dataType ?? null),
+        sortByColumns: Object.fromEntries(t.columns.filter(c => c.sortByColumn).map(c => [c.name, c.sortByColumn!])),
         duckdbTable: t.duckdbTable,
+        // v0.11 Rodada 2 Frente F (bugfix): the real sync path (this
+        // function) never sent the TMDL `formatString` the .pbip importer
+        // already stores on `Column.format` (PowerBiImportModal.tsx), so an
+        // integer/year column always fell back to the DAX Query View's
+        // generic grouped `formatNumber` ("2.026" instead of "2026"). Only
+        // the Rust-only `open_pbip_project` test/dev path filled this in.
+        columnFormatStrings: Object.fromEntries(
+          t.columns.filter(c => c.format).map(c => [c.name, c.format as string])
+        ),
       })),
       relationships: relationships.map(r => ({
         fromTable: r.fromTable,
@@ -804,6 +857,11 @@ async function pushModelToRustAsync(
         name: m.name,
         tableName: m.tableName,
         formula: m.formula,
+        // v0.11 Rodada 2 Frente F (bugfix): same gap as above, for
+        // measures. A `DEFINE MEASURE` built on top of a real measure in
+        // the DAX Query View (e.g. `Teste = [Faturamento] * 2`) can only
+        // inherit `Faturamento`'s format if it actually reaches Rust.
+        formatString: m.formatString || measureFormatToTmdlPattern(m.format),
       })),
     });
     onSynced?.();
@@ -1922,6 +1980,7 @@ export const useBiStore = create<BiState>((set, get) => {
     activePageId: defaultPageId,
     selectedVisualId: null,
     selectedVisualIds: [],
+    visualClipboard: null,
     canvasZoom: 100,
     isPresentationMode: false,
     layoutMode: 'desktop',
@@ -2139,6 +2198,83 @@ export const useBiStore = create<BiState>((set, get) => {
       );
     },
 
+    // v0.11 (atalhos de teclado): Ctrl+C/Ctrl+V/Ctrl+D no canvas do relatório.
+    copySelectedVisuals: () => {
+      const ids = get().selectedVisualIds;
+      if (!ids.length) return;
+      const activePage = get().pages.find(p => p.id === get().activePageId);
+      if (!activePage) return;
+      const idSet = new Set(ids);
+      const visuals = activePage.visuals.filter(v => idSet.has(v.id));
+      if (!visuals.length) return;
+      set({ visualClipboard: visuals.map(v => ({ ...v })) });
+    },
+
+    pasteVisuals: () => {
+      const clip = get().visualClipboard;
+      if (!clip || !clip.length) return;
+      const activePageId = get().activePageId;
+      const activePage = get().pages.find(p => p.id === activePageId);
+      if (!activePage) return;
+      const { width: canvasWidth, height: canvasHeight } = getEffectiveCanvasSize(activePage);
+      const offset = 24;
+      const newVisuals = clip.map(v => ({
+        ...v,
+        id: 'vis_' + Math.random().toString(36).substr(2, 6),
+        x: Math.max(0, Math.min(Math.max(0, canvasWidth - v.w), Math.round(v.x + offset))),
+        y: Math.max(0, Math.min(Math.max(0, canvasHeight - v.h), Math.round(v.y + offset))),
+      }));
+
+      pushPagesHistory(
+        get().pages.map(p =>
+          p.id === activePageId ? { ...p, visuals: [...p.visuals, ...newVisuals] } : p
+        ),
+        {
+          selectedVisualId: newVisuals[newVisuals.length - 1].id,
+          selectedVisualIds: newVisuals.map(v => v.id),
+        }
+      );
+    },
+
+    duplicateSelectedVisuals: () => {
+      const ids = get().selectedVisualIds;
+      if (!ids.length) return;
+      const activePageId = get().activePageId;
+      const activePage = get().pages.find(p => p.id === activePageId);
+      if (!activePage) return;
+      const { width: canvasWidth, height: canvasHeight } = getEffectiveCanvasSize(activePage);
+      const idSet = new Set(ids);
+      const selected = activePage.visuals.filter(v => idSet.has(v.id));
+      if (!selected.length) return;
+      const offset = 24;
+      const newVisuals = selected.map(v => ({
+        ...v,
+        id: 'vis_' + Math.random().toString(36).substr(2, 6),
+        x: Math.max(0, Math.min(Math.max(0, canvasWidth - v.w), Math.round(v.x + offset))),
+        y: Math.max(0, Math.min(Math.max(0, canvasHeight - v.h), Math.round(v.y + offset))),
+      }));
+
+      pushPagesHistory(
+        get().pages.map(p =>
+          p.id === activePageId ? { ...p, visuals: [...p.visuals, ...newVisuals] } : p
+        ),
+        {
+          selectedVisualId: newVisuals[newVisuals.length - 1].id,
+          selectedVisualIds: newVisuals.map(v => v.id),
+        }
+      );
+    },
+
+    selectAllVisualsOnPage: () => {
+      const activePage = get().pages.find(p => p.id === get().activePageId);
+      if (!activePage) return;
+      const ids = activePage.visuals.filter(v => !v.formatConfig?.hidden).map(v => v.id);
+      set({
+        selectedVisualIds: ids,
+        selectedVisualId: ids[ids.length - 1] || null,
+      });
+    },
+
     alignSelectedVisuals: (mode) => {
       const ids = get().selectedVisualIds;
       if (ids.length < 2) return;
@@ -2320,6 +2456,50 @@ export const useBiStore = create<BiState>((set, get) => {
           ],
         });
       }
+    },
+
+    setDrillCrossFilter: (specs) => {
+      if (specs.length === 0) return;
+      const tables = get().tables;
+      const resolveField = (field: string): { tableId: string; column: string } => {
+        if (field.includes('.')) {
+          const [prefixT, col] = field.split('.', 2);
+          const matchT = tables.find(
+            t => t.id === prefixT || t.name === prefixT || t.id.toLowerCase() === prefixT.toLowerCase() || t.name.toLowerCase() === prefixT.toLowerCase()
+          );
+          if (matchT) return { tableId: matchT.id, column: col };
+        }
+        for (const t of tables) {
+          const col = t.columns.find(c => c.name.toLowerCase() === field.toLowerCase());
+          if (col) return { tableId: t.id, column: col.name };
+        }
+        return { tableId: field, column: field };
+      };
+      const resolved = specs.map(s => ({ ...resolveField(s.field), datePart: s.datePart, value: s.value, label: s.label }));
+      const ids = resolved.map(r => `drillcross_${r.tableId}_${r.column}_${r.datePart ?? 'v'}`);
+      const current = get().filters;
+      const sameActive =
+        ids.length > 0 &&
+        ids.every((id, i) => {
+          const existing = current.find(f => f.id === id);
+          return existing && existing.value === resolved[i].value;
+        });
+      const withoutThese = current.filter(f => !ids.includes(f.id));
+      if (sameActive) {
+        set({ filters: withoutThese });
+        return;
+      }
+      const newFilters: Filter[] = resolved.map((r, i) => ({
+        id: ids[i],
+        level: 'visual',
+        tableId: r.tableId,
+        column: r.column,
+        operator: 'equals',
+        value: r.value,
+        datePart: r.datePart,
+        label: r.label,
+      }));
+      set({ filters: [...withoutThese, ...newFilters] });
     },
 
     setSlicerSelection: (visualId, selection) => {
@@ -3053,6 +3233,8 @@ export const useBiStore = create<BiState>((set, get) => {
     setCanvasSizeModalOpen: (open) => set({ canvasSizeModalOpen: open }),
     updateModalOpen: false,
     setUpdateModalOpen: (open) => set({ updateModalOpen: open }),
+    shortcutsModalOpen: false,
+    setShortcutsModalOpen: (open) => set({ shortcutsModalOpen: open }),
     availableUpdate: null,
     setAvailableUpdate: (availableUpdate) => set({ availableUpdate }),
 
@@ -3098,6 +3280,7 @@ export const useBiStore = create<BiState>((set, get) => {
         canUndo: false,
         canRedo: false,
         activeView: 'report' as ActiveView,
+        visualClipboard: null,
         filters: [],
         bookmarks: [],
         dashboardTiles: [],
@@ -3123,7 +3306,7 @@ export const useBiStore = create<BiState>((set, get) => {
       const sample = getSampleDatasets();
       const shouldRestoreVisuals = get().pages.every(p => p.visuals.length === 0);
       set(s => ({
-        projectName: shouldRestoreVisuals ? 'PrismBI Demo — Varejo Brasil' : s.projectName,
+        projectName: shouldRestoreVisuals ? 'VetroBI Demo — Varejo Brasil' : s.projectName,
         tables: sample.tables,
         relationships: sample.relationships,
         measures: sample.measures,
@@ -3153,8 +3336,14 @@ export const useBiStore = create<BiState>((set, get) => {
     },
 
     getProjectState: () => {
+      let projectId = get().projectId;
+      if (!projectId) {
+        projectId = ensureProjectId({ projectId: undefined } as unknown as ProjectState).projectId;
+        set({ projectId });
+      }
       return {
         version: '1.0.0',
+        projectId,
         projectName: get().projectName,
         sourcePbipPath: get().sourcePbipPath,
         tables: get().tables,
@@ -3190,6 +3379,20 @@ export const useBiStore = create<BiState>((set, get) => {
       const res = await saveProjectToStorage(state);
       if (res.success) {
         set({ lastSavedAt: `Salvo às ${res.timestamp}` });
+        // Cache colunar nativo (melhor esforço, não bloqueia o save da
+        // sessão): grava as tabelas do DuckDB nativo ao lado dos
+        // metadados, para a próxima abertura não precisar reler as
+        // fontes (ver docs/V011.md §B e src-tauri/src/project_store).
+        if (isTauriRuntime() && state.projectId) {
+          const metas = buildTableCacheMetas(state.tables || []);
+          if (metas.length > 0) {
+            try {
+              await projectCacheSave(state.projectId, metas);
+            } catch (err) {
+              console.warn('Falha ao salvar o cache colunar do projeto (não bloqueante):', err);
+            }
+          }
+        }
       } else {
         console.error('Falha ao salvar projeto:', res.error);
         set({ lastSavedAt: 'Falha ao salvar' });
@@ -3224,6 +3427,7 @@ export const useBiStore = create<BiState>((set, get) => {
         language: (state.language as SupportedLocale) || get().language,
         currency: (state.currency as SupportedCurrency) || get().currency,
         projectName: state.projectName || 'Projeto InsightHub',
+        projectId: state.projectId || s.projectId,
         sourcePbipPath: state.sourcePbipPath ?? null,
         refreshStatus: null,
         dataVersion: s.dataVersion + 1,
@@ -3234,6 +3438,7 @@ export const useBiStore = create<BiState>((set, get) => {
         activePageId: state.activePageId || state.pages?.[0]?.id || defaultPageId,
         selectedVisualId: null,
         selectedVisualIds: [],
+        visualClipboard: null,
         historyPast: [],
         historyFuture: [],
         canUndo: false,
@@ -3266,13 +3471,42 @@ export const useBiStore = create<BiState>((set, get) => {
         set(s => ({ dataVersion: s.dataVersion + 1 }))
       );
       // DuckDB é em memória: ao reabrir, tabelas maiores que a amostra
-      // (5.000 linhas) só existem como prévia. Recarrega das fontes em segundo
-      // plano para o modelo voltar a ter todas as linhas.
-      if (isTauriRuntime() && (state.tables || []).some(t => t.rowsTruncated)) {
-        setTimeout(() => {
-          void get().refreshAllData();
-        }, 0);
-      }
+      // (5.000 linhas) só existem como prévia. Se houver um cache colunar
+      // nativo válido (ver docs/V011.md §B), carrega dele direto — sem
+      // reler as fontes. Senão, cai no comportamento atual: recarrega as
+      // fontes em segundo plano (`refreshAllData`).
+      void (async () => {
+        if (!isTauriRuntime()) return;
+        const truncated = (state.tables || []).some(t => t.rowsTruncated);
+        const metas = buildTableCacheMetas(state.tables || []);
+        if (!state.projectId || metas.length === 0) {
+          if (truncated) void get().refreshAllData();
+          return;
+        }
+        try {
+          const outcome = await projectCacheLoad(state.projectId, metas);
+          if (outcome.loaded) {
+            set(s => ({
+              tables: s.tables.map(t => {
+                const cached = outcome.tables.find(ot => ot.tableName === t.duckdbTable);
+                if (!cached) return t;
+                return { ...t, rowsTruncated: false, totalRows: cached.totalRows };
+              }),
+              dataVersion: s.dataVersion + 1,
+              refreshStatus: {
+                type: 'success',
+                message: `Dados carregados do cache local (${outcome.totalRows.toLocaleString('pt-BR')} linhas).`,
+                timestamp: new Date().toLocaleTimeString('pt-BR'),
+              },
+            }));
+            return;
+          }
+          if (truncated) void get().refreshAllData();
+        } catch (err) {
+          console.warn('Falha ao consultar o cache colunar do projeto (lendo as fontes):', err);
+          if (truncated) void get().refreshAllData();
+        }
+      })();
     },
   };
 });

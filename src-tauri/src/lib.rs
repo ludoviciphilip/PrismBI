@@ -2,7 +2,9 @@ pub mod connectors;
 pub mod dax;
 pub mod engine;
 pub mod etl;
+pub mod migrate_legacy;
 pub mod pbi;
+pub mod project_store;
 pub mod updater;
 
 // Coverage-only test modules for v0.10 round 1 (see docs/TEST_COVERAGE.md).
@@ -163,12 +165,43 @@ fn open_pbip_project(
             tables: summary
                 .loaded_tables
                 .iter()
-                .map(|t| dax::DaxTableInput {
-                    name: t.table_name.clone(),
-                    columns: t.columns.iter().map(|c| c.name.clone()).collect(),
-                    rows: t.rows.clone(),
-                    column_types: vec![],
-                    duckdb_table: Some(t.table_name.clone()),
+                .map(|t| {
+                    let sort_by_columns = summary
+                        .tables
+                        .iter()
+                        .find(|tm| tm.name.eq_ignore_ascii_case(&t.table_name))
+                        .map(|tm| {
+                            tm.columns
+                                .iter()
+                                .filter_map(|c| c.sort_by_column.as_ref().map(|sb| (c.name.clone(), sb.clone())))
+                                .collect::<HashMap<String, String>>()
+                        })
+                        .unwrap_or_default();
+                    // v0.11 Rodada 2 Frente F: carry the TMDL formatString
+                    // per column so the DAX Query View's integer/year
+                    // columns don't get a grouping thousand separator that
+                    // isn't in the model's own format (see
+                    // `dax::query_view::qexec::DaxQueryColumn::format_string`).
+                    let column_format_strings = summary
+                        .tables
+                        .iter()
+                        .find(|tm| tm.name.eq_ignore_ascii_case(&t.table_name))
+                        .map(|tm| {
+                            tm.columns
+                                .iter()
+                                .filter_map(|c| c.format_string.as_ref().map(|fs| (c.name.clone(), fs.clone())))
+                                .collect::<HashMap<String, String>>()
+                        })
+                        .unwrap_or_default();
+                    dax::DaxTableInput {
+                        name: t.table_name.clone(),
+                        columns: t.columns.iter().map(|c| c.name.clone()).collect(),
+                        rows: t.rows.clone(),
+                        column_types: vec![],
+                        duckdb_table: Some(t.table_name.clone()),
+                        sort_by_columns, is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new(),
+                        column_format_strings,
+                    }
                 })
                 .collect(),
             relationships: summary
@@ -191,6 +224,11 @@ fn open_pbip_project(
                     name: m.name.clone(),
                     table_name: m.table_name.clone(),
                     formula: m.expression.clone(),
+                    // v0.11 Rodada 2 Frente F (bugfix): carry the TMDL
+                    // formatString here too, same as `column_format_strings`
+                    // above, so a DEFINE MEASURE referencing this measure in
+                    // the DAX Query View can inherit its format.
+                    format_string: m.format_string.clone(),
                 })
                 .collect(),
         };
@@ -287,7 +325,68 @@ fn query_visual_native(
         .dax_model
         .lock()
         .map_err(|_| "Lock DaxModel corrompido".to_string())?;
-    dax::query_planner::execute_visual_query(&guard, &request)
+    // v0.11 Frente A: tenta o pushdown para o DuckDB antes do motor DAX (ver
+    // dax::pushdown); cai no caminho de sempre em qualquer rejeição/erro.
+    let conn = state.db.connection().lock().map_err(|_| "Lock DuckDB corrompido".to_string())?;
+    dax::query_planner::execute_visual_query_with_conn(&guard, &request, Some(&conn))
+}
+
+/// v0.11 Rodada 2, Frente E: native "table" visual query over ALL rows of
+/// the model (no 5.000-row preview cap), with server-side sort/Top N and
+/// offset/limit pagination so a 10M-row table never crosses IPC at once.
+#[tauri::command]
+fn query_table_native(
+    state: State<'_, AppState>,
+    request: dax::query_planner::NativeTableQueryRequest,
+) -> Result<dax::query_planner::NativeTableQueryResult, String> {
+    let guard = state
+        .dax_model
+        .lock()
+        .map_err(|_| "Lock DaxModel corrompido".to_string())?;
+    dax::query_planner::execute_table_query(&guard, &request)
+}
+
+/// v0.11 Rodada 2, Frente E: native "scatter" visual query, with
+/// deterministic Power-BI-style point sampling (default ~3.500 points).
+#[tauri::command]
+fn query_scatter_native(
+    state: State<'_, AppState>,
+    request: dax::query_planner::NativeScatterQueryRequest,
+) -> Result<dax::query_planner::NativeScatterQueryResult, String> {
+    let guard = state
+        .dax_model
+        .lock()
+        .map_err(|_| "Lock DaxModel corrompido".to_string())?;
+    dax::query_planner::execute_scatter_query(&guard, &request)
+}
+
+#[tauri::command]
+fn dax_query_execute(
+    state: State<'_, AppState>,
+    query: String,
+    opts: Option<dax::query_view::DaxQueryOptions>,
+) -> Result<dax::query_view::DaxQueryExecuteResult, String> {
+    let guard = state
+        .dax_model
+        .lock()
+        .map_err(|_| "Lock DaxModel corrompido".to_string())?;
+    Ok(dax::query_view::execute_query(&guard, &query, &opts.unwrap_or_default()))
+}
+
+#[tauri::command]
+fn dax_validate(
+    state: State<'_, AppState>,
+    expression: String,
+    context: String,
+    table: Option<String>,
+) -> Result<dax::query_view::ValidationResult, String> {
+    let ctx = dax::query_view::ValidateContext::parse(&context)
+        .ok_or_else(|| format!("Contexto de validação desconhecido: '{}'.", context))?;
+    let guard = state
+        .dax_model
+        .lock()
+        .map_err(|_| "Lock DaxModel corrompido".to_string())?;
+    Ok(dax::query_view::validate_expression(&guard, &expression, ctx, table.as_deref()))
 }
 
 #[tauri::command]
@@ -486,8 +585,85 @@ fn credentials_get(state: State<'_, AppState>, key: String) -> Result<Option<Str
     state.credentials.get(&key)
 }
 
+// ---------------------------------------------------------------------
+// Cache colunar de projeto (v0.11 Frente B) — ver project_store::.
+// ---------------------------------------------------------------------
+
+/// Diretório-base para o cache de sessão interna (sem arquivo .insight
+/// salvo em disco): `<app_data_dir>/projects/<hash(project_key)>/`.
+/// Usa `dirs::data_dir()` diretamente (mesmo padrão de
+/// `migrate_legacy_app_dirs`), sem depender do `AppHandle`.
+fn app_cache_base_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("VetroBI")
+}
+
+#[tauri::command]
+fn project_cache_save(
+    state: State<'_, AppState>,
+    project_key: String,
+    tables: Vec<project_store::TableCacheMeta>,
+    dir: Option<String>,
+) -> Result<project_store::SaveOutcome, String> {
+    let base = app_cache_base_dir();
+    let cache_dir = project_store::resolve_cache_dir(&project_key, &base, dir.as_deref())?;
+    let conn = state.db.connection().lock().map_err(|_| "Lock DuckDB corrompido".to_string())?;
+    project_store::save_project_cache(&conn, &cache_dir, &tables, env!("CARGO_PKG_VERSION"))
+}
+
+#[tauri::command]
+fn project_cache_load(
+    state: State<'_, AppState>,
+    project_key: String,
+    tables: Vec<project_store::TableCacheMeta>,
+    dir: Option<String>,
+) -> Result<project_store::LoadOutcome, String> {
+    let base = app_cache_base_dir();
+    let cache_dir = project_store::resolve_cache_dir(&project_key, &base, dir.as_deref())?;
+    let conn = state.db.connection().lock().map_err(|_| "Lock DuckDB corrompido".to_string())?;
+    project_store::load_project_cache(&conn, &cache_dir, &tables)
+}
+
+#[tauri::command]
+fn project_cache_info(
+    project_key: String,
+    tables: Vec<project_store::TableCacheMeta>,
+    dir: Option<String>,
+) -> Result<project_store::CacheInfo, String> {
+    let base = app_cache_base_dir();
+    let cache_dir = project_store::resolve_cache_dir(&project_key, &base, dir.as_deref())?;
+    Ok(project_store::cache_info(&cache_dir, &tables))
+}
+
+#[tauri::command]
+fn project_cache_invalidate(
+    project_key: String,
+    dir: Option<String>,
+) -> Result<(), String> {
+    let base = app_cache_base_dir();
+    let cache_dir = project_store::resolve_cache_dir(&project_key, &base, dir.as_deref())?;
+    project_store::invalidate_cache(&cache_dir)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Migra dados do PrismBI (identifier antigo) para o VetroBI ANTES de
+    // qualquer janela/webview ser criada — veja migrate_legacy.rs. Usa a
+    // crate `dirs` diretamente (sem AppHandle) para rodar o mais cedo
+    // possível em run(), sem depender da inicialização do Tauri.
+    migrate_legacy::migrate_legacy_app_dirs(
+        &[
+            dirs::data_dir(),
+            dirs::config_dir(),
+            dirs::cache_dir(),
+            dirs::data_local_dir(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>(),
+    );
+
     let db = DuckDbStore::new_in_memory().expect("Falha ao inicializar DuckDB nativo");
 
     tauri::Builder::default()
@@ -518,6 +694,10 @@ pub fn run() {
             evaluate_dax_native,
             evaluate_dax_batch_native,
             query_visual_native,
+            dax_query_execute,
+            dax_validate,
+            query_table_native,
+            query_scatter_native,
             check_for_updates,
             download_and_install_update,
             db_connect,
@@ -538,7 +718,11 @@ pub fn run() {
             etl::commands::etl_to_m,
             etl::commands::etl_from_m,
             etl::commands::etl_step_m,
+            project_cache_save,
+            project_cache_load,
+            project_cache_info,
+            project_cache_invalidate,
         ])
         .run(tauri::generate_context!())
-        .expect("Erro ao executar PrismBI");
+        .expect("Erro ao executar VetroBI");
 }

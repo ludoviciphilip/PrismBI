@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { Visual, VisualCalculation } from '../../types/bi';
 import { useBiStore } from '../../store/useBiStore';
-import { DaxEngine } from '../../engine/daxEngine';
+import { validateDaxFormula, UnifiedDaxValidationResult } from '../../engine/nativeDax';
 
 interface VisualCalculationModalProps {
   visual: Visual;
@@ -179,12 +179,31 @@ export const VisualCalculationModal: React.FC<VisualCalculationModalProps> = ({
     setFormula(prev => `${prev}[${field}]`);
   };
 
-  // Validate current formula
+  // Validate current formula: native Rust `dax_validate` (context
+  // 'visualCalc') inside Tauri, TS fallback only outside it. Replaces the
+  // previous stub that just checked `formula.trim()` without parsing it.
+  const [daxValidation, setDaxValidation] = useState<UnifiedDaxValidationResult | null>(null);
+  useEffect(() => {
+    if (!formula.trim()) {
+      setDaxValidation(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      validateDaxFormula(formula, tables, measures, 'visualCalc').then((res) => {
+        if (!cancelled) setDaxValidation(res);
+      });
+    }, 150);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [formula, tables, measures]);
+
   const isValid = useMemo(() => {
     if (!formula.trim()) return false;
-    // In visual calculations, syntax should parse cleanly
-    return true;
-  }, [formula]);
+    return daxValidation ? daxValidation.isValid : true;
+  }, [formula, daxValidation]);
 
   const handleSaveActive = () => {
     if (!name.trim()) {
@@ -193,6 +212,10 @@ export const VisualCalculationModal: React.FC<VisualCalculationModalProps> = ({
     }
     if (!formula.trim()) {
       setValidationError('A fórmula DAX do cálculo visual não pode estar vazia.');
+      return;
+    }
+    if (!isValid) {
+      setValidationError(daxValidation?.errorMessage || 'Fórmula DAX inválida.');
       return;
     }
 

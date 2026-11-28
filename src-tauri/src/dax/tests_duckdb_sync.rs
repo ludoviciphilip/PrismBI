@@ -26,12 +26,13 @@ fn sum_and_count_over_20000_rows_via_duckdb_sync() {
 
     let mut model = DaxModel::new();
     let payload = DaxModelSyncPayload {
-        tables: vec![DaxTableInput {
+        tables: vec![DaxTableInput { column_format_strings: Default::default(),
             name: "fVendas".into(),
             columns: vec!["Id".into(), "Categoria".into(), "Valor".into()],
             rows: vec![],
             column_types: vec![],
             duckdb_table: Some("fVendas".into()),
+            sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
         }],
         relationships: vec![],
         measures: vec![],
@@ -126,12 +127,13 @@ fn version_cache_skips_reload_when_table_unchanged() {
     let name = "cache_probe_tbl_7f3a";
     conn.execute_batch(&format!("CREATE OR REPLACE TABLE {name} AS SELECT 1 AS x")).unwrap();
     bump_table_version(name);
-    let input = vec![DaxTableInput {
+    let input = vec![DaxTableInput { column_format_strings: Default::default(),
         name: "Cache".into(),
         columns: vec!["x".into()],
         rows: vec![],
         column_types: vec![],
         duckdb_table: Some(name.into()),
+        sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
     }];
 
     let before = load_count_for_test();
@@ -162,7 +164,7 @@ fn missing_duckdb_table_errors_and_model_falls_back_to_json_rows() {
 
     let mut model = DaxModel::new();
     let payload = DaxModelSyncPayload {
-        tables: vec![DaxTableInput {
+        tables: vec![DaxTableInput { column_format_strings: Default::default(),
             name: "Fallback".into(),
             columns: vec!["A".into()],
             rows: vec![{
@@ -172,6 +174,7 @@ fn missing_duckdb_table_errors_and_model_falls_back_to_json_rows() {
             }],
             column_types: vec![],
             duckdb_table: Some("does_not_exist".into()),
+            sort_by_columns: Default::default(), is_calculated: false, expression: None, calculated_columns: ::std::collections::HashMap::new() 
         }],
         relationships: vec![],
         measures: vec![],

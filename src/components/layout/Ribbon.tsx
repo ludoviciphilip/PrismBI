@@ -37,12 +37,14 @@ import {
   Redo2,
   Home,
   Download,
+  Keyboard,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useBiStore } from '../../store/useBiStore';
 import { exportProjectToFile } from '../../engine/storage';
 import { useTranslation } from '../../i18n';
 import { getEffectiveCanvasSize } from '../../engine/shared/canvasPresets';
+import { subscribeShortcutAction, getShortcutHint } from '../../services/shortcuts/registry';
 import { PowerBiImportModal } from '../modals/PowerBiImportModal';
 import { etlToM } from '../../services/etl/etlClient';
 import { conditionalFormatsToExportPayload } from '../../engine/conditionalFormat';
@@ -80,6 +82,20 @@ export const Ribbon: React.FC<{
   const [showPbiImportModal, setShowPbiImportModal] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // v0.11 (atalhos de teclado): Ctrl+O e Ctrl+N vivem no hook global, mas
+  // "Abrir" e "Novo Projeto" dependem de estado local daqui (o <input
+  // type="file"> e o modal de confirmação) — a ponte é esse pub/sub, sem
+  // duplicar UI nem subir esse estado para a store só por causa do atalho.
+  useEffect(() => {
+    return subscribeShortcutAction(action => {
+      if (action === 'open-project-file') {
+        fileInputRef.current?.click();
+      } else if (action === 'new-project-modal') {
+        setShowNewProjectModal(true);
+      }
+    });
+  }, []);
+
   const { t, language, currency, setLanguage, setCurrency } = useTranslation();
 
   const {
@@ -98,6 +114,7 @@ export const Ribbon: React.FC<{
     setAiModalOpen,
     setAiSettingsModalOpen,
     setCanvasSizeModalOpen,
+    setShortcutsModalOpen,
     pages,
     activePageId,
     newProject,
@@ -150,6 +167,7 @@ export const Ribbon: React.FC<{
     setAiModalOpen: s.setAiModalOpen,
     setAiSettingsModalOpen: s.setAiSettingsModalOpen,
     setCanvasSizeModalOpen: s.setCanvasSizeModalOpen,
+    setShortcutsModalOpen: s.setShortcutsModalOpen,
     pages: s.pages,
     activePageId: s.activePageId,
     newProject: s.newProject,
@@ -245,7 +263,7 @@ export const Ribbon: React.FC<{
 
   const handleExportPbip = async () => {
     if (!isTauriRuntime()) {
-      alert('Exportação para pasta .pbip requer o app desktop PrismBI (Tauri).');
+      alert('Exportação para pasta .pbip requer o app desktop VetroBI (Tauri).');
       return;
     }
     const folder = await pickFolderDialog('Selecione a pasta para salvar o projeto .pbip');
@@ -283,7 +301,7 @@ export const Ribbon: React.FC<{
 
     try {
       const savedPath = await savePbipProject(folder, {
-        projectName: state.projectName || projectName || 'PrismBI',
+        projectName: state.projectName || projectName || 'VetroBI',
         tables: state.tables.map(t => ({
           name: t.name,
           isHidden: t.isHidden,
@@ -356,9 +374,11 @@ export const Ribbon: React.FC<{
             // v0.10 Rodada 2 (seams H↔G): hierarquia completa no round-trip .pbip.
             drillFields: v.dataConfig.drillFields ?? [],
             matrixRowFields: v.dataConfig.matrixRowFields ?? [],
+            // v0.11 Rodada 2 (Frente I): N níveis nas COLUNAS no round-trip .pbip.
+            matrixColumnFields: v.dataConfig.matrixColumnFields ?? [],
           })),
         })),
-        themeName: state.activeThemeId || theme || 'PrismTheme',
+        themeName: state.activeThemeId || theme || 'VetroTheme',
         themePalette: activePalette,
         // v0.10 Frente H: indicadores (bookmarks) no formato PBIR, round-trip .pbip.
         bookmarks: (state.bookmarks || []).map((bm: any) => ({
@@ -426,8 +446,8 @@ export const Ribbon: React.FC<{
       <div className="flex items-center justify-between px-3 py-1 bg-slate-900 text-white text-xs">
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1.5 font-bold tracking-wide text-amber-400">
-            <img src="/icon.png" alt="PrismBI" className="w-4 h-4 rounded-xs" />
-            <span>PrismBI</span>
+            <img src="/icon.png" alt="VetroBI" className="w-4 h-4 rounded-xs" />
+            <span>VetroBI</span>
             {isTauriRuntime() && (
               <span className="ml-1 px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[9px] font-semibold">
                 DuckDB Nativo
@@ -452,14 +472,14 @@ export const Ribbon: React.FC<{
           <button
             onClick={() => setShowNewProjectModal(true)}
             className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-medium transition-colors text-[10px]"
-            title={t.topBar.newProjectTooltip}
+            title={`${t.topBar.newProjectTooltip} (${getShortcutHint('file.new')})`}
           >
             {t.topBar.newProject}
           </button>
           <button
             onClick={() => fileInputRef.current?.click()}
             className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-medium transition-colors text-[10px] flex items-center gap-1"
-            title={t.topBar.openInsightTooltip}
+            title={`${t.topBar.openInsightTooltip} (${getShortcutHint('file.open')})`}
           >
             <FolderOpen className="w-3 h-3 text-amber-400" />
             <span>{t.topBar.openInsight}</span>
@@ -549,7 +569,7 @@ export const Ribbon: React.FC<{
           <button
             onClick={() => handleExportProject()}
             className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-medium transition-colors flex items-center gap-1 text-[10px]"
-            title={t.topBar.exportInsightTooltip}
+            title={`${t.topBar.exportInsightTooltip} (${getShortcutHint('file.saveAs')})`}
           >
             <FileDown className="w-3 h-3 text-amber-400" />
             <span>{t.topBar.exportInsight}</span>
@@ -557,6 +577,7 @@ export const Ribbon: React.FC<{
           <button
             onClick={() => saveProject()}
             className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-amber-300 font-medium transition-colors"
+            title={`${t.common.save} (${getShortcutHint('file.save')})`}
           >
             {t.common.save}
           </button>
@@ -718,7 +739,7 @@ export const Ribbon: React.FC<{
               <button
                 onClick={() => void refreshAllData()}
                 disabled={isRefreshingData}
-                title="Atualizar dados das fontes vinculadas (.xlsx, .csv, .parquet, .json, .pbip, REST) mantendo visuais, medidas e relacionamentos"
+                title={`Atualizar dados das fontes vinculadas (.xlsx, .csv, .parquet, .json, .pbip, REST) mantendo visuais, medidas e relacionamentos (${getShortcutHint('data.refresh')})`}
                 className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-60 text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <RefreshCw
@@ -776,7 +797,7 @@ export const Ribbon: React.FC<{
               <button
                 onClick={() => window.print()}
                 className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
-                title="PDF / Print"
+                title={`PDF / Print (${getShortcutHint('file.exportPdf')})`}
               >
                 <Share2 className="w-5 h-5 text-slate-600 dark:text-slate-300" />
                 <span className="text-[10px] font-semibold mt-0.5">PDF</span>
@@ -1171,6 +1192,14 @@ export const Ribbon: React.FC<{
               >
                 <Info className="w-5 h-5 text-amber-600 dark:text-amber-400" />
                 <span className="text-[10px] font-semibold mt-0.5">{t.nav.limitations}</span>
+              </button>
+              <button
+                onClick={() => setShortcutsModalOpen(true)}
+                className="flex flex-col items-center p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
+                title={`${t.shortcuts.menuItem} (${getShortcutHint('help.shortcuts')})`}
+              >
+                <Keyboard className="w-5 h-5 text-amber-500" />
+                <span className="text-[10px] font-semibold mt-0.5">{t.shortcuts.menuItem}</span>
               </button>
               <button
                 onClick={() => setActiveView('governance')}

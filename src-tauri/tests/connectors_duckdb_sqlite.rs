@@ -12,9 +12,9 @@
 //! sem um servidor real, por isso cobrimos apenas geração/escaping de SQL
 //! (ver `connectors::config::tests`) e os marcamos `#[ignore]` abaixo.
 
-use prismbi_lib::connectors::manager::ImportSource;
-use prismbi_lib::connectors::{ConnectionManager, ConnectorConfig};
-use prismbi_lib::engine::DuckDbStore;
+use vetrobi_lib::connectors::manager::ImportSource;
+use vetrobi_lib::connectors::{ConnectionManager, ConnectorConfig};
+use vetrobi_lib::engine::DuckDbStore;
 
 #[test]
 fn duckdb_file_connector_full_roundtrip_offline() {
@@ -181,7 +181,7 @@ fn duckdb_file_sql_import_survives_reconnect_like_refresh() {
 #[test]
 #[ignore = "requer servidor PostgreSQL real acessível pela rede; cobertura de geração de SQL em connectors::config::tests"]
 fn postgres_live_connection_smoke_test() {
-    live_server_roundtrip("PRISMBI_TEST_PG", |host, port, user, password, database| {
+    live_server_roundtrip("VETROBI_TEST_PG", |host, port, user, password, database| {
         ConnectorConfig::Postgres {
             host,
             port,
@@ -197,7 +197,7 @@ fn postgres_live_connection_smoke_test() {
 #[test]
 #[ignore = "requer servidor MySQL/MariaDB real acessível pela rede; cobertura de geração de SQL em connectors::config::tests"]
 fn mysql_live_connection_smoke_test() {
-    live_server_roundtrip("PRISMBI_TEST_MYSQL", |host, port, user, password, database| {
+    live_server_roundtrip("VETROBI_TEST_MYSQL", |host, port, user, password, database| {
         ConnectorConfig::Mysql { host, port, database: database.clone(), user, password: Some(password) }
     }, "loja");
 }

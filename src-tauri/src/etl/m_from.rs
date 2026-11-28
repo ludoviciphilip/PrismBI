@@ -774,7 +774,7 @@ impl<'a> Converter<'a> {
                         return one(s);
                     }
                 }
-                "PrismBI.DbTable" if args.len() == 1 => {
+                "VetroBI.DbTable" | "PrismBI.DbTable" if args.len() == 1 => {
                     if let Some(t) = text_of(&args[0]) {
                         let mut s = EtlSource::empty(SourceKind::Db);
                         s.table = Some(t);
@@ -1438,8 +1438,12 @@ impl<'a> Converter<'a> {
                 remove: u64_of(r)?,
                 keep: u64_of(k)?,
             },
-            ("PrismBI.KeepDuplicates", []) => StepKind::KeepDuplicates { columns: None },
-            ("PrismBI.KeepDuplicates", [c]) => StepKind::KeepDuplicates { columns: Some(text_list(c)?) },
+            ("VetroBI.KeepDuplicates" | "PrismBI.KeepDuplicates", []) => {
+                StepKind::KeepDuplicates { columns: None }
+            }
+            ("VetroBI.KeepDuplicates" | "PrismBI.KeepDuplicates", [c]) => {
+                StepKind::KeepDuplicates { columns: Some(text_list(c)?) }
+            }
             ("Table.ReplaceErrorValues", [specs]) => {
                 let items = specs.unparen().as_list()?;
                 let pairs: Vec<&[Expr]> = if items.len() == 2 && text_of(&items[0]).is_some() {
@@ -1478,5 +1482,27 @@ fn const_eval(e: &Expr, env: &HashMap<String, Scalar>) -> Option<Scalar> {
     match &e.unparen().kind {
         ExprKind::Ident(n) => env.get(n).cloned(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod legacy_brand_compat_tests {
+    use super::super::model::{SourceKind, StepKind};
+    use super::query_from_m;
+
+    #[test]
+    fn from_m_accepts_legacy_prismbi_db_table_and_keep_duplicates() {
+        let m = r#"let
+    Source = PrismBI.DbTable("vendas"),
+    Dups = PrismBI.KeepDuplicates(Source, {"Cliente"})
+in
+    Dups"#;
+        let parsed = query_from_m("vendas", m).expect("query_from_m");
+        assert_eq!(parsed.query.source.kind, SourceKind::Db);
+        assert_eq!(parsed.query.source.table.as_deref(), Some("vendas"));
+        assert!(matches!(
+            parsed.query.steps.first().map(|s| &s.kind),
+            Some(StepKind::KeepDuplicates { columns: Some(cols) }) if cols == &vec!["Cliente".to_string()]
+        ));
     }
 }

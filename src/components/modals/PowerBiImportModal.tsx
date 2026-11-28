@@ -81,7 +81,7 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({
 
   const handlePickNative = async () => {
     if (!isTauriRuntime()) {
-      setError('Abertura direta de .pbip/.pbix requer o app desktop PrismBI (Tauri).');
+      setError('Abertura direta de .pbip/.pbix requer o app desktop VetroBI (Tauri).');
       return;
     }
     const picked = await pickPowerBiFile();
@@ -610,7 +610,7 @@ export const PowerBiImportModal: React.FC<PowerBiImportModalProps> = ({
               className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-bold flex items-center gap-1.5 cursor-pointer"
             >
               <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>Carregar no PrismBI</span>
+              <span>Carregar no VetroBI</span>
             </button>
           </div>
         </div>

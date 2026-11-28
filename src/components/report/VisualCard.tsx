@@ -25,7 +25,7 @@ import {
 import { Visual, Filter as BiFilter } from '../../types/bi';
 import { useBiStore } from '../../store/useBiStore';
 import { globalDataEngine, formatValue, formatCurrency, formatNumber, formatPercent, getCurrencySymbol } from '../../engine/dataEngine';
-import { isTauriRuntime, queryVisualNative, NativeVisualQueryResult } from '../../bridge/tauriBridge';
+import { isTauriRuntime, queryVisualNative, queryTableNative, queryScatterNative, NativeVisualQueryResult, NativeTableQueryResult, NativeScatterQueryResult } from '../../bridge/tauriBridge';
 import { ErrorBoundary } from '../shared/ErrorBoundary';
 import { VisualCalculationModal } from '../modals/VisualCalculationModal';
 import { useTranslation } from '../../i18n';
@@ -45,6 +45,7 @@ import { getFieldFormat, cellStyleFromFormat, buildBarSeriesData, resolverFromRo
 import { FormattedCell } from './conditionalFormat/FormattedCell';
 import { resolveTooltipPage, buildTemporaryFilters, useTooltipHover, TooltipPopover } from './tooltipPage';
 import { useVisualDrill } from './drill';
+import { toNativeFilters } from './drill/engineQuery';
 import type { DrillFilterSpec } from '../../engine/drill';
 
 export interface SnapGuide {
@@ -410,17 +411,17 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
     visual.type !== 'action-button' &&
     visual.type !== 'textbox' &&
     visual.type !== 'table' &&
-    visual.type !== 'scatter' &&
-    !(visual.dataConfig.visualCalculations?.length || visual.visualCalculations?.length);
+    visual.type !== 'scatter';
 
-  // Visuals that fall back to supportsNativeRustQuery === false (table,
-  // scatter, visuals with quick-measure-style visualCalculations, or any
-  // non-Tauri run) compute their aggregation in JS off `table.rows`, which
-  // is only a PREVIEW_ROW_LIMIT-capped sample for DuckDB-backed tables —
-  // see docs/RUST_ENGINE_2.md §3 step 2. Rather than silently showing a
-  // wrong total, surface that the numbers are a sample.
+  // v0.11 Rodada 2, Frente E: table/scatter now have dedicated native paths
+  // below (`nativeTableResult`/`nativeScatterResult`), and visuals with
+  // Cálculos Visuais now run through `supportsNativeRustQuery` too (their
+  // formulas are sent as `visualCalculations` and evaluated in Rust — see
+  // `dax::visual_calcs::formula`). The sample badge now only applies to the
+  // pure-browser fallback (no Tauri runtime at all), which still aggregates
+  // the PREVIEW_ROW_LIMIT-capped `table.rows` in JS.
   const isSampleTruncated =
-    !supportsNativeRustQuery &&
+    !isTauriRuntime() &&
     visual.type !== 'action-button' &&
     visual.type !== 'textbox' &&
     Boolean(tables.find(t => t.id === visual.dataConfig.tableId)?.rowsTruncated);
@@ -457,6 +458,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       .map(f => ({
         tableId: f.tableId,
         column: f.column,
+        // v0.11 Frente H (item h): `between` (segmentador "Entre" and
+        // relative-date windows) stores its range as `value: [from, to]`.
+        // Spreading it straight into `values` with `Array.isArray(f.value)`
+        // (the old code) silently turned the range into a 2-value IN list,
+        // losing the operator — a between filter would match only the two
+        // endpoints instead of everything in between. Carry `f.operator`
+        // through so the Rust side (`NativeFilterInput.operator`,
+        // `FilterContext::range_filters`) can apply it as a real range.
+        operator: f.operator,
         values: Array.isArray(f.value) ? f.value : f.value !== undefined && f.value !== '' ? [f.value] : [],
       }))
       .filter(f => f.values.length > 0);
@@ -470,6 +480,11 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       yAxisFields: visual.dataConfig.yAxisFields || [],
       aggregation: visual.dataConfig.aggregation,
       filters: nativeFilters,
+      // v0.11 Rodada 2, Frente E: evaluated in Rust over this request's own
+      // categories/series grid — see `dax::visual_calcs::formula`.
+      visualCalculations: (visual.dataConfig.visualCalculations || visual.visualCalculations || [])
+        .filter(c => c.name && c.formula)
+        .map(c => ({ name: c.name, formula: c.formula })),
     })
       .then(res => {
         if (cancelled) return;
@@ -492,6 +507,114 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       cancelled = true;
     };
   }, [supportsNativeRustQuery, nativeCacheKey]);
+
+  // ===========================================================================
+  // v0.11 Rodada 2, Frente E: native "table" query — paginated (offset/limit),
+  // never loads `table.rows` (the 5.000-row preview). Total row + min/max for
+  // conditional-formatting gradients come from the engine over ALL rows, not
+  // just the returned page. TS fallback (`tsQueryResult.rawRows`) still backs
+  // the table render when not running under Tauri (demo/browser build).
+  // ===========================================================================
+  const NATIVE_TABLE_PAGE_SIZE = 50;
+  const [tableOffset, setTableOffset] = useState(0);
+  const [nativeTableResult, setNativeTableResult] = useState<NativeTableQueryResult | null>(null);
+  const tableSourceTable = useMemo(
+    () => tables.find(t => t.id === visual.dataConfig.tableId),
+    [tables, visual.dataConfig.tableId]
+  );
+  // Mirrors the previous TS table render, which only ever showed the first 6
+  // raw columns (`Object.keys(row).slice(0, 6)`).
+  const tableRawFields = useMemo(
+    () => (tableSourceTable?.columns || []).slice(0, 6).map(c => c.name),
+    [tableSourceTable]
+  );
+
+  useEffect(() => {
+    setTableOffset(0);
+    setNativeTableResult(null);
+  }, [visual.id, visual.dataConfig.tableId, visual.dataConfig.sortField, visual.dataConfig.sortOrder, visual.dataConfig.limit, filters, dataVersion]);
+
+  useEffect(() => {
+    if (visual.type !== 'table' || !isTauriRuntime() || tableRawFields.length === 0) return;
+    let cancelled = false;
+    const sortMeta = tableSourceTable?.columns.find(c => fieldMatches(c.name, visual.dataConfig.sortField));
+    queryTableNative({
+      tableId: visual.dataConfig.tableId,
+      rawFields: tableRawFields,
+      filters: toNativeFilters(filters),
+      sortField: visual.dataConfig.sortField,
+      sortByColumn: sortMeta?.sortByColumn,
+      sortOrder: visual.dataConfig.sortOrder === 'desc' ? 'desc' : 'asc',
+      topN: visual.dataConfig.limit || 0,
+      offset: tableOffset,
+      limit: NATIVE_TABLE_PAGE_SIZE,
+    })
+      .then(res => {
+        if (!cancelled) setNativeTableResult(res);
+      })
+      .catch(() => {
+        // Fallback seamlessly to the TS table render below.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    visual.type,
+    visual.id,
+    visual.dataConfig.tableId,
+    visual.dataConfig.sortField,
+    visual.dataConfig.sortOrder,
+    visual.dataConfig.limit,
+    tableRawFields,
+    tableSourceTable,
+    filters,
+    tableOffset,
+  ]);
+
+  // ===========================================================================
+  // v0.11 Rodada 2, Frente E: native "scatter" query — Power-BI-style
+  // deterministic point sampling (default ~3.500 points, `sampled` tells the
+  // UI to show an honest "mostrando N de M pontos" warning instead of
+  // silently dropping data).
+  // ===========================================================================
+  const [nativeScatterResult, setNativeScatterResult] = useState<NativeScatterQueryResult | null>(null);
+
+  useEffect(() => {
+    if (visual.type !== 'scatter' || !isTauriRuntime()) return;
+    const xField = visual.dataConfig.xAxisField;
+    const yField = visual.dataConfig.yAxisFields?.[0];
+    if (!xField || !yField) return;
+    let cancelled = false;
+    setNativeScatterResult(null);
+    queryScatterNative({
+      tableId: visual.dataConfig.tableId,
+      detailField: visual.dataConfig.legendField || xField,
+      xField,
+      yField,
+      legendField: visual.dataConfig.legendField,
+      aggregation: visual.dataConfig.aggregation,
+      filters: toNativeFilters(filters),
+    })
+      .then(res => {
+        if (!cancelled) setNativeScatterResult(res);
+      })
+      .catch(() => {
+        // Fallback seamlessly to the TS scatter render below.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    visual.type,
+    visual.id,
+    visual.dataConfig.tableId,
+    visual.dataConfig.xAxisField,
+    visual.dataConfig.yAxisFields,
+    visual.dataConfig.legendField,
+    visual.dataConfig.aggregation,
+    filters,
+    dataVersion,
+  ]);
 
   const queryResult = useMemo(() => {
     if (drill.chartResult) return { ...tsQueryResult, ...drill.chartResult };
@@ -747,7 +870,14 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               fontSize: 10,
               color: axisColor,
               textBorderWidth: 0,
-              formatter: (p: any) => (isYCurrency ? formatCurrency(p.value) : p.value >= 1000 ? `${(p.value / 1000).toFixed(0)}k` : p.value),
+              formatter: (p: any) =>
+                p.value === null || p.value === undefined
+                  ? ''
+                  : isYCurrency
+                  ? formatCurrency(p.value)
+                  : p.value >= 1000
+                  ? `${(p.value / 1000).toFixed(0)}k`
+                  : p.value,
             },
           })),
         };
@@ -993,7 +1123,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       case 'treemap': {
         const treeData = categories.map((cat, i) => ({
           name: cat,
-          value: series[0]?.data[i] || 0,
+          value: series[0]?.data[i] ?? 0,
         }));
         return {
           animation: false,
@@ -1319,10 +1449,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       }
 
       case 'scatter': {
-        const scatterData = queryResult.rawRows.map(r => [
-          Number(r[visual.dataConfig.xAxisField || 'KmRodado']) || 0,
-          Number(r[visual.dataConfig.yAxisFields?.[0] || 'CustoTotalViagem']) || 0,
-        ]);
+        // v0.11 Rodada 2, Frente E: prefer the native result (ALL points up to
+        // the deterministic sampling cap), fall back to the TS raw rows when
+        // not running under Tauri or the native query hasn't resolved yet.
+        const scatterData = nativeScatterResult
+          ? nativeScatterResult.points.map(p => [p.x ?? 0, p.y ?? 0])
+          : queryResult.rawRows.map(r => [
+              Number(r[visual.dataConfig.xAxisField || 'KmRodado']) || 0,
+              Number(r[visual.dataConfig.yAxisFields?.[0] || 'CustoTotalViagem']) || 0,
+            ]);
         return {
           animation: false,
           grid: baseGrid,
@@ -1355,7 +1490,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
       default:
         return {};
     }
-  }, [visual.type, visual.title, visual.dataConfig, visual.formatConfig, queryResult, activePalette, isDarkMode]);
+  }, [visual.type, visual.title, visual.dataConfig, visual.formatConfig, queryResult, nativeScatterResult, activePalette, isDarkMode]);
 
   const handleExportCSV = () => {
     if (!queryResult.rawRows.length) return;
@@ -1437,6 +1572,15 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               title="Este visual calcula no navegador (não no motor DAX nativo) e a tabela tem mais linhas do que a amostra pré-visualizada: o total pode não refletir todas as linhas."
             >
               ⚠ amostra de 5.000 linhas
+            </span>
+          )}
+          {visual.type === 'scatter' && nativeScatterResult?.sampled && (
+            <span
+              className="shrink-0 text-[10px] font-medium text-amber-700 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 rounded px-1 py-0.5"
+              title="Como no Power BI Desktop, a dispersão amostra os pontos de forma determinística para não sobrecarregar o gráfico; o cálculo do motor já considera todos os pontos."
+            >
+              mostrando {nativeScatterResult.points.length.toLocaleString('pt-BR')} de{' '}
+              {nativeScatterResult.totalPoints.toLocaleString('pt-BR')} pontos
             </span>
           )}
         </div>
@@ -1783,11 +1927,17 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
         ) : visual.type === 'matrix' ? (
           (() => {
             const { categories, series } = queryResult;
-            const colTotals = series.map(s => s.data.reduce((a, b) => a + (Number(b) || 0), 0));
-            const rowTotals = categories.map((_, rIdx) =>
-              series.reduce((sum, s) => sum + (Number(s.data[rIdx]) || 0), 0)
-            );
-            const grandTotal = rowTotals.reduce((a, b) => a + b, 0);
+            const onlyNums = (arr: (number | null | undefined)[]): number[] =>
+              arr.filter((v): v is number => v !== null && v !== undefined && Number.isFinite(v));
+            const sumNullable = (vals: (number | null | undefined)[]): number | null => {
+              const nums = onlyNums(vals);
+              return nums.length === 0 ? null : nums.reduce((a, b) => a + b, 0);
+            };
+            const colTotals = series.map(s => sumNullable(s.data));
+            const colTotalsNums = onlyNums(colTotals);
+            const rowTotals = categories.map((_, rIdx) => sumNullable(series.map(s => s.data[rIdx])));
+            const rowTotalsNums = onlyNums(rowTotals);
+            const grandTotal = sumNullable(rowTotals);
             const primaryY = visual.dataConfig.yAxisFields?.[0] || '';
             const useCurr = isCurrencyField(primaryY);
             const childHierarchyField = visual.dataConfig.drillFields?.[0];
@@ -1797,7 +1947,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               visual.dataConfig.sortField && matrixRowField && fieldMatches(visual.dataConfig.sortField, matrixRowField)
                 ? childHierarchyField
                 : visual.dataConfig.sortField;
-            const fmtCell = (val: number, colName?: string) => {
+            const fmtCell = (val: number | null | undefined, colName?: string) => {
+              if (val === null || val === undefined || Number.isNaN(val)) return '';
               if (colName) {
                 const m = measures.find(ms => ms.name.toLowerCase() === colName.toLowerCase());
                 if (m?.formatString) return formatValue(val, m.formatString);
@@ -1922,8 +2073,19 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                               </div>
                             </td>
                             {series.map(s => {
-                              const cellVal = Number(s.data[rIdx]) || 0;
-                              const cellFormat = getFieldFormat(activeFormats(visual), s.name, cellVal, s.data, resolverFromSeries(series, rIdx));
+                              const rawCell = s.data[rIdx];
+                              if (rawCell === null || rawCell === undefined || Number.isNaN(rawCell)) {
+                                return (
+                                  <td
+                                    key={s.name}
+                                    onMouseEnter={(e) => onCellMouseEnter(e, cat, visual.dataConfig.legendField ? s.name : undefined)}
+                                    onMouseLeave={onCellMouseLeave}
+                                    className="px-2.5 py-1 text-right font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap"
+                                  />
+                                );
+                              }
+                              const cellVal = Number(rawCell);
+                              const cellFormat = getFieldFormat(activeFormats(visual), s.name, cellVal, onlyNums(s.data), resolverFromSeries(series, rIdx));
                               return (
                                 <FormattedCell
                                   key={s.name}
@@ -1939,7 +2101,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                             {series.length > 1 && (
                               <td
                                 className="px-2.5 py-1 text-right font-mono font-bold text-slate-900 dark:text-slate-100 border-l border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 whitespace-nowrap"
-                                style={styleForTotalCell(activeFormats(visual), primaryY, rowTotals[rIdx], rowTotals)}
+                                style={rowTotals[rIdx] !== null ? styleForTotalCell(activeFormats(visual), primaryY, rowTotals[rIdx]!, rowTotalsNums) : undefined}
                               >
                                 {fmtCell(rowTotals[rIdx])}
                               </td>
@@ -1947,8 +2109,9 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                           </tr>
                           {isExpanded && childData && (() => {
                             const childRowTotals = childData.categories.map((_, ci) =>
-                              childData.series.reduce((sum, cs) => sum + (Number(cs.data[ci]) || 0), 0)
+                              sumNullable(childData.series.map(cs => cs.data[ci]))
                             );
+                            const childRowTotalsNums = onlyNums(childRowTotals);
                             return childData.categories.map((childCat, cIdx) => {
                               const childRowTotal = childRowTotals[cIdx];
                               return (
@@ -1963,14 +2126,14 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                                       key={s.name}
                                       className="px-2.5 py-1 text-right font-mono text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap"
                                     >
-                                      {fmtCell(Number(cs?.data[cIdx]) || 0, s.name)}
+                                      {fmtCell(cs?.data[cIdx] ?? null, s.name)}
                                     </td>
                                   );
                                 })}
                                 {series.length > 1 && (
                                   <td
                                     className="px-2.5 py-1 text-right font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 border-l border-slate-200 dark:border-slate-800 whitespace-nowrap"
-                                    style={styleForTotalCell(activeFormats(visual), primaryY, childRowTotal, childRowTotals)}
+                                    style={childRowTotal !== null ? styleForTotalCell(activeFormats(visual), primaryY, childRowTotal, childRowTotalsNums) : undefined}
                                   >
                                     {fmtCell(childRowTotal)}
                                   </td>
@@ -1992,7 +2155,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                         <td
                           key={series[cIdx]?.name || cIdx}
                           className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-900 dark:text-amber-300 border-t-2 border-slate-300 dark:border-slate-700 whitespace-nowrap"
-                          style={styleForTotalCell(activeFormats(visual), series[cIdx]?.name || '', tot, colTotals)}
+                          style={tot !== null ? styleForTotalCell(activeFormats(visual), series[cIdx]?.name || '', tot, colTotalsNums) : undefined}
                         >
                           {fmtCell(tot, series[cIdx]?.name)}
                         </td>
@@ -2000,7 +2163,7 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
                       {series.length > 1 && (
                         <td
                           className="bg-slate-100 dark:bg-slate-800 px-2.5 py-1.5 text-right font-mono text-slate-950 dark:text-amber-400 border-t-2 border-l border-slate-300 dark:border-slate-700 whitespace-nowrap"
-                          style={styleForTotalCell(activeFormats(visual), primaryY, grandTotal, [grandTotal])}
+                          style={grandTotal !== null ? styleForTotalCell(activeFormats(visual), primaryY, grandTotal, [grandTotal]) : undefined}
                         >
                           {fmtCell(grandTotal)}
                         </td>
@@ -2012,6 +2175,149 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
             );
           })()
         ) : visual.type === 'table' ? (
+          (() => {
+            // v0.11 Rodada 2, Frente E: native path — paginated, with the
+            // total row and column min/max computed by the engine over ALL
+            // rows (never `table.rows`, the 5.000-row preview). Falls back
+            // to the old TS raw-rows render when not under Tauri or the
+            // native query hasn't resolved yet (first paint).
+            if (nativeTableResult) {
+              const cols = nativeTableResult.columns;
+              const nativeRows = nativeTableResult.rows.map(r =>
+                Object.fromEntries(cols.map((c, i) => [c, r.values[i]]))
+              );
+              const minMax = nativeTableResult.columnMinMax || {};
+              const tableFormats = activeFormats(visual);
+              const totalRowVals = nativeTableResult.totalRow?.values;
+              const pageStart = tableOffset;
+              const pageEnd = Math.min(tableOffset + nativeRows.length, nativeTableResult.totalRowCount);
+              return (
+                <div className="w-full h-full flex flex-col">
+                  <div className="flex-1 overflow-auto text-xs">
+                    <table className="min-w-full divide-y divide-slate-200 dark:divide-slate-700 text-left">
+                      <thead className="bg-slate-50 dark:bg-slate-800 sticky top-0">
+                        <tr>
+                          {cols.map(col => (
+                            <th
+                              key={col}
+                              aria-sort={ariaSortFor(col)}
+                              onClick={() => applySortPatch(patchForHeaderClick(visual, col))}
+                              title={t.visualCard.sortColumnHint}
+                              className="group/th px-2 py-1 font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 cursor-pointer hover:text-amber-700 dark:hover:text-amber-400 select-none"
+                            >
+                              <span className="inline-flex items-center gap-1">
+                                {col}
+                                {renderSortArrow(col)}
+                              </span>
+                            </th>
+                          ))}
+                          <th className="px-1.5 py-1 font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 w-12 text-center">Drill</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-900">
+                        {nativeRows.map((row, i) => {
+                          const firstCol = cols[0] || 'Categoria';
+                          const firstVal = row[firstCol];
+                          return (
+                            <tr key={i} className="hover:bg-amber-50/50 dark:hover:bg-slate-800/60 group/row">
+                              {cols.map(col => {
+                                const colVal = row[col];
+                                // Gradient/data-bar domain over the FULL result (engine
+                                // min/max), not just this page — [min, max] is enough
+                                // since computeFormatForValue only takes Math.min/max.
+                                const mm = minMax[col];
+                                const colVisible = mm ? [mm[0], mm[1]] : [];
+                                const cellFormat = getFieldFormat(tableFormats, col, colVal, colVisible, resolverFromRows(nativeRows, row));
+                                return (
+                                  <FormattedCell
+                                    key={col}
+                                    format={cellFormat}
+                                    onClick={() => {
+                                      if (colVal !== undefined && colVal !== null) {
+                                        setCrossFilter(visual.dataConfig.tableId, col, colVal);
+                                        setDrillPop({ field: col, value: colVal });
+                                      }
+                                    }}
+                                    onMouseEnter={(e) => onCellMouseEnter(e, colVal, undefined, col)}
+                                    onMouseLeave={onCellMouseLeave}
+                                    className="px-2 py-1 text-slate-600 dark:text-slate-300 truncate max-w-[120px] cursor-pointer hover:text-amber-800 dark:hover:text-amber-400 hover:font-semibold"
+                                    title={`Filtrar ou detalhar por ${col}: ${colVal}`}
+                                  >
+                                    {typeof colVal === 'number' && isCurrencyField(col) ? formatCurrency(colVal) : String(colVal ?? '')}
+                                  </FormattedCell>
+                                );
+                              })}
+                              <td className="px-1 py-0.5 text-center">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const primaryCol = visual.dataConfig.xAxisField || firstCol;
+                                    const primaryVal = row[primaryCol] !== undefined ? row[primaryCol] : firstVal;
+                                    setDrillPop({ field: primaryCol, value: primaryVal });
+                                  }}
+                                  className="p-1 text-slate-400 hover:text-amber-700 dark:hover:text-amber-400 hover:bg-amber-100 dark:hover:bg-slate-800 rounded transition-colors"
+                                  title="Fazer Drill-Through nesta linha"
+                                >
+                                  <Target className="w-3 h-3" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                      {totalRowVals && (
+                        <tfoot className="bg-slate-100 dark:bg-slate-800 font-bold sticky bottom-0">
+                          <tr>
+                            {cols.map((col, i) => {
+                              const v = totalRowVals[i];
+                              return (
+                                <td
+                                  key={col}
+                                  className="px-2 py-1 text-slate-900 dark:text-amber-300 border-t-2 border-slate-300 dark:border-slate-700 whitespace-nowrap"
+                                >
+                                  {i === 0 && typeof v !== 'number' ? 'Total Geral' : typeof v === 'number' ? (isCurrencyField(col) ? formatCurrency(v) : formatNumber(v)) : ''}
+                                </td>
+                              );
+                            })}
+                            <td className="border-t-2 border-slate-300 dark:border-slate-700" />
+                          </tr>
+                        </tfoot>
+                      )}
+                    </table>
+                  </div>
+                  {/* v0.11 Rodada 2, Frente E: offset/limit pagination — never loads every row at once. */}
+                  <div className="flex items-center justify-between px-2 py-1 text-[11px] text-slate-500 dark:text-slate-400 border-t border-slate-100 dark:border-slate-800">
+                    <span>
+                      {nativeTableResult.totalRowCount === 0
+                        ? 'Sem linhas'
+                        : `${pageStart + 1}–${pageEnd} de ${nativeTableResult.totalRowCount.toLocaleString('pt-BR')} linhas`}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        disabled={tableOffset === 0}
+                        onClick={() => setTableOffset(Math.max(0, tableOffset - NATIVE_TABLE_PAGE_SIZE))}
+                        className="px-1.5 py-0.5 rounded hover:bg-slate-200/60 dark:hover:bg-slate-700/60 disabled:opacity-30 disabled:cursor-not-allowed"
+                        title="Página anterior"
+                      >
+                        <ArrowLeft className="w-3 h-3" />
+                      </button>
+                      <button
+                        disabled={pageEnd >= nativeTableResult.totalRowCount}
+                        onClick={() => setTableOffset(tableOffset + NATIVE_TABLE_PAGE_SIZE)}
+                        className="px-1.5 py-0.5 rounded hover:bg-slate-200/60 dark:hover:bg-slate-700/60 disabled:opacity-30 disabled:cursor-not-allowed"
+                        title="Próxima página"
+                      >
+                        <ArrowRight className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+
+            // Browser-only fallback (no Tauri runtime): aggregates `table.rows`
+            // (the PREVIEW_ROW_LIMIT-capped preview), same render as before E.
+            return (
           <div className="w-full h-full overflow-auto text-xs">
             <table className="min-w-full divide-y divide-slate-200 dark:divide-slate-700 text-left">
               <thead className="bg-slate-50 dark:bg-slate-800 sticky top-0">
@@ -2087,6 +2393,8 @@ export const VisualCard: React.FC<VisualCardProps> = React.memo(({ visual, isSel
               </tbody>
             </table>
           </div>
+            );
+          })()
         ) : (
           <ErrorBoundary fallbackTitle="Falha na renderização deste gráfico">
             <ReactECharts

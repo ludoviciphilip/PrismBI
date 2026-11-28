@@ -47,7 +47,7 @@ pub fn load_count_for_test() -> u64 {
     LOAD_COUNT.with(|c| c.get())
 }
 
-fn quote_ident(ident: &str) -> String {
+pub(crate) fn quote_ident(ident: &str) -> String {
     format!("\"{}\"", ident.replace('"', "\"\""))
 }
 
@@ -145,7 +145,7 @@ fn text_to_dax(s: &str, ct: ColumnType) -> DaxValue {
     }
 }
 
-fn value_ref_to_dax(vref: ValueRef<'_>, ct: ColumnType) -> DaxValue {
+pub(crate) fn value_ref_to_dax(vref: ValueRef<'_>, ct: ColumnType) -> DaxValue {
     match vref {
         ValueRef::Null => DaxValue::Blank,
         ValueRef::Boolean(b) => {
@@ -256,13 +256,242 @@ pub fn load_table_from_duckdb(
 
     LOAD_COUNT.with(|c| c.set(c.get() + 1));
 
-    Ok(super::DaxTableData {
+    Ok(super::DaxTableData { is_calculated: false, 
         name: table_name.to_string(),
         columns: col_names,
         col_index,
         col_types,
         rows,
+        sort_by_columns: HashMap::new(),
     })
+}
+
+/// v0.11 Frente G (Rodada 2, item 4): batch-reads `table_name` through
+/// DuckDB's Arrow interface (`Statement::query_arrow`, column-at-a-time
+/// `RecordBatch`es) instead of `Statement::query` + per-cell `row.get_ref`.
+/// Still produces the SAME `DaxTableData`/`DaxValue` shape as
+/// `load_table_from_duckdb` (no storage change, see `docs/RUST_ENGINE_2.md`
+/// §5.4/§3 item 2 — that bigger migration is out of scope here); this is
+/// only about how fast the cells get copied out of DuckDB.
+///
+/// Falls back to the row-by-row loader for ANY column whose Arrow
+/// `DataType` isn't one of the common ones DuckDB actually emits for our
+/// supported DAX column types — never half-converts a table.
+pub fn load_table_from_duckdb_arrow(
+    conn: &Connection,
+    table_name: &str,
+    declared_types: &[Option<String>],
+) -> Result<super::DaxTableData, String> {
+    use duckdb::arrow::array::{
+        Array, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int16Array, Int32Array,
+        Int64Array, Int8Array, LargeStringArray, StringArray, TimestampMicrosecondArray, UInt16Array, UInt32Array,
+        UInt64Array, UInt8Array,
+    };
+    use duckdb::arrow::datatypes::{DataType, TimeUnit};
+
+    let select_sql = format!("SELECT * FROM {}", quote_ident(table_name));
+    let mut stmt = conn
+        .prepare(&select_sql)
+        .map_err(|e| format!("Erro ao preparar leitura (arrow) de '{}': {}", table_name, e))?;
+    let arrow_iter = stmt
+        .query_arrow([])
+        .map_err(|e| format!("Erro ao executar leitura (arrow) de '{}': {}", table_name, e))?;
+    let schema = arrow_iter.get_schema();
+
+    let col_names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+    if col_names.is_empty() {
+        return Err(format!(
+            "Tabela DuckDB '{}' não existe ou não tem colunas (pode não ter sido recarregada ainda nesta sessão)",
+            table_name
+        ));
+    }
+    let col_types: Vec<ColumnType> = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(idx, f)| {
+            let base = match f.data_type() {
+                DataType::Boolean => ColumnType::Boolean,
+                DataType::Date32 | DataType::Date64 | DataType::Timestamp(_, _) => ColumnType::Date,
+                DataType::Float16 | DataType::Float32 | DataType::Float64 | DataType::Decimal128(_, _) => {
+                    ColumnType::Decimal
+                }
+                DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::UInt8
+                | DataType::UInt16
+                | DataType::UInt32
+                | DataType::UInt64 => ColumnType::Integer,
+                _ => ColumnType::Text,
+            };
+            let declared = declared_types.get(idx).and_then(|o| o.as_deref());
+            effective_column_type(declared, base)
+        })
+        .collect();
+
+    let mut rows: Vec<Vec<DaxValue>> = Vec::new();
+    for batch_res in arrow_iter {
+        let batch = batch_res;
+        let n = batch.num_rows();
+        let n_cols = batch.num_columns();
+        // One column extracted to a typed slice/array per batch, reused
+        // across all rows of the batch — this is the whole point: avoid
+        // one dynamic-dispatch `get_ref` FFI-ish call per CELL.
+        let cols: Vec<&dyn Array> = (0..n_cols).map(|c| batch.column(c).as_ref()).collect();
+        let base_row_len = rows.len();
+        rows.resize_with(base_row_len + n, Vec::new);
+        for c in 0..n_cols {
+            let arr = cols[c];
+            let ct = col_types[c];
+            macro_rules! fill_int {
+                ($arrty:ty) => {{
+                    let a = arr.as_any().downcast_ref::<$arrty>().ok_or_else(|| {
+                        format!("coluna {} de '{}': tipo Arrow inesperado", col_names[c], table_name)
+                    })?;
+                    for r in 0..n {
+                        rows[base_row_len + r].push(if a.is_null(r) { DaxValue::Blank } else { int_to_dax(a.value(r) as i64, ct) });
+                    }
+                }};
+            }
+            macro_rules! fill_float {
+                ($arrty:ty) => {{
+                    let a = arr.as_any().downcast_ref::<$arrty>().ok_or_else(|| {
+                        format!("coluna {} de '{}': tipo Arrow inesperado", col_names[c], table_name)
+                    })?;
+                    for r in 0..n {
+                        rows[base_row_len + r]
+                            .push(if a.is_null(r) { DaxValue::Blank } else { float_to_dax(a.value(r) as f64, ct) });
+                    }
+                }};
+            }
+            match arr.data_type() {
+                DataType::Int8 => fill_int!(Int8Array),
+                DataType::Int16 => fill_int!(Int16Array),
+                DataType::Int32 => fill_int!(Int32Array),
+                DataType::Int64 => fill_int!(Int64Array),
+                DataType::UInt8 => fill_int!(UInt8Array),
+                DataType::UInt16 => fill_int!(UInt16Array),
+                DataType::UInt32 => fill_int!(UInt32Array),
+                DataType::UInt64 => fill_int!(UInt64Array),
+                DataType::Float32 => fill_float!(Float32Array),
+                DataType::Float64 => fill_float!(Float64Array),
+                DataType::Boolean => {
+                    let a = arr
+                        .as_any()
+                        .downcast_ref::<BooleanArray>()
+                        .ok_or_else(|| format!("coluna {} de '{}': tipo Arrow inesperado", col_names[c], table_name))?;
+                    for r in 0..n {
+                        rows[base_row_len + r].push(if a.is_null(r) {
+                            DaxValue::Blank
+                        } else if ct == ColumnType::Text {
+                            DaxValue::Text(a.value(r).to_string())
+                        } else {
+                            DaxValue::Boolean(a.value(r))
+                        });
+                    }
+                }
+                DataType::Utf8 => {
+                    let a = arr
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .ok_or_else(|| format!("coluna {} de '{}': tipo Arrow inesperado", col_names[c], table_name))?;
+                    for r in 0..n {
+                        rows[base_row_len + r]
+                            .push(if a.is_null(r) { DaxValue::Blank } else { text_to_dax(a.value(r), ct) });
+                    }
+                }
+                DataType::LargeUtf8 => {
+                    let a = arr.as_any().downcast_ref::<LargeStringArray>().ok_or_else(|| {
+                        format!("coluna {} de '{}': tipo Arrow inesperado", col_names[c], table_name)
+                    })?;
+                    for r in 0..n {
+                        rows[base_row_len + r]
+                            .push(if a.is_null(r) { DaxValue::Blank } else { text_to_dax(a.value(r), ct) });
+                    }
+                }
+                DataType::Date32 => {
+                    let a = arr
+                        .as_any()
+                        .downcast_ref::<Date32Array>()
+                        .ok_or_else(|| format!("coluna {} de '{}': tipo Arrow inesperado", col_names[c], table_name))?;
+                    for r in 0..n {
+                        rows[base_row_len + r].push(if a.is_null(r) {
+                            DaxValue::Blank
+                        } else {
+                            DaxValue::DateTime(a.value(r) as f64 + SERIAL_EPOCH_OFFSET_DAYS)
+                        });
+                    }
+                }
+                DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                    let a = arr.as_any().downcast_ref::<TimestampMicrosecondArray>().ok_or_else(|| {
+                        format!("coluna {} de '{}': tipo Arrow inesperado", col_names[c], table_name)
+                    })?;
+                    for r in 0..n {
+                        rows[base_row_len + r].push(if a.is_null(r) {
+                            DaxValue::Blank
+                        } else {
+                            DaxValue::DateTime(a.value(r) as f64 / 86_400_000_000.0 + SERIAL_EPOCH_OFFSET_DAYS)
+                        });
+                    }
+                }
+                DataType::Decimal128(_, scale) => {
+                    let a = arr.as_any().downcast_ref::<Decimal128Array>().ok_or_else(|| {
+                        format!("coluna {} de '{}': tipo Arrow inesperado", col_names[c], table_name)
+                    })?;
+                    let div = 10f64.powi(*scale as i32);
+                    for r in 0..n {
+                        rows[base_row_len + r].push(if a.is_null(r) {
+                            DaxValue::Blank
+                        } else {
+                            float_to_dax(a.value(r) as f64 / div, ct)
+                        });
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "coluna {} de '{}': tipo Arrow {:?} sem conversão rápida (fallback para leitura linha a linha)",
+                        col_names[c], table_name, other
+                    ));
+                }
+            }
+        }
+    }
+
+    let mut col_index = HashMap::new();
+    for (idx, c) in col_names.iter().enumerate() {
+        col_index.insert(c.to_lowercase(), idx);
+    }
+
+    LOAD_COUNT.with(|c| c.set(c.get() + 1));
+
+    Ok(super::DaxTableData {
+        is_calculated: false,
+        name: table_name.to_string(),
+        columns: col_names,
+        col_index,
+        col_types,
+        rows,
+        sort_by_columns: HashMap::new(),
+    })
+}
+
+/// Tries the Arrow batch loader first (fast path, see
+/// `load_table_from_duckdb_arrow`'s docs); any error (an unsupported Arrow
+/// type, or a DuckDB-side failure) falls back to the always-correct
+/// row-by-row `load_table_from_duckdb`. Never returns a partially-converted
+/// table: the Arrow loader either converts the WHOLE table or bails before
+/// producing any `DaxTableData` at all.
+pub fn load_table_from_duckdb_fast(
+    conn: &Connection,
+    table_name: &str,
+    declared_types: &[Option<String>],
+) -> Result<super::DaxTableData, String> {
+    match load_table_from_duckdb_arrow(conn, table_name, declared_types) {
+        Ok(data) => Ok(data),
+        Err(_arrow_err) => load_table_from_duckdb(conn, table_name, declared_types),
+    }
 }
 
 /// Step 1 of `sync_model_to_rust`: loads every DuckDB-backed table whose
@@ -279,6 +508,10 @@ pub fn load_changed_tables(
         if get_last_sync_version(duckdb_name) == Some(current_version) {
             continue; // unchanged since the last sync: DaxModel reuses its cache.
         }
+        // The Arrow loader (`load_table_from_duckdb_fast`) measured only ~8%
+        // faster for 10M rows but +38% peak RAM (1.23 -> 1.70 GB, see
+        // docs/RUST_ENGINE_2.md §5.8). Peak RAM matters more on the laptops
+        // that open big models, so production keeps the row-by-row loader.
         match load_table_from_duckdb(conn, duckdb_name, &t.column_types) {
             Ok(data) => {
                 set_last_sync_version(duckdb_name, current_version);
@@ -292,4 +525,143 @@ pub fn load_changed_tables(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duckdb::Connection;
+    use std::time::Instant;
+
+    /// v0.11 Frente G (Rodada 2, item 4): `load_table_from_duckdb_arrow`
+    /// (and the `load_table_from_duckdb_fast` wrapper around it) must
+    /// produce EXACTLY the same `DaxTableData` as the always-correct
+    /// row-by-row `load_table_from_duckdb` — same columns, same types, same
+    /// `DaxValue` per cell, BLANK included — across every column type this
+    /// engine supports: integer, decimal, text, boolean, date, declared
+    /// currency/percentage, and NULLs in each.
+    #[test]
+    fn arrow_loader_matches_row_by_row_loader_for_every_supported_type() {
+        let conn = Connection::open_in_memory().expect("open duckdb");
+        conn.execute_batch(
+            "CREATE TABLE tipos (
+                i INTEGER, big BIGINT, f DOUBLE, t VARCHAR, b BOOLEAN, d DATE, cur DOUBLE, pct DOUBLE
+             );
+             INSERT INTO tipos VALUES
+                (1, 10, 1.5, 'a', true, '2026-01-10', 19.99, 0.5),
+                (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+                (-3, -40, -2.25, 'texto com espaço', false, '2026-12-31', 0.0, 1.0);",
+        )
+        .expect("seed tipos");
+
+        let declared: Vec<Option<String>> = vec![
+            Some("number".into()),
+            Some("number".into()),
+            Some("number".into()),
+            Some("text".into()),
+            Some("boolean".into()),
+            Some("date".into()),
+            Some("currency".into()),
+            Some("percentage".into()),
+        ];
+
+        let row_by_row = load_table_from_duckdb(&conn, "tipos", &declared).expect("row-by-row load");
+        let arrow = load_table_from_duckdb_arrow(&conn, "tipos", &declared).expect("arrow load must fire for these plain types");
+        let fast = load_table_from_duckdb_fast(&conn, "tipos", &declared).expect("fast wrapper load");
+
+        assert_eq!(row_by_row.columns, arrow.columns);
+        assert_eq!(row_by_row.col_types, arrow.col_types);
+        assert_eq!(row_by_row.rows, arrow.rows, "arrow loader rows differ from row-by-row loader");
+        assert_eq!(row_by_row.rows, fast.rows);
+    }
+
+    /// Same comparison, but letting type inference run (no declared types),
+    /// matching how most real projects sync tables today.
+    #[test]
+    fn arrow_loader_matches_row_by_row_loader_with_inferred_types() {
+        let conn = Connection::open_in_memory().expect("open duckdb");
+        conn.execute_batch(
+            "CREATE TABLE infer (CatID INTEGER, Categoria VARCHAR, Valor DOUBLE);
+             INSERT INTO infer VALUES (1, 'A', 100.0), (2, NULL, NULL), (3, 'C', -5.5);",
+        )
+        .expect("seed infer");
+        let declared: Vec<Option<String>> = vec![None, None, None];
+        let row_by_row = load_table_from_duckdb(&conn, "infer", &declared).expect("row-by-row load");
+        let arrow = load_table_from_duckdb_arrow(&conn, "infer", &declared).expect("arrow load");
+        assert_eq!(row_by_row.col_types, arrow.col_types);
+        assert_eq!(row_by_row.rows, arrow.rows);
+    }
+
+    /// 10k rows across a batch boundary (DuckDB's Arrow interface yields
+    /// multiple `RecordBatch`es past its internal vector size), checked
+    /// with a closed-form sum so a batch-boundary bug (off-by-one row
+    /// count, a column re-sliced wrong between batches) would show up as a
+    /// wrong total, not just a row-count mismatch.
+    #[test]
+    fn arrow_loader_matches_row_by_row_loader_across_many_batches() {
+        let conn = Connection::open_in_memory().expect("open duckdb");
+        conn.execute_batch(
+            "CREATE TABLE many AS SELECT i AS Id, CAST(i AS DOUBLE) AS Valor FROM range(1, 10001) AS t(i)",
+        )
+        .expect("seed many");
+        let declared: Vec<Option<String>> = vec![Some("number".into()), Some("number".into())];
+        let row_by_row = load_table_from_duckdb(&conn, "many", &declared).expect("row-by-row load");
+        let arrow = load_table_from_duckdb_arrow(&conn, "many", &declared).expect("arrow load");
+        assert_eq!(row_by_row.rows.len(), 10_000);
+        assert_eq!(arrow.rows.len(), 10_000);
+        assert_eq!(row_by_row.rows, arrow.rows);
+        let sum: f64 = arrow.rows.iter().filter_map(|r| r[1].as_f64()).sum();
+        assert_eq!(sum, 10_000.0 * 10_001.0 / 2.0);
+    }
+
+    fn vm_hwm_kb() -> Option<u64> {
+        std::fs::read_to_string("/proc/self/status").ok().and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmHWM:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|n| n.parse().ok())
+        })
+    }
+
+    /// v0.11 Frente G (Rodada 2, item 4): release-only before/after of the
+    /// load step itself (`load_table_from_duckdb` row-by-row vs
+    /// `load_table_from_duckdb_arrow` batched), 10M rows, 2 columns
+    /// (matches the shape `docs/V011.md`/`docs/RUST_ENGINE_2.md` §5 Rodada
+    /// 1 already measured at ~1.25s). Both are checked against the closed
+    /// form `SUM(i, i=1..N) = N(N+1)/2` so a faster-but-wrong loader can't
+    /// pass. Run via `cargo test --release --lib -- --ignored --nocapture
+    /// bench_load_arrow_vs_row_by_row_10_million_rows`.
+    #[test]
+    #[ignore]
+    fn bench_load_arrow_vs_row_by_row_10_million_rows() {
+        let n: i64 = 10_000_000;
+        let conn = Connection::open_in_memory().expect("open duckdb");
+        conn.execute_batch(&format!(
+            "CREATE TABLE big_load AS SELECT i AS Id, CAST(i AS DOUBLE) AS Valor FROM range(1, {}) AS t(i)",
+            n + 1
+        ))
+        .expect("seed big_load");
+        let declared: Vec<Option<String>> = vec![Some("number".into()), Some("number".into())];
+        let expected_sum = (n as f64) * (n as f64 + 1.0) / 2.0;
+
+        let hwm0 = vm_hwm_kb();
+        let t0 = Instant::now();
+        let row_by_row = load_table_from_duckdb(&conn, "big_load", &declared).expect("row-by-row load");
+        let row_elapsed = t0.elapsed();
+        let hwm1 = vm_hwm_kb();
+        let sum_rr: f64 = row_by_row.rows.iter().filter_map(|r| r[1].as_f64()).sum();
+        assert!((sum_rr - expected_sum).abs() < 1.0);
+        drop(row_by_row);
+
+        let t1 = Instant::now();
+        let arrow = load_table_from_duckdb_arrow(&conn, "big_load", &declared).expect("arrow load");
+        let arrow_elapsed = t1.elapsed();
+        let hwm2 = vm_hwm_kb();
+        let sum_arrow: f64 = arrow.rows.iter().filter_map(|r| r[1].as_f64()).sum();
+        assert!((sum_arrow - expected_sum).abs() < 1.0);
+
+        println!(
+            "bench_load_arrow_vs_row_by_row_10_million_rows: N={n}\n  row-by-row: {row_elapsed:?}, VmHWM {hwm0:?} -> {hwm1:?} KB\n  arrow:      {arrow_elapsed:?}, VmHWM -> {hwm2:?} KB"
+        );
+    }
 }

@@ -1,12 +1,12 @@
 [package]
-name = "prismbi"
-version = "0.10.0"
-description = "PrismBI — Native Business Intelligence powered by Rust & DuckDB (Linux & Windows)"
+name = "vetrobi"
+version = "0.11.0"
+description = "VetroBI — Native Business Intelligence powered by Rust & DuckDB (Linux & Windows)"
 authors = ["Luis Felipe de Almeida Vieira"]
 edition = "2021"
 
 [lib]
-name = "prismbi_lib"
+name = "vetrobi_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -42,7 +42,7 @@ keyring = { version = "3", features = ["apple-native"] }
 tempfile = "3"
 
 # Debuginfo completo de DuckDB/arrow/gtk gerava ~4 GB por build de debug
-# (libprismbi_lib.a + .so) e o target/ chegou a 107 GB. Só tabelas de linha
+# (libvetrobi_lib.a + .so) e o target/ chegou a 107 GB. Só tabelas de linha
 # para o crate do app (backtraces úteis) e nada para dependências.
 [profile.dev]
 debug = "line-tables-only"

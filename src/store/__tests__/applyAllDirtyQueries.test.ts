@@ -138,7 +138,7 @@ describe('Power Query dirty tracking + applyAllDirtyQueries', () => {
 
     const before = globalDataEngine.queryVisualData(visual, []);
     expect([...before.categories].sort()).toEqual(['Eletrônicos', 'Mobiliário']);
-    expect(before.series[0].data.reduce((a, b) => a + b, 0)).toBe(350);
+    expect(before.series[0].data.reduce<number>((a, b) => a + (b ?? 0), 0)).toBe(350);
 
     apply.mockResolvedValue({
       columns: [{ name: 'Categoria', originalName: 'Categoria', dataType: 'text' }, { name: 'Valor', originalName: 'Valor', dataType: 'number' }],
@@ -155,7 +155,7 @@ describe('Power Query dirty tracking + applyAllDirtyQueries', () => {
     // não deveria ser preciso fazer mais nada para o visual "ver" o novo dado.
     const after = globalDataEngine.queryVisualData(visual, []);
     expect(after.categories).toEqual(['Eletrônicos']);
-    expect(after.series[0].data.reduce((a, b) => a + b, 0)).toBe(150);
+    expect(after.series[0].data.reduce<number>((a, b) => a + (b ?? 0), 0)).toBe(150);
   });
 
   it('stops at the first failing query, reports which one/step failed, and keeps the query dirty', async () => {

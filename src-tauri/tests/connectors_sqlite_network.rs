@@ -5,9 +5,9 @@
 //! possa excluí-lo facilmente (`cargo test --workspace --exclude-tests
 //! connectors_sqlite_network`, ou simplesmente ignorar falhas deste alvo).
 
-use prismbi_lib::connectors::manager::ImportSource;
-use prismbi_lib::connectors::{ConnectionManager, ConnectorConfig};
-use prismbi_lib::engine::DuckDbStore;
+use vetrobi_lib::connectors::manager::ImportSource;
+use vetrobi_lib::connectors::{ConnectionManager, ConnectorConfig};
+use vetrobi_lib::engine::DuckDbStore;
 
 #[test]
 fn sqlite_connector_full_roundtrip_via_duckdb_attach() {

@@ -16,6 +16,7 @@ import {
   buildPathFilters,
   canDrillDown,
   canDrillUp,
+  describeDrillFilterSpecs,
   drillDownOnPointPatch,
   drillUpPatch,
   expandAllLevelsPatch,
@@ -25,12 +26,13 @@ import {
   goToNextLevelPatch,
   groupingLevels,
   resolveDrillLevels,
+  resolveMatrixColumnLevels,
   resolveMatrixRowLevels,
 } from '../../../engine/drill';
 import {
   baseNativeRequest,
   levelsFromNative,
-  matrixFromNative,
+  matrixFromNativeWithColumns,
   queryLevelsTs,
   queryMatrixTs,
   toNativeDrillFilters,
@@ -62,7 +64,7 @@ export function makeColumnTypeLookup(tables: Table[], baseTableId: string) {
 
 export interface VisualDrill {
   /** Resultado do eixo hierárquico (já ordenado); null = visual sem hierarquia (caminho antigo). */
-  chartResult: { categories: string[]; series: { name: string; data: number[] }[] } | null;
+  chartResult: { categories: string[]; series: { name: string; data: (number | null)[] }[] } | null;
   hoverProps: Pick<React.HTMLAttributes<HTMLDivElement>, 'onMouseEnter' | 'onMouseLeave' | 'onFocusCapture'>;
   header: React.ReactNode;
   overlay: React.ReactNode;
@@ -113,6 +115,7 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
   const dataVersion = useBiStore(s => s.dataVersion);
   const updateVisual = useBiStore(s => s.updateVisual);
   const setCrossFilter = useBiStore(s => s.setCrossFilter);
+  const setDrillCrossFilter = useBiStore(s => s.setDrillCrossFilter);
   const { t } = useTranslation();
   const dc = visual.dataConfig;
   const typeOf = useMemo(() => makeColumnTypeLookup(tables, dc.tableId), [tables, dc.tableId]);
@@ -123,6 +126,9 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
   const [drillOn, setDrillOn] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; keys: unknown[] } | null>(null);
   const [expansion, setExpansion] = useState<MatrixExpansion>(() => dc.matrixExpansion ?? COLLAPSED_MATRIX);
+  // v0.11 Rodada 2 (Frente I): mesma lógica da expansão de linhas, eixo independente.
+  const [columnExpansion, setColumnExpansion] = useState<MatrixExpansion>(() => dc.matrixColumnExpansion ?? COLLAPSED_MATRIX);
+  const [matrixAxis, setMatrixAxis] = useState<'rows' | 'columns'>(dc.matrixDrillAxis ?? 'rows');
   // v0.10 Rodada 2 (seams E↔G): a expansão da matriz é estado local (não persistido
   // no projeto), mas um indicador (Bookmark) PRECISA restaurá-la. `dc.matrixExpansion`
   // só muda quando algo de fora (a aplicação do indicador) grava um valor novo — a
@@ -135,6 +141,13 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
       setExpansion(dc.matrixExpansion ?? COLLAPSED_MATRIX);
     }
   }, [dc.matrixExpansion]);
+  const lastSyncedColumnExpansion = useRef(dc.matrixColumnExpansion);
+  useEffect(() => {
+    if (dc.matrixColumnExpansion !== lastSyncedColumnExpansion.current) {
+      lastSyncedColumnExpansion.current = dc.matrixColumnExpansion;
+      setColumnExpansion(dc.matrixColumnExpansion ?? COLLAPSED_MATRIX);
+    }
+  }, [dc.matrixColumnExpansion]);
 
   const applyPatch = useCallback(
     (patch: Partial<Visual['dataConfig']> | null) => {
@@ -219,6 +232,16 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
           return true;
         }
       }
+      // v0.11 Frente D: cross-filter a partir de um ponto drillado de data (ano/trimestre/
+      // mês/dia) ou de um rótulo concatenado (modo expandido) — ancestrais + nível(is)
+      // atual(is), sempre pela parte de data quando aplicável (nunca pelo rótulo cru).
+      const specs = buildHoverFilters(state, chartLevels, keys);
+      if (specs.some(s => s.datePart) || specs.length > 1) {
+        setDrillCrossFilter(
+          specs.map(s => ({ field: s.field, datePart: s.datePart, value: s.value, label: describeDrillFilterSpecs(chartLevels, [s]) }))
+        );
+        return true;
+      }
       // Filtro cruzado pelo campo do nível atual (não pelo campo original do eixo).
       if (plainLevel) {
         setCrossFilter(dc.tableId, plainLevel.field, keys[0]);
@@ -226,7 +249,7 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
       }
       return true;
     },
-    [chartActive, sortedChart, drillOn, dc, chartLevels, applyPatch, plainLevel, setCrossFilter]
+    [chartActive, sortedChart, drillOn, dc, chartLevels, applyPatch, plainLevel, setCrossFilter, setDrillCrossFilter, state]
   );
 
   const handleContextMenu = useCallback(
@@ -271,18 +294,48 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
     () => (visual.type === 'matrix' ? resolveMatrixRowLevels(dc, typeOf) : []),
     [visual.type, dc, typeOf]
   );
+  // v0.11 Rodada 2 (Frente I): níveis das COLUNAS (N níveis), eixo independente.
+  const matrixColumnLevels: DrillLevel[] = useMemo(
+    () => (visual.type === 'matrix' ? resolveMatrixColumnLevels(dc, typeOf) : []),
+    [visual.type, dc, typeOf]
+  );
+  const hasColumnLevels = matrixColumnLevels.length > 0;
   // `matrixActive` (UI: header de drill) só com hierarquia própria; a consulta roda
   // também só com `extraDrillFilters` (dica de página, seams F↔G), igual ao gráfico.
-  const matrixActive = matrixLevels.length > 1;
+  const matrixActive = matrixLevels.length > 1 || matrixColumnLevels.length > 1;
   const matrixQueryActive = matrixLevels.length > 0 && (matrixActive || hasExtraDrill);
   const matrixKey = matrixQueryActive
-    ? JSON.stringify([dataVersion, tables.length, measuresCount, visual.id, dc.tableId, dc.yAxisFields, dc.legendField, dc.aggregation, matrixLevels, expansion, filters, extraDrillFilters])
+    ? JSON.stringify([
+        dataVersion,
+        tables.length,
+        measuresCount,
+        visual.id,
+        dc.tableId,
+        dc.yAxisFields,
+        dc.legendField,
+        dc.aggregation,
+        matrixLevels,
+        expansion,
+        matrixColumnLevels,
+        columnExpansion,
+        filters,
+        extraDrillFilters,
+      ])
     : '';
   const matrixQuery = useEngineQuery(
     matrixKey,
     matrixQueryActive,
     opts.native,
-    () => queryMatrixTs(globalDataEngine, { visual, filters, levels: matrixLevels, expansion, drillFilters: extraDrillFilters }),
+    () =>
+      queryMatrixTs(globalDataEngine, {
+        visual,
+        filters,
+        levels: matrixLevels,
+        expansion,
+        drillFilters: extraDrillFilters,
+        columnLevels: hasColumnLevels ? matrixColumnLevels : undefined,
+        columnExpansion: hasColumnLevels ? columnExpansion : undefined,
+      }),
     () =>
       queryVisualNative({
         ...baseNativeRequest(visual, filters),
@@ -292,11 +345,23 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
         matrixExpanded: expansion.expanded.map(id => JSON.parse(id) as unknown[]),
         matrixCollapsed: expansion.collapsed.map(id => JSON.parse(id) as unknown[]),
         drillFilters: toNativeDrillFilters(extraDrillFilters),
-      }).then(r => matrixFromNative(r, matrixLevels))
+        ...(hasColumnLevels
+          ? {
+              matrixColumns: toNativeLevels(matrixColumnLevels),
+              matrixColumnExpandDepth: columnExpansion.depth,
+              matrixColumnExpanded: columnExpansion.expanded.map(id => JSON.parse(id) as unknown[]),
+              matrixColumnCollapsed: columnExpansion.collapsed.map(id => JSON.parse(id) as unknown[]),
+            }
+          : {}),
+      }).then(r => matrixFromNativeWithColumns(r, matrixLevels, matrixColumnLevels))
   );
 
   const canExpandMatrix = expansion.depth < matrixLevels.length - 1 || expansion.collapsed.length > 0;
   const canCollapseMatrix = expansion.depth > 0 || expansion.expanded.length > 0;
+  const canExpandMatrixCols = columnExpansion.depth < matrixColumnLevels.length - 1 || columnExpansion.collapsed.length > 0;
+  const canCollapseMatrixCols = columnExpansion.depth > 0 || columnExpansion.expanded.length > 0;
+  // Qual eixo os controles de +/−/expandir tudo (cabeçalho do visual) afetam agora.
+  const effectiveAxis: 'rows' | 'columns' = matrixColumnLevels.length > 1 ? matrixAxis : 'rows';
 
   let header: React.ReactNode = null;
   if (hovered && chartActive) {
@@ -317,11 +382,19 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
   } else if (hovered && matrixActive) {
     header = (
       <MatrixDrillControls
-        canExpand={canExpandMatrix}
-        canCollapse={canCollapseMatrix}
-        onExpandOneLevel={() => setExpansion(e => expandOneLevel(e, matrixLevels.length))}
-        onExpandAll={() => setExpansion(expandAllMatrix(matrixLevels.length))}
-        onCollapseAll={() => setExpansion(COLLAPSED_MATRIX)}
+        canExpand={effectiveAxis === 'columns' ? canExpandMatrixCols : canExpandMatrix}
+        canCollapse={effectiveAxis === 'columns' ? canCollapseMatrixCols : canCollapseMatrix}
+        onExpandOneLevel={() =>
+          effectiveAxis === 'columns'
+            ? setColumnExpansion(e => expandOneLevel(e, matrixColumnLevels.length))
+            : setExpansion(e => expandOneLevel(e, matrixLevels.length))
+        }
+        onExpandAll={() =>
+          effectiveAxis === 'columns' ? setColumnExpansion(expandAllMatrix(matrixColumnLevels.length)) : setExpansion(expandAllMatrix(matrixLevels.length))
+        }
+        onCollapseAll={() => (effectiveAxis === 'columns' ? setColumnExpansion(COLLAPSED_MATRIX) : setExpansion(COLLAPSED_MATRIX))}
+        axis={matrixColumnLevels.length > 1 ? effectiveAxis : undefined}
+        onToggleAxis={matrixColumnLevels.length > 1 ? () => setMatrixAxis(a => (a === 'rows' ? 'columns' : 'rows')) : undefined}
         t={t}
       />
     );
@@ -363,11 +436,17 @@ export function useVisualDrill(visual: Visual, filters: Filter[], opts: VisualDr
             error={matrixQuery.error}
             expansion={expansion}
             onExpansionChange={setExpansion}
+            columnLevels={matrixColumnLevels}
+            columnExpansion={columnExpansion}
+            onColumnExpansionChange={setColumnExpansion}
             isCurrencyField={isCurrencyField}
             onRowHover={
               onRowHover ? (e, path) => onRowHover(e, buildPathFilters(matrixLevels, path)) : undefined
             }
             onRowLeave={onRowLeave}
+            onCellHover={
+              onRowHover ? (e, rowPath, colPath) => onRowHover(e, [...buildPathFilters(matrixLevels, rowPath), ...buildPathFilters(matrixColumnLevels, colPath)]) : undefined
+            }
           />
         )
       : null,

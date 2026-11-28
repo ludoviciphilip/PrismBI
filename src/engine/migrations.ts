@@ -400,6 +400,7 @@ export function migrateProjectState(rawState: any): ProjectState {
 
   return {
     version: CURRENT_ENGINE_VERSION,
+    projectId: rawState.projectId,
     projectName: rawState.projectName || 'Projeto InsightHub',
     tables: synced.tables,
     relationships: normalizedRelationships,

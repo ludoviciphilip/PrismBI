@@ -153,7 +153,7 @@ primeiro registro do LLVM, que varia por binário/instanciação genérica).
 | `updater::check_for_updates`, `download_and_install_update`, `http_get_bytes` | Fazem rede real contra a API do GitHub; a lógica pura por trás (`evaluate_release`, `parse_sha256sums`, `verify_detached_signature`) está 100% testada. |
 | `updater::detect_install_kind` | Lê `std::env::current_exe()` do processo de teste real; a versão pura testável (`classify_install`/`classify_install_windows`) está 100% testada. |
 | `dax::functions::pseudo_random_0_1`, `today_ymd` | Não-determinísticos (relógio/estado de processo); sem valor esperado fixo para asserir. |
-| `main.rs` | Só chama `prismbi_lib::run()`; é o binário, não a lib testada. |
+| `main.rs` | Só chama `vetrobi_lib::run()`; é o binário, não a lib testada. |
 | Alguns ramos raros de `etl/m_from.rs` (renomeação de identificador livre), `pbi/pbip.rs` (texto de caixa de texto) e `etl/sql.rs` (timestamp de serial) | Exigem fixtures mais exóticos (`.pbip` com caixa de texto populada, M com variável livre renomeada) que não existem ainda no corpus de testes do projeto. |
 | `connectors/keyring_store.rs` (56%), `connectors/manager.rs` (73%) | Vários branches pedem um chaveiro Secret Service real ou conexão de rede a Postgres/MySQL/SQLite reais; os testes existentes já cobrem o caminho "sem rede"; o resto está marcado `#[ignore]` com uma mensagem explicando o requisito (ver `connectors_duckdb_sqlite.rs`). |
 

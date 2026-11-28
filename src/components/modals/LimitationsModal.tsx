@@ -29,7 +29,7 @@ export const LimitationsModal: React.FC = () => {
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Orientações essenciais para governança e uso responsável da plataforma (PrismBI {APP_VERSION}).
+                Orientações essenciais para governança e uso responsável da plataforma (VetroBI {APP_VERSION}).
               </p>
             </div>
           </div>
@@ -48,7 +48,7 @@ export const LimitationsModal: React.FC = () => {
             <div>
               <h4 className="font-bold text-slate-900 dark:text-slate-100 text-xs">Não é um ERP nem Sistema Fiscal/Contábil</h4>
               <p className="text-slate-600 dark:text-slate-300 text-[11px] mt-0.5 leading-relaxed">
-                O PrismBI é uma ferramenta analítica de suporte à decisão (Business Intelligence). Os números gerados não substituem demonstrações contábeis oficiais registradas nem livros fiscais regulatórios.
+                O VetroBI é uma ferramenta analítica de suporte à decisão (Business Intelligence). Os números gerados não substituem demonstrações contábeis oficiais registradas nem livros fiscais regulatórios.
               </p>
             </div>
           </div>

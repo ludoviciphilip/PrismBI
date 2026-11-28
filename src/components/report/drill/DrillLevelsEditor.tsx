@@ -2,6 +2,7 @@ import React from 'react';
 import { X } from 'lucide-react';
 import { Table, Visual, VisualDataConfig } from '../../../types/bi';
 import { makeColumnTypeLookup } from './useVisualDrill';
+import { useTranslation } from '../../../i18n';
 
 const SELECT_CLASS =
   'flex-1 min-w-0 w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded px-2 py-1 text-[12px] ' +
@@ -21,6 +22,8 @@ export interface DrillLevelsEditorProps {
  * Mês › Dia.
  */
 export const DrillLevelsEditor: React.FC<DrillLevelsEditorProps> = ({ visual, table, relatedTables, onChange }) => {
+  const { t } = useTranslation();
+  const de = t.drillEditor;
   const dc = visual.dataConfig;
   const isMatrix = visual.type === 'matrix';
   const x = dc.xAxisField;
@@ -33,7 +36,7 @@ export const DrillLevelsEditor: React.FC<DrillLevelsEditorProps> = ({ visual, ta
 
   const options: { value: string; label: string }[] = [
     ...(table?.columns || []).map(c => ({ value: c.name, label: c.name })),
-    ...relatedTables.flatMap(t => t.columns.map(c => ({ value: `${t.name}.${c.name}`, label: `${t.name}.${c.name}` }))),
+    ...relatedTables.flatMap(t2 => t2.columns.map(c => ({ value: `${t2.name}.${c.name}`, label: `${t2.name}.${c.name}` }))),
   ];
   const typeOf = makeColumnTypeLookup([...(table ? [table] : []), ...relatedTables], dc.tableId);
   const isDateAxis = Boolean(x) && typeOf(x || '') === 'date';
@@ -52,20 +55,20 @@ export const DrillLevelsEditor: React.FC<DrillLevelsEditorProps> = ({ visual, ta
     }
   };
 
-  const noAxisHint = isMatrix ? 'Escolha primeiro o campo das linhas' : 'Escolha primeiro o campo do eixo';
+  const noAxisHint = isMatrix ? de.chooseAxisFirstMatrix : de.chooseAxisFirstChart;
   const used = new Set([x, ...subs]);
 
   return (
     <div data-testid="drill-levels-editor">
       <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider block mb-1">
-        {isMatrix ? 'Linhas: níveis da hierarquia' : 'Hierarquia de drill (abaixo do eixo)'}
+        {isMatrix ? de.rowLevelsLabel : de.axisHierarchyLabel}
       </label>
       <div className="flex flex-col gap-1">
         {subs.map((field, i) => (
           <div key={`${i}:${field}`} className="flex items-center gap-1">
-            <span className="w-12 shrink-0 text-[10px] text-slate-500 dark:text-slate-400">Nível {i + 2}</span>
+            <span className="w-12 shrink-0 text-[10px] text-slate-500 dark:text-slate-400">{de.level.replace('{n}', String(i + 2))}</span>
             <select
-              aria-label={`Nível ${i + 2}`}
+              aria-label={de.level.replace('{n}', String(i + 2))}
               value={field}
               onChange={e => setSubs(subs.map((f, j) => (j === i ? e.target.value : f)))}
               className={SELECT_CLASS}
@@ -78,8 +81,8 @@ export const DrillLevelsEditor: React.FC<DrillLevelsEditorProps> = ({ visual, ta
             </select>
             <button
               type="button"
-              aria-label={`Remover nível ${i + 2}`}
-              title={`Remover o nível ${i + 2} da hierarquia`}
+              aria-label={de.removeLevel.replace('{n}', String(i + 2))}
+              title={de.removeLevel.replace('{n}', String(i + 2))}
               onClick={() => setSubs(subs.filter((_, j) => j !== i))}
               className="w-6 h-6 shrink-0 inline-flex items-center justify-center rounded text-slate-400 hover:text-red-600 hover:bg-slate-200/60 dark:hover:bg-slate-700/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
             >
@@ -88,14 +91,14 @@ export const DrillLevelsEditor: React.FC<DrillLevelsEditorProps> = ({ visual, ta
           </div>
         ))}
         <select
-          aria-label="Adicionar nível"
+          aria-label={de.addLevelAria}
           value=""
           disabled={!x}
-          title={x ? 'Adicionar um nível abaixo na hierarquia' : noAxisHint}
+          title={x ? de.addLevelTitle : noAxisHint}
           onChange={e => e.target.value && setSubs([...subs, e.target.value])}
           className={SELECT_CLASS}
         >
-          <option value="">+ Adicionar nível…</option>
+          <option value="">{de.addLevelOption}</option>
           {options
             .filter(o => !used.has(o.value))
             .map(o => (
@@ -118,7 +121,7 @@ export const DrillLevelsEditor: React.FC<DrillLevelsEditorProps> = ({ visual, ta
               }
               className="accent-amber-500"
             />
-            Hierarquia de data automática (Ano › Trimestre › Mês › Dia)
+            {de.autoDateHierarchy}
           </label>
         )}
       </div>

@@ -96,6 +96,24 @@ export function resolveMatrixRowLevels(dc: VisualDataConfig, typeOf: ColumnTypeL
   return resolveDrillLevels(dc, typeOf);
 }
 
+/**
+ * v0.11 Rodada 2 (Frente I): níveis das COLUNAS da matriz (N níveis), paridade
+ * com `resolveMatrixRowLevels` mas sem o espelho de `xAxisField` (o campo
+ * "Colunas" do painel é só `matrixColumnFields`; a migração copia a legenda
+ * antiga para o 1º nível — ver `migrations/drill.ts`). Com 1 nível só, igual
+ * às linhas, uma coluna de data com `drillMode` gravado ganha a hierarquia
+ * automática Ano → Trimestre → Mês → Dia.
+ */
+export function resolveMatrixColumnLevels(dc: VisualDataConfig, typeOf: ColumnTypeLookup): DrillLevel[] {
+  const stored = (dc.matrixColumnFields || []).filter(Boolean);
+  if (stored.length > 1) return stored.map(plainLevel);
+  if (stored.length === 1) {
+    if (dc.drillMode !== undefined && typeOf(stored[0]) === 'date') return dateHierarchy(stored[0]);
+    return [plainLevel(stored[0])];
+  }
+  return [];
+}
+
 export function getDrillState(dc: VisualDataConfig, levels: DrillLevel[]): DrillState {
   const max = Math.max(0, levels.length - 1);
   const raw = Number.isFinite(dc.currentDrillLevel) ? Math.trunc(dc.currentDrillLevel as number) : 0;
@@ -271,6 +289,22 @@ export function buildHoverFilters(state: DrillState, levels: DrillLevel[], point
   const ancestors = buildDrillPathFilters(state, levels);
   const current = buildPathFilters(groupingLevels(state, levels), pointKeys);
   return [...ancestors, ...current];
+}
+
+/**
+ * v0.11 Frente D: descreve um `DrillFilterSpec` para exibição legível no painel
+ * de Filtros (ex.: "Trimestre: Trim 2") — procura o `DrillLevel` correspondente
+ * (mesmo campo + mesma parte de data) para achar a legenda e formatar o valor.
+ */
+export function describeDrillFilterSpec(levels: DrillLevel[], spec: DrillFilterSpec): string {
+  const lv = levels.find(l => l.field === spec.field && (l.datePart ?? null) === (spec.datePart ?? null));
+  const caption = lv?.caption ?? spec.field;
+  return `${caption}: ${levelValueLabel(lv ?? { field: spec.field, caption }, spec.value)}`;
+}
+
+/** Descreve um caminho inteiro de `DrillFilterSpec[]` (ancestrais + nível atual), unidos por " · ". */
+export function describeDrillFilterSpecs(levels: DrillLevel[], specs: DrillFilterSpec[]): string {
+  return specs.map(s => describeDrillFilterSpec(levels, s)).join(' · ');
 }
 
 // --- Matriz: estado de expansão das linhas ---

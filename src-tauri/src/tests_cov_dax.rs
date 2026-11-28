@@ -228,7 +228,7 @@ fn combin_and_permut_known_values() {
 
 #[test]
 fn mid_and_trim_and_exact_text_edges() {
-    assert_eq!(eval("MID", &[t("PrismBI"), n(1.0), n(5.0)]), t("Prism"));
+    assert_eq!(eval("MID", &[t("VetroBI"), n(1.0), n(5.0)]), t("Vetro"));
     // Out-of-range start returns empty text, not an error.
     assert_eq!(eval("MID", &[t("abc"), n(10.0), n(3.0)]), t(""));
     assert_eq!(eval("TRIM", &[t("  spaced out  ")]), t("spaced out"));
@@ -238,12 +238,12 @@ fn mid_and_trim_and_exact_text_edges() {
 
 #[test]
 fn find_is_case_sensitive_search_is_not() {
-    assert_eq!(eval("FIND", &[t("i"), t("PrismBI")]), DaxValue::Integer(3));
-    // FIND is case-sensitive: uppercase "I" does not match lowercase "i" at 3,
-    // but does match the "BI" at position 6.
-    assert_eq!(eval("FIND", &[t("I"), t("PrismBI")]), DaxValue::Integer(7));
+    assert_eq!(eval("FIND", &[t("i"), t("BiVetroI")]), DaxValue::Integer(2));
+    // FIND is case-sensitive: uppercase "I" does not match lowercase "i" at 2,
+    // but does match the "I" at position 8.
+    assert_eq!(eval("FIND", &[t("I"), t("BiVetroI")]), DaxValue::Integer(8));
     // SEARCH is case-insensitive and finds the first occurrence regardless of case.
-    assert_eq!(eval("SEARCH", &[t("i"), t("PrismBI")]), DaxValue::Integer(3));
+    assert_eq!(eval("SEARCH", &[t("i"), t("BiVetroI")]), DaxValue::Integer(2));
 }
 
 #[test]
