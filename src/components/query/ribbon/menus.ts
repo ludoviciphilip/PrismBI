@@ -453,9 +453,19 @@ export function addColumnTab(): RibbonTabDef {
           action(
             'mergeColumnsNew',
             'Mesclar Colunas',
-            ctx => ctx.openParamDialog('Mesclar Colunas', [{ key: 'separator', label: 'Separador', type: 'text', defaultValue: '-' }], p =>
-              ctx.addStep({ op: 'addCustomColumn', newColumn: 'Mesclado', expression: ctx.selectedColumns.map(c => `[${c}]`).join(` & "${p.separator}" & `), name: 'Mesclado Adicionado' }),
-            ),
+            ctx => ctx.openParamDialog('Mesclar Colunas', [{ key: 'separator', label: 'Separador', type: 'text', defaultValue: '-' }], p => {
+              // Como no Power BI: qualquer tipo entra em Text.Combine (que
+              // converte com Text.From e ignora nulos), nunca o operador &
+              // puro, que exige texto nos dois lados.
+              const items = ctx.selectedColumns.map(c => (ctx.columnTypes[c] === 'text' ? `[${c}]` : `Text.From([${c}])`));
+              ctx.addStep({
+                op: 'addCustomColumn',
+                newColumn: 'Mesclado',
+                expression: `Text.Combine({${items.join(', ')}}, "${p.separator}")`,
+                type: 'text',
+                name: 'Mesclado Adicionado',
+              });
+            }),
             ctx => ctx.selectedColumns.length >= 2,
             'Selecione 2 ou mais colunas',
           ),

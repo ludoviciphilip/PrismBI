@@ -183,12 +183,32 @@ describe('Adicionar Coluna tab: always creates a new column', () => {
     expect(node.kind === 'action' && node.enabled?.(badCtx)).toBe(false);
   });
 
-  it('mergeColumnsNew keeps the originals (addCustomColumn, not mergeColumns)', () => {
+  it('mergeColumnsNew uses Text.Combine with Text.From for non-text columns (Power BI parity)', () => {
     const ctx = makeCtx({ selectedColumns: ['A', 'B'] });
     run(findInTab(addColumnTab(), 'mergeColumnsNew'), ctx);
     const [, , onSubmit] = ctx.openParamDialog.mock.calls[0];
     onSubmit({ separator: '-' });
-    expect(ctx.addStep).toHaveBeenCalledWith({ op: 'addCustomColumn', newColumn: 'Mesclado', expression: '[A] & "-" & [B]', name: 'Mesclado Adicionado' });
+    expect(ctx.addStep).toHaveBeenCalledWith({
+      op: 'addCustomColumn',
+      newColumn: 'Mesclado',
+      expression: 'Text.Combine({Text.From([A]), Text.From([B])}, "-")',
+      type: 'text',
+      name: 'Mesclado Adicionado',
+    });
+  });
+
+  it('mergeColumnsNew keeps a text column bare (no redundant Text.From)', () => {
+    const ctx = makeCtx({ selectedColumns: ['Nome', 'Valor'] });
+    run(findInTab(addColumnTab(), 'mergeColumnsNew'), ctx);
+    const [, , onSubmit] = ctx.openParamDialog.mock.calls[0];
+    onSubmit({ separator: '/' });
+    expect(ctx.addStep).toHaveBeenCalledWith({
+      op: 'addCustomColumn',
+      newColumn: 'Mesclado',
+      expression: 'Text.Combine({[Nome], Text.From([Valor])}, "/")',
+      type: 'text',
+      name: 'Mesclado Adicionado',
+    });
   });
 });
 
