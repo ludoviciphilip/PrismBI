@@ -389,7 +389,10 @@ export function transformTab(): RibbonTabDef {
 function moveColumns(ctx: RibbonCtx, dir: 'left' | 'right' | 'start' | 'end') {
   const order = [...ctx.allColumns];
   const sel = new Set(ctx.selectedColumns);
-  const selectedInOrder = order.filter(c => sel.has(c));
+  // Como no Power BI: o bloco movido segue a ORDEM DE SELEÇÃO (clique), não a
+  // ordem física da tabela — mesma regra do Mesclar Colunas/Remover Outras
+  // Colunas. Filtra só para descartar nomes que não existem mais na tabela.
+  const selectedInOrder = ctx.selectedColumns.filter(c => sel.has(c) && order.includes(c));
   const rest = order.filter(c => !sel.has(c));
   let next: string[];
   if (dir === 'start') next = [...selectedInOrder, ...rest];

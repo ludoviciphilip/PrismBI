@@ -123,6 +123,21 @@ describe('Transform tab: table / column ops', () => {
     expect(ctx.addStep).toHaveBeenCalledWith({ op: 'reorderColumns', columns: ['Valor', 'Nome', 'Data', 'A', 'B'], name: 'Colunas Reordenadas' });
   });
 
+  it('move keeps the SELECTION (click) order for the moved block, not the table order', () => {
+    // allColumns é ['Nome', 'Valor', 'Data', 'A', 'B']; o usuário clicou em
+    // 'B' primeiro e depois Ctrl+clicou em 'A' — selectedColumns chega nessa
+    // ordem de clique (['B', 'A']), invertida da ordem física da tabela.
+    const ctx = makeCtx({ selectedColumns: ['B', 'A'] });
+    run(findInTab(transformTab(), 'moveStart'), ctx);
+    expect(ctx.addStep).toHaveBeenCalledWith({ op: 'reorderColumns', columns: ['B', 'A', 'Nome', 'Valor', 'Data'], name: 'Colunas Reordenadas' });
+  });
+
+  it('move to end also keeps click order', () => {
+    const ctx = makeCtx({ selectedColumns: ['B', 'A'] });
+    run(findInTab(transformTab(), 'moveEnd'), ctx);
+    expect(ctx.addStep).toHaveBeenCalledWith({ op: 'reorderColumns', columns: ['Nome', 'Valor', 'Data', 'B', 'A'], name: 'Colunas Reordenadas' });
+  });
+
   it('text format "inplace-upper" emits transformColumns with Text.Upper(_)', () => {
     const ctx = makeCtx();
     run(findInTab(transformTab(), 'inplace-upper'), ctx);
@@ -206,6 +221,23 @@ describe('Adicionar Coluna tab: always creates a new column', () => {
       op: 'addCustomColumn',
       newColumn: 'Mesclado',
       expression: 'Text.Combine({[Nome], Text.From([Valor])}, "/")',
+      type: 'text',
+      name: 'Mesclado Adicionado',
+    });
+  });
+
+  it('mergeColumnsNew follows click (selection) order, not table order (Bug 1)', () => {
+    // allColumns é ['Nome', 'Valor', 'Data', 'A', 'B'] — fisicamente A vem
+    // antes de B — mas o usuário clicou em B primeiro e depois Ctrl+clicou em
+    // A. O resultado deve respeitar B, depois A.
+    const ctx = makeCtx({ selectedColumns: ['B', 'A'] });
+    run(findInTab(addColumnTab(), 'mergeColumnsNew'), ctx);
+    const [, , onSubmit] = ctx.openParamDialog.mock.calls[0];
+    onSubmit({ separator: '-' });
+    expect(ctx.addStep).toHaveBeenCalledWith({
+      op: 'addCustomColumn',
+      newColumn: 'Mesclado',
+      expression: 'Text.Combine({Text.From([B]), Text.From([A])}, "-")',
       type: 'text',
       name: 'Mesclado Adicionado',
     });
