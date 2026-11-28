@@ -461,7 +461,7 @@ export function addColumnTab(): RibbonTabDef {
               ctx.addStep({
                 op: 'addCustomColumn',
                 newColumn: 'Mesclado',
-                expression: `Text.Combine({${items.join(', ')}}, "${p.separator}")`,
+                expression: `Text.Combine({${items.join(', ')}}, "${String(p.separator).replace(/"/g, '""')}")`,
                 type: 'text',
                 name: 'Mesclado Adicionado',
               });
