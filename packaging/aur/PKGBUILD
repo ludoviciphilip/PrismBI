@@ -5,7 +5,7 @@
 # é antigo e deixa o canvas visivelmente mais lento em distros atuais.
 # Atualize pkgver/sha256sums com scripts/update-aur-pkgbuild.sh <versão>.
 pkgname=vetrobi-bin
-pkgver=0.10.0
+pkgver=0.11.0
 pkgrel=1
 pkgdesc="Open-source Power BI alternative: native BI desktop app that opens .pbip/.pbix, with a Rust DAX engine, Power Query editor and DuckDB"
 arch=('x86_64')
@@ -19,8 +19,8 @@ options=('!strip' '!debug')
 _deb="VetroBI_${pkgver}_amd64.deb"
 source=("${_deb}::${url}/releases/download/v${pkgver}/${_deb}"
         "LICENSE.md::https://raw.githubusercontent.com/ludoviciphilip/VetroBI/v${pkgver}/LICENSE.md")
-sha256sums=('b1916b3e643f414bb53260dcd2b78e3d148236fb02f871d862263ac3d44791b5'
-            'a1938d74a10b43dce8fbf024ae18a2c074b8fa734f58be74e91a49a5a6047758')
+sha256sums=('ef132df9c97e9f77e5747fb71b29dca4994a18c51fc6d74030678f5ac0a95689'
+            '82c96d8e5199361f90098229b3374d96666c3edb17fcc74e9a6e81859dd428ef')
 noextract=("${_deb}")
 
 package() {
