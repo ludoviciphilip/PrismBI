@@ -54,4 +54,35 @@ describe('ConditionalColumnDialog', () => {
     fireEvent.click(screen.getAllByLabelText('Remover cláusula')[1]);
     expect(screen.queryByTestId('clause-1-column')).toBeNull();
   });
+
+  it('Bug 2: editing an existing conditional-column step opens prefilled', () => {
+    const onApply = vi.fn();
+    render(
+      <ConditionalColumnDialog
+        columns={[{ name: 'Regiao', type: 'text' }, { name: 'Valor', type: 'decimal' }]}
+        initial={{
+          newColumn: 'Faixa',
+          rules: [{ when: { column: 'Regiao', op: 'eq', value: 'Sul' }, then: 'Sul-OK' }],
+          otherwise: '0',
+          type: 'text',
+        }}
+        onClose={() => {}}
+        onApply={onApply}
+      />,
+    );
+    expect(screen.getByDisplayValue('Faixa')).toBeTruthy();
+    expect((screen.getByTestId('clause-0-column') as HTMLSelectElement).value).toBe('Regiao');
+    expect((screen.getByTestId('clause-0-op') as HTMLSelectElement).value).toBe('eq');
+    expect((screen.getByTestId('clause-0-value').querySelector('input') as HTMLInputElement).value).toBe('Sul');
+    expect((screen.getByTestId('clause-0-then').querySelector('input') as HTMLInputElement).value).toBe('Sul-OK');
+    expect((screen.getByTestId('otherwise').querySelector('input') as HTMLInputElement).value).toBe('0');
+
+    fireEvent.click(screen.getByText('OK'));
+    expect(onApply).toHaveBeenCalledWith({
+      newColumn: 'Faixa',
+      rules: [{ when: { column: 'Regiao', op: 'eq', value: 'Sul' }, then: 'Sul-OK' }],
+      otherwise: '0',
+      type: 'text',
+    });
+  });
 });
