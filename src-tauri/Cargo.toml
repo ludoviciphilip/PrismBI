@@ -1,6 +1,6 @@
 [package]
 name = "vetrobi"
-version = "0.11.0"
+version = "0.11.1"
 description = "VetroBI — Native Business Intelligence powered by Rust & DuckDB (Linux & Windows)"
 authors = ["Luis Felipe de Almeida Vieira"]
 edition = "2021"
