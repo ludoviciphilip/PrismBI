@@ -35,15 +35,40 @@ function ruleToCond(rule: SimpleRule): Cond {
   return { column: rule.column, op: rule.op as any, value };
 }
 
+/** Inverso de `ruleToCond`: um `Cond` salvo -> estado editável do construtor básico. */
+function condToRule(cond: Extract<Cond, { column: string }>): SimpleRule {
+  const value = 'value' in cond ? String(cond.value ?? '') : '';
+  return { column: cond.column, op: cond.op as any, value };
+}
+
+function hasColumn(cond: Cond): cond is Extract<Cond, { column: string }> {
+  return 'column' in cond;
+}
+
+/** Só o construtor básico sabe editar `and`/`or` de cláusulas simples; o resto cai pro JSON. */
+function condToRules(cond: Cond): SimpleRule[] | null {
+  if ('and' in cond) return cond.and.every(hasColumn) ? cond.and.map(condToRule) : null;
+  if ('or' in cond) return cond.or.every(hasColumn) ? cond.or.map(condToRule) : null;
+  if (hasColumn(cond)) return [condToRule(cond)];
+  return null;
+}
+
+function combinatorOf(cond: Cond): 'and' | 'or' {
+  return 'or' in cond ? 'or' : 'and';
+}
+
 export const FilterRowsDialog: React.FC<{
   columns: string[];
   initialCondition?: Cond;
   onClose: () => void;
   onApply: (condition: Cond) => void;
 }> = ({ columns, initialCondition, onClose, onApply }) => {
-  const [combine, setCombine] = useState<'and' | 'or'>('and');
-  const [rules, setRules] = useState<SimpleRule[]>([{ column: columns[0] || '', op: 'eq' as any, value: '' }]);
-  const [advanced, setAdvanced] = useState(false);
+  const simpleRules = initialCondition ? condToRules(initialCondition) : null;
+  // Condição complexa demais pro construtor básico (not/aninhada): abre direto
+  // no modo JSON avançado, em vez de mostrar uma cláusula em branco enganosa.
+  const [combine, setCombine] = useState<'and' | 'or'>(initialCondition ? combinatorOf(initialCondition) : 'and');
+  const [rules, setRules] = useState<SimpleRule[]>(simpleRules ?? [{ column: columns[0] || '', op: 'eq' as any, value: '' }]);
+  const [advanced, setAdvanced] = useState(!!initialCondition && !simpleRules);
   const [advancedJson, setAdvancedJson] = useState(() => JSON.stringify(initialCondition ?? { column: columns[0] || '', op: 'eq', value: '' }, null, 2));
 
   const addRule = () => setRules([...rules, { column: columns[0] || '', op: 'eq' as any, value: '' }]);

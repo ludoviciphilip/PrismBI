@@ -18,8 +18,14 @@ describe('computeNextSelection (pure logic)', () => {
 
   it('shift+click selects the range from the anchor', () => {
     expect(computeNextSelection(order, ['A'], 'A', 'C', { shiftKey: true })).toEqual({ selected: ['A', 'B', 'C'], anchor: 'A' });
-    // ordem invertida também funciona
-    expect(computeNextSelection(order, ['C'], 'C', 'A', { shiftKey: true })).toEqual({ selected: ['A', 'B', 'C'], anchor: 'C' });
+    // da direita para a esquerda, a ordem segue o gesto (âncora primeiro)
+    expect(computeNextSelection(order, ['C'], 'C', 'A', { shiftKey: true })).toEqual({ selected: ['C', 'B', 'A'], anchor: 'C' });
+  });
+
+  it('keeps click order for merges: Nome do Mês, then Shift/Ctrl+click Ano gives [Nome do Mês, Ano]', () => {
+    const cols = ['Data', 'Valor', 'Ano', 'Nome do Mês'];
+    expect(computeNextSelection(cols, ['Nome do Mês'], 'Nome do Mês', 'Ano', { shiftKey: true }).selected).toEqual(['Nome do Mês', 'Ano']);
+    expect(computeNextSelection(cols, ['Nome do Mês'], 'Nome do Mês', 'Ano', { ctrlKey: true }).selected).toEqual(['Nome do Mês', 'Ano']);
   });
 });
 

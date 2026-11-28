@@ -83,4 +83,39 @@ describe('ensureQuery / closeAndApplyQuery (round-trip .pbip)', () => {
     expect(cols[1].name).toBe('Nova');
     expect(cols[1].id).not.toBe('c_cat');
   });
+
+  it('dedupes duplicate step/column names coming from imported M (Observação do print v0.11 R2)', async () => {
+    // Reproduz o M que gerou o print do Luis: duas etapas "Mesclado
+    // Adicionado" (um merge feito duas vezes, sem perceber a colisão de
+    // nomes), ambas produzindo uma coluna "Mesclado". Sem dedup, a segunda
+    // etapa se autorreferencia no M gerado e a segunda coluna sobrescreve a
+    // primeira na grade.
+    const parsed: EtlQuery = {
+      name: 'dCategorias',
+      source: { kind: 'excel', path: '\\\\tsclient\\Linux\\Rhino.xlsx', sheet: 'Categorias' },
+      steps: [
+        {
+          id: 's1',
+          name: 'Mesclado Adicionado',
+          op: 'addCustomColumn',
+          newColumn: 'Mesclado',
+          expression: 'Text.Combine({Text.From([Categoria]), [DRE]}, "/")',
+          type: 'text',
+        },
+        {
+          id: 's2',
+          name: 'Mesclado Adicionado',
+          op: 'addCustomColumn',
+          newColumn: 'Mesclado',
+          expression: 'Text.Combine({[DRE], Text.From([Categoria])}, "-")',
+          type: 'text',
+        },
+      ],
+    };
+    fromM.mockResolvedValue({ query: parsed, warnings: [] });
+    addPbipTable('t_dup');
+    const q = await useBiStore.getState().ensureQuery('t_dup');
+    expect(q.steps.map(s => s.name)).toEqual(['Mesclado Adicionado', 'Mesclado Adicionado1']);
+    expect(q.steps.map(s => (s as any).newColumn)).toEqual(['Mesclado', 'Mesclado.1']);
+  });
 });

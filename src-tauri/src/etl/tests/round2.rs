@@ -411,3 +411,156 @@ fn round2_steps_quote_hostile_names_and_values() {
     assert_rows(&r, &[json!(["2", "v; --'; DROP TABLE x; --"])]);
     assert!(table_exists(&db, "x"));
 }
+
+// ------------------------------------------------------------ Mesclar Colunas
+// (bug do Luis: ribbon "Adicionar Coluna > Mesclar Colunas" gerava
+// `each [Ano] & "-" & [Nome do Mês]`, que falha porque `&` exige texto.
+// No Power BI real, "Mesclar Colunas" sempre funciona porque converte
+// para texto antes de juntar: Text.Combine (aba Adicionar Coluna) ou
+// Table.CombineColumns/Combiner.CombineTextByDelimiter (aba Transformar).)
+
+fn ano_mes() -> EtlSource {
+    EtlSource::inline(strs(&["Ano", "Nome do Mês"]), vec![vec![n(2026.0), s("Nov")]])
+}
+
+#[test]
+fn merge_bug_repro_keeps_failing_with_improved_message() {
+    // Deve continuar falhando, como no Power BI real
+    // ("Não podemos aplicar o operador & aos tipos Number e Text"), só que
+    // com uma mensagem melhor: nome e tipo da coluna, e o código certo.
+    let db = DuckDbStore::new_in_memory().unwrap();
+    let q = query(ano_mes(), vec![custom("Mesclado", "[Ano] & \"-\" & [Nome do Mês]")]);
+    let p = preview(&db, &q, None);
+    let f = p.res.failed_step.expect("deveria falhar, como no Power BI");
+    assert_eq!(f.index, 0);
+    assert!(f.message.contains("[Ano]"), "{}", f.message);
+    assert!(f.message.contains("número"), "{}", f.message);
+    assert!(f.message.contains("Text.From([Ano]) & \"-\" & [Nome do Mês]"), "{}", f.message);
+}
+
+#[test]
+fn merge_field_of_field_access_explains_record_field() {
+    // `[Ano][Nome do Mês]` lê o campo "Nome do Mês" de dentro de [Ano], que
+    // não é um registro.
+    let db = DuckDbStore::new_in_memory().unwrap();
+    let q = query(ano_mes(), vec![custom("Mesclado", "[Ano][Nome do Mês]")]);
+    let p = preview(&db, &q, None);
+    let f = p.res.failed_step.expect("deveria falhar");
+    assert!(f.message.contains("acesso a campo de registro"), "{}", f.message);
+    assert!(f.message.contains("Text.From([Ano]) & [Nome do Mês]"), "{}", f.message);
+}
+
+#[test]
+fn merge_division_with_text_operand_explains_and_suggests_concat() {
+    // `/` é divisão; com um operando texto, sugere a concatenação certa.
+    let db = DuckDbStore::new_in_memory().unwrap();
+    let q = query(ano_mes(), vec![custom("Coluna_Personalizada", "[Ano]/[Nome do Mês]")]);
+    let p = preview(&db, &q, None);
+    let f = p.res.failed_step.expect("deveria falhar");
+    assert!(f.message.contains("divisão"), "{}", f.message);
+    assert!(f.message.contains("[Nome do Mês]"), "{}", f.message);
+    assert!(f.message.contains("texto"), "{}", f.message);
+    assert!(f.message.contains("Text.From([Ano]) & \"/\" & [Nome do Mês]"), "{}", f.message);
+}
+
+#[test]
+fn text_combine_matches_power_bi_for_every_separator() {
+    for sep in ["-", "/", " ", ""] {
+        let expr = format!("Text.Combine({{Text.From([Ano]), [Nome do Mês]}}, \"{}\")", sep);
+        let r = run(&query(ano_mes(), vec![custom("Mesclado", &expr)]));
+        assert_rows(&r, &[json!([2026.0, "Nov", format!("2026{}Nov", sep)])]);
+    }
+}
+
+#[test]
+fn text_combine_ignores_null_items_unlike_combine_columns() {
+    // Text.Combine ignora null (não insere separador para ele); diferente
+    // de Table.CombineColumns, que trata null como "" e mantém a posição.
+    let src = EtlSource::inline(
+        strs(&["Ano", "Nome do Mês"]),
+        vec![vec![Scalar::Null, s("Nov")], vec![n(2026.0), Scalar::Null]],
+    );
+    let r = run(&query(
+        src,
+        vec![custom("Mesclado", "Text.Combine({Text.From([Ano]), [Nome do Mês]}, \"-\")")],
+    ));
+    assert_rows(&r, &[json!([null, "Nov", "Nov"]), json!([2026.0, null, "2026"])]);
+}
+
+#[test]
+fn text_combine_date_plus_text() {
+    let r = run(&with_custom(
+        date_src("2026-11-28", EtlType::Date),
+        "Mesclado",
+        "Text.Combine({Text.From([d]), \"nota\"}, \"-\")",
+        None,
+    ));
+    assert_rows(&r, &[json!(["2026-11-28", "2026-11-28-nota"])]);
+}
+
+#[test]
+fn text_combine_decimal_uses_pt_br_comma_with_culture() {
+    let src = EtlSource::inline(strs(&["v"]), vec![vec![n(1234.5)]]);
+    let r = run(&query(
+        src,
+        vec![custom("t", "Text.Combine({Text.From([v], \"pt-BR\")}, \"-\")")],
+    ));
+    assert_rows(&r, &[json!([1234.5, "1234,5"])]);
+}
+
+#[test]
+fn merge_columns_step_transform_tab_every_separator() {
+    for sep in ["-", "/", " ", ""] {
+        let r = run(&query(
+            ano_mes(),
+            vec![StepKind::MergeColumns { columns: strs(&["Ano", "Nome do Mês"]), separator: sep.into(), new_column: "Mesclado".into() }],
+        ));
+        assert_cols(&r, &["Mesclado"]);
+        assert_rows(&r, &[json!([format!("2026{}Nov", sep)])]);
+    }
+}
+
+#[test]
+fn merge_columns_step_transform_tab_date_plus_text() {
+    let src = text_source(&["d", "t"], &[&[Some("2026-11-28"), Some("nota")]]);
+    let q = query(
+        src,
+        vec![
+            StepKind::ChangeType { columns: vec![ColumnTypeSpec { column: "d".into(), ty: EtlType::Date }], culture: None },
+            StepKind::MergeColumns { columns: strs(&["d", "t"]), separator: "-".into(), new_column: "m".into() },
+        ],
+    );
+    let r = run(&q);
+    assert_cols(&r, &["m"]);
+    assert_rows(&r, &[json!(["2026-11-28-nota"])]);
+}
+
+#[test]
+fn merge_add_column_tab_m_matches_power_bi_and_round_trips() {
+    let q = query(
+        EtlSource::table_ref("Base"),
+        vec![StepKind::AddCustomColumn {
+            new_column: "Mesclado".into(),
+            expression: "Text.Combine({Text.From([Ano], \"pt-BR\"), [Nome do Mês]}, \"-\")".into(),
+            ty: Some(EtlType::Text),
+        }],
+    );
+    let m = query_to_m(&q).expect("to_m");
+    assert!(m.contains("Table.AddColumn("), "{}", m);
+    assert!(m.contains("Text.Combine({Text.From([Ano], \"pt-BR\"), [Nome do Mês]}, \"-\")"), "{}", m);
+    assert!(m.contains("type text"), "{}", m);
+    round_trips(&q);
+}
+
+#[test]
+fn merge_transform_tab_m_matches_power_bi_and_round_trips() {
+    let q = query(
+        EtlSource::table_ref("Base"),
+        vec![StepKind::MergeColumns { columns: strs(&["Ano", "Nome do Mês"]), separator: "-".into(), new_column: "Mesclado".into() }],
+    );
+    let m = query_to_m(&q).expect("to_m");
+    assert!(m.contains("Table.CombineColumns("), "{}", m);
+    assert!(m.contains("Table.TransformColumnTypes("), "{}", m);
+    assert!(m.contains("Combiner.CombineTextByDelimiter(\"-\", QuoteStyle.None)"), "{}", m);
+    round_trips(&q);
+}

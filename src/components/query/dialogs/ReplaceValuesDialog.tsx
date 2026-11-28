@@ -3,12 +3,13 @@ import { DialogShell, FieldLabel, inputCls } from './DialogShell';
 
 export const ReplaceValuesDialog: React.FC<{
   column: string;
+  initial?: { find: string; replace: string; matchEntireCell: boolean };
   onClose: () => void;
   onApply: (args: { find: string; replace: string; matchEntireCell: boolean }) => void;
-}> = ({ column, onClose, onApply }) => {
-  const [find, setFind] = useState('');
-  const [replace, setReplace] = useState('');
-  const [matchEntireCell, setMatchEntireCell] = useState(true);
+}> = ({ column, initial, onClose, onApply }) => {
+  const [find, setFind] = useState(initial?.find ?? '');
+  const [replace, setReplace] = useState(initial?.replace ?? '');
+  const [matchEntireCell, setMatchEntireCell] = useState(initial?.matchEntireCell ?? true);
 
   return (
     <DialogShell

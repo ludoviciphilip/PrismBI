@@ -55,4 +55,56 @@ describe('FilterRowsDialog', () => {
     fireEvent.click(screen.getByText('Aplicar'));
     expect(onApply).toHaveBeenCalledWith({ column: 'Regiao', op: 'isNotNull' });
   });
+
+  it('Bug 2: editing an existing filterRows step opens prefilled with the saved rule', () => {
+    const onApply = vi.fn();
+    render(
+      <FilterRowsDialog
+        columns={['Regiao', 'Valor']}
+        initialCondition={{ column: 'Regiao', op: 'eq', value: 'SP' }}
+        onClose={() => {}}
+        onApply={onApply}
+      />,
+    );
+    expect((screen.getByTestId('filter-rule-0').querySelectorAll('select')[0] as HTMLSelectElement).value).toBe('Regiao');
+    expect((screen.getByTestId('filter-rule-0').querySelectorAll('select')[1] as HTMLSelectElement).value).toBe('eq');
+    expect((screen.getByPlaceholderText('Valor') as HTMLInputElement).value).toBe('SP');
+    fireEvent.click(screen.getByText('Aplicar'));
+    expect(onApply).toHaveBeenCalledWith({ column: 'Regiao', op: 'eq', value: 'SP' });
+  });
+
+  it('Bug 2: editing a multi-clause "or" filterRows step prefills every clause', () => {
+    const onApply = vi.fn();
+    render(
+      <FilterRowsDialog
+        columns={['Regiao', 'Valor']}
+        initialCondition={{ or: [{ column: 'Regiao', op: 'eq', value: 'SP' }, { column: 'Valor', op: 'gt', value: 100 }] }}
+        onClose={() => {}}
+        onApply={onApply}
+      />,
+    );
+    expect(screen.getByTestId('filter-rule-1')).toBeTruthy();
+    fireEvent.click(screen.getByText('Aplicar'));
+    expect(onApply).toHaveBeenCalledWith({
+      or: [
+        { column: 'Regiao', op: 'eq', value: 'SP' },
+        { column: 'Valor', op: 'gt', value: 100 },
+      ],
+    });
+  });
+
+  it('falls back to advanced JSON (never a blank clause) when editing a "not"/nested condition', () => {
+    const onApply = vi.fn();
+    render(
+      <FilterRowsDialog
+        columns={['Regiao']}
+        initialCondition={{ not: { column: 'Regiao', op: 'isNull' } }}
+        onClose={() => {}}
+        onApply={onApply}
+      />,
+    );
+    expect(screen.getByTestId('filter-advanced-json')).toBeTruthy();
+    fireEvent.click(screen.getByText('Aplicar'));
+    expect(onApply).toHaveBeenCalledWith({ not: { column: 'Regiao', op: 'isNull' } });
+  });
 });
